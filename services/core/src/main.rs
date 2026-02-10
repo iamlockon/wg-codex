@@ -83,9 +83,16 @@ async fn main() -> anyhow::Result<()> {
 
     info!(%addr, "core gRPC service started");
     let mut server = tonic::transport::Server::builder();
+    let require_tls = std::env::var("CORE_REQUIRE_TLS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     if let Some(tls) = server_tls_config_from_env()? {
         server = server.tls_config(tls)?;
         info!("core gRPC TLS enabled");
+    } else if require_tls {
+        return Err(anyhow::anyhow!(
+            "CORE_REQUIRE_TLS is enabled but CORE_TLS_CERT_PATH/CORE_TLS_KEY_PATH are missing"
+        ));
     }
     server
         .add_service(ControlPlaneServer::new(service))

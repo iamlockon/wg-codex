@@ -65,22 +65,32 @@
   - `entry`: stale node heartbeat filtering and expired revocation-cache eviction behavior.
   - `core`: `node_hint` UUID validation/propagation and disconnect behavior when no active session exists.
 - Product direction updated: target is now **Consumer Privacy / Geo-Unblocking VPN** (not Road Warrior).
+- Consumer model schema migration added:
+  - `plans`, `customer_subscriptions`,
+  - node geo/pool/capacity metadata on `vpn_nodes`.
+- `entry` now enforces subscription entitlements:
+  - device registration respects `max_devices`,
+  - session start validates region against `allowed_regions`.
+- `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring.
+- Privacy metadata cleanup worker added in `entry` for terminated sessions and audit events (retention env-configurable).
+- TLS enforcement toggles added:
+  - `APP_REQUIRE_CORE_TLS` in `entry` client startup,
+  - `CORE_REQUIRE_TLS` in `core` server startup.
 
 ## Not Production-Ready Yet
-- Plan/subscription/entitlement model is not implemented yet.
-- Session policy is still effectively single-active-session per customer (not plan-driven).
-- Node selection is region/load based only; no country/city/profile pool semantics yet.
-- No service-to-service mTLS enforcement in active runtime path yet.
-- Privacy policy enforcement is incomplete (retention/redaction/minimal logging controls need hardening).
+- Core control-plane still supports a single active session per customer, so plan `max_active_sessions > 1` is not yet realizable.
+- Subscription lifecycle management APIs/backoffice flows are not implemented yet (only entitlement reads are wired).
+- Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
+- mTLS enforcement is opt-in via env flags; not defaulted on in all environments yet.
+- Privacy policy enforcement is incomplete (retention/redaction/minimal logging controls still need hardening).
 - Remaining shell-based NAT path still exists (`iptables`/`nft` command execution).
 
 ## Priority Next Steps
-1. Add subscription + entitlement schema (`plans`, `customer_subscriptions`, concurrency/device limits) and enforce in `entry` session start flow.
-2. Extend node model to consumer geo semantics (country/city/pool profile) and update selection scoring accordingly.
-3. Add integration tests against real Postgres + migrations for session, OAuth identity, node selection, and token revocation flows.
-4. Move TLS materials and secrets to GCP Secret Manager + IAM policies; enforce mTLS by default between `entry` and `core`.
-5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
-6. Add privacy controls: bounded retention jobs, log redaction guarantees, and auditable policy toggles.
+1. Refactor `core`/gRPC contract to support multi-session-per-customer semantics (or explicit per-device session APIs), then align `entry` session store/indexes.
+2. Add integration tests against real Postgres + migrations for subscription entitlements, session lifecycle, node selection, and token revocation flows.
+3. Move TLS materials and secrets to GCP Secret Manager + IAM policies; turn `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` on by default in deployed environments.
+4. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
+5. Add privacy controls: log redaction guarantees and auditable policy toggles on top of retention cleanup.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.

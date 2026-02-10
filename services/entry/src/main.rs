@@ -515,9 +515,16 @@ async fn privacy_cleanup_loop(
 
 async fn build_core_client(grpc_target: &str) -> anyhow::Result<ControlPlaneClient<Channel>> {
     let mut endpoint = Endpoint::from_shared(grpc_target.to_string())?;
+    let require_tls = std::env::var("APP_REQUIRE_CORE_TLS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     if let Some(tls) = client_tls_config_from_env()? {
         endpoint = endpoint.tls_config(tls)?;
+    } else if require_tls {
+        return Err(anyhow::anyhow!(
+            "APP_REQUIRE_CORE_TLS is enabled but CORE_GRPC_TLS_CA_CERT_PATH is not configured"
+        ));
     }
 
     let channel = endpoint.connect().await?;
