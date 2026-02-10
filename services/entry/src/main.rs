@@ -19,7 +19,9 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, encode};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode_header, encode,
+};
 use node_repo::{NodeRecord, NodeRepoError, PostgresNodeRepository, UpsertNodeInput};
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
@@ -62,10 +64,9 @@ async fn main() -> anyhow::Result<()> {
                 NodeStore::InMemory(Mutex::new(HashMap::new())),
             )
         };
-    let jwt_signing_key = std::env::var("APP_JWT_SIGNING_KEY")
-        .unwrap_or_else(|_| "dev-insecure-signing-key-change-me".to_string());
-    if jwt_signing_key == "dev-insecure-signing-key-change-me" {
-        warn!("APP_JWT_SIGNING_KEY not set; using insecure development signing key");
+    let jwt_keys = JwtKeyStore::from_env();
+    if jwt_keys.using_insecure_default {
+        warn!("APP_JWT_SIGNING_KEY(S) not set; using insecure development signing key");
     }
 
     let state = Arc::new(AppState {
@@ -78,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         identity_store,
         node_store,
         admin_api_token: std::env::var("ADMIN_API_TOKEN").ok(),
-        jwt_signing_key,
+        jwt_keys,
     });
 
     let app = Router::new()
@@ -112,7 +113,67 @@ struct AppState {
     identity_store: IdentityStore,
     node_store: NodeStore,
     admin_api_token: Option<String>,
-    jwt_signing_key: String,
+    jwt_keys: JwtKeyStore,
+}
+
+#[derive(Clone)]
+struct JwtKeyStore {
+    active_kid: String,
+    keys: HashMap<String, String>,
+    using_insecure_default: bool,
+}
+
+impl JwtKeyStore {
+    fn from_env() -> Self {
+        if let Ok(raw) = std::env::var("APP_JWT_SIGNING_KEYS") {
+            let mut keys = HashMap::new();
+            for part in raw.split(',') {
+                let mut chunks = part.splitn(2, ':');
+                let kid = chunks.next().unwrap_or_default().trim();
+                let secret = chunks.next().unwrap_or_default().trim();
+                if !kid.is_empty() && !secret.is_empty() {
+                    keys.insert(kid.to_string(), secret.to_string());
+                }
+            }
+            if let Some(active_kid) = std::env::var("APP_JWT_ACTIVE_KID")
+                .ok()
+                .filter(|v| keys.contains_key(v))
+            {
+                return Self {
+                    active_kid,
+                    keys,
+                    using_insecure_default: false,
+                };
+            }
+            if let Some(first) = keys.keys().next().cloned() {
+                return Self {
+                    active_kid: first,
+                    keys,
+                    using_insecure_default: false,
+                };
+            }
+        }
+
+        let key = std::env::var("APP_JWT_SIGNING_KEY")
+            .unwrap_or_else(|_| "dev-insecure-signing-key-change-me".to_string());
+        let mut keys = HashMap::new();
+        keys.insert("v1".to_string(), key.clone());
+        Self {
+            active_kid: "v1".to_string(),
+            keys,
+            using_insecure_default: key == "dev-insecure-signing-key-change-me",
+        }
+    }
+
+    fn active_signing_key(&self) -> Option<(&str, &str)> {
+        self.keys
+            .get(&self.active_kid)
+            .map(|secret| (self.active_kid.as_str(), secret.as_str()))
+    }
+
+    fn key_for_kid(&self, kid: &str) -> Option<&str> {
+        self.keys.get(kid).map(|v| v.as_str())
+    }
 }
 
 #[derive(Clone)]
@@ -394,7 +455,7 @@ async fn oauth_callback(
         .identity_store
         .resolve_or_create_customer("google", &identity.sub, identity.email.as_deref())
         .await?;
-    let access_token = issue_access_token(customer_id, &state.jwt_signing_key)
+    let access_token = issue_access_token(customer_id, &state.jwt_keys)
         .map_err(|_| ApiError::service_unavailable("oauth_token_issue_failed"))?;
     Ok(Json(OAuthCallbackResponse {
         provider,
@@ -787,19 +848,29 @@ fn customer_id_from_request(state: &AppState, headers: &HeaderMap) -> Result<Uui
             .to_str()
             .map_err(|_| ApiError::unauthorized("invalid_authorization_header"))?;
         if let Some(token) = raw.strip_prefix("Bearer ") {
-            return customer_id_from_bearer(token, &state.jwt_signing_key);
+            return customer_id_from_bearer(token, &state.jwt_keys);
         }
     }
 
     customer_id_from_headers(headers)
 }
 
-fn customer_id_from_bearer(token: &str, signing_key: &str) -> Result<Uuid, ApiError> {
+fn customer_id_from_bearer(token: &str, keys: &JwtKeyStore) -> Result<Uuid, ApiError> {
+    let header =
+        decode_header(token).map_err(|_| ApiError::unauthorized("invalid_access_token"))?;
+    let kid = header
+        .kid
+        .as_deref()
+        .ok_or_else(|| ApiError::unauthorized("invalid_access_token"))?;
+    let secret = keys
+        .key_for_kid(kid)
+        .ok_or_else(|| ApiError::unauthorized("invalid_access_token"))?;
+
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_issuer(&["entry"]);
     let decoded = jsonwebtoken::decode::<AccessTokenClaims>(
         token,
-        &DecodingKey::from_secret(signing_key.as_bytes()),
+        &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     )
     .map_err(|_| ApiError::unauthorized("invalid_access_token"))?;
@@ -845,8 +916,11 @@ struct AccessTokenClaims {
 
 fn issue_access_token(
     customer_id: Uuid,
-    signing_key: &str,
+    keys: &JwtKeyStore,
 ) -> Result<String, jsonwebtoken::errors::Error> {
+    let (kid, signing_key) = keys.active_signing_key().ok_or_else(|| {
+        jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidKeyFormat)
+    })?;
     let now = Utc::now().timestamp() as usize;
     let claims = AccessTokenClaims {
         sub: customer_id.to_string(),
@@ -854,8 +928,10 @@ fn issue_access_token(
         iat: now,
         exp: now + 15 * 60,
     };
+    let mut header = Header::new(Algorithm::HS256);
+    header.kid = Some(kid.to_string());
     encode(
-        &Header::new(Algorithm::HS256),
+        &header,
         &claims,
         &EncodingKey::from_secret(signing_key.as_bytes()),
     )
@@ -970,6 +1046,16 @@ mod tests {
     use axum::http::HeaderValue;
     use jsonwebtoken::errors::{Error as JwtError, ErrorKind};
 
+    fn test_keys() -> JwtKeyStore {
+        let mut keys = HashMap::new();
+        keys.insert("v1".to_string(), "test-key".to_string());
+        JwtKeyStore {
+            active_kid: "v1".to_string(),
+            keys,
+            using_insecure_default: false,
+        }
+    }
+
     #[test]
     fn customer_id_from_headers_reads_valid_uuid() {
         let customer_id = Uuid::new_v4();
@@ -1009,7 +1095,7 @@ mod tests {
     #[test]
     fn issue_access_token_embeds_customer_subject() {
         let customer_id = Uuid::new_v4();
-        let token = issue_access_token(customer_id, "test-key").expect("token");
+        let token = issue_access_token(customer_id, &test_keys()).expect("token");
         let decoded = jsonwebtoken::decode::<AccessTokenClaims>(
             &token,
             &jsonwebtoken::DecodingKey::from_secret("test-key".as_bytes()),
@@ -1023,14 +1109,15 @@ mod tests {
     #[test]
     fn customer_id_from_bearer_parses_signed_token() {
         let customer_id = Uuid::new_v4();
-        let token = issue_access_token(customer_id, "test-key").expect("token");
-        let parsed = customer_id_from_bearer(&token, "test-key").expect("parsed");
+        let keys = test_keys();
+        let token = issue_access_token(customer_id, &keys).expect("token");
+        let parsed = customer_id_from_bearer(&token, &keys).expect("parsed");
         assert_eq!(parsed, customer_id);
     }
 
     #[test]
     fn customer_id_from_bearer_rejects_bad_token() {
-        let err = customer_id_from_bearer("bad-token", "test-key").expect_err("should fail");
+        let err = customer_id_from_bearer("bad-token", &test_keys()).expect_err("should fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "invalid_access_token");
     }

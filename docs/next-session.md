@@ -41,6 +41,10 @@
   - optional client TLS and client cert in `entry`.
 - OAuth callback now issues signed JWT access tokens (HS256) instead of dev string placeholders.
 - Customer APIs now accept `Authorization: Bearer <token>` (signed by `APP_JWT_SIGNING_KEY`) with legacy `x-customer-id` fallback.
+- JWT key rotation model added:
+  - `APP_JWT_SIGNING_KEYS` as comma-separated `kid:secret` list,
+  - optional `APP_JWT_ACTIVE_KID` to choose issuance key,
+  - verification selects key by token header `kid`.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -52,7 +56,7 @@
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Implement signing-key rotation and key-ID based verification for `entry` tokens.
+4. Add token revocation/session binding strategy (current JWTs are self-contained and short-lived only).
 5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 
 ## Open Risks / Watch Items
