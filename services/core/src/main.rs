@@ -5,6 +5,7 @@ mod wg_uapi;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use control_plane::proto::{
@@ -86,7 +87,10 @@ async fn reconciliation_loop(service: CoreService) {
     loop {
         let peers = service.desired_peers().await;
         if let Err(err) = service.dataplane.reconcile(&peers).await {
+            service.set_healthy(false);
             error!(%err, "dataplane reconciliation failed");
+        } else {
+            service.set_healthy(true);
         }
         sleep(Duration::from_secs(30)).await;
     }
@@ -120,9 +124,10 @@ async fn health_report_loop(service: CoreService, cfg: HealthReporterConfig) {
     let http = reqwest::Client::new();
     loop {
         let active_peer_count = service.active_peer_count().await;
+        let healthy = service.is_healthy();
         let body = serde_json::json!({
             "node_id": cfg.node_id,
-            "healthy": true,
+            "healthy": healthy,
             "active_peer_count": active_peer_count,
         });
 
@@ -132,8 +137,14 @@ async fn health_report_loop(service: CoreService, cfg: HealthReporterConfig) {
             .json(&body)
             .send()
             .await;
-        if let Err(err) = res {
-            error!(%err, "failed to publish node health");
+        match res {
+            Ok(resp) if !resp.status().is_success() => {
+                error!(status = %resp.status(), "node health publish rejected");
+            }
+            Ok(_) => {}
+            Err(err) => {
+                error!(%err, "failed to publish node health");
+            }
         }
 
         sleep(Duration::from_secs(10)).await;
@@ -186,6 +197,7 @@ struct CoreService {
     dataplane: Arc<dyn DataPlane>,
     endpoint_template: String,
     server_public_key: String,
+    healthy: Arc<AtomicBool>,
 }
 
 impl CoreService {
@@ -216,6 +228,7 @@ impl CoreService {
             dataplane,
             endpoint_template,
             server_public_key,
+            healthy: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -231,6 +244,14 @@ impl CoreService {
 
     async fn active_peer_count(&self) -> i64 {
         self.runtime.read().await.sessions.len() as i64
+    }
+
+    fn set_healthy(&self, healthy: bool) {
+        self.healthy.store(healthy, Ordering::Relaxed);
+    }
+
+    fn is_healthy(&self) -> bool {
+        self.healthy.load(Ordering::Relaxed)
     }
 
     fn endpoint_for_region(&self, region: &str) -> String {
@@ -273,6 +294,7 @@ impl ControlPlane for CoreService {
         };
 
         if let Err(err) = self.dataplane.connect_peer(&peer).await {
+            self.set_healthy(false);
             let mut runtime = self.runtime.write().await;
             runtime.ip_pool.release_for(customer_id);
             return Err(Status::new(
@@ -280,6 +302,7 @@ impl ControlPlane for CoreService {
                 format!("dataplane_connect_failed:{err}"),
             ));
         }
+        self.set_healthy(true);
 
         self.runtime.write().await.sessions.insert(
             customer_id,
@@ -322,11 +345,13 @@ impl ControlPlane for CoreService {
             .cloned();
         if let Some(session) = session {
             if let Err(err) = self.dataplane.disconnect_peer(&session.peer).await {
+                self.set_healthy(false);
                 return Err(Status::new(
                     Code::Internal,
                     format!("dataplane_disconnect_failed:{err}"),
                 ));
             }
+            self.set_healthy(true);
             let mut runtime = self.runtime.write().await;
             runtime.sessions.remove(&customer_id);
             runtime.ip_pool.release_for(customer_id);
