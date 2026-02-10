@@ -2,7 +2,9 @@ mod google_oidc;
 mod node_repo;
 mod oauth_repo;
 mod postgres_session_repo;
+mod privacy_repo;
 mod session_repo;
+mod subscription_repo;
 mod token_repo;
 
 use std::collections::HashMap;
@@ -23,12 +25,16 @@ use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
 use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode_header, encode,
 };
-use node_repo::{NodeRecord, NodeRepoError, PostgresNodeRepository, UpsertNodeInput};
+use node_repo::{
+    NodeRecord, NodeRepoError, NodeSelectionCriteria, PostgresNodeRepository, UpsertNodeInput,
+};
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
+use privacy_repo::PostgresPrivacyRepository;
 use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
+use subscription_repo::{Entitlements, PostgresSubscriptionRepository, SubscriptionRepoError};
 use subtle::ConstantTimeEq;
 use token_repo::{PostgresTokenRepository, TokenRepoError};
 use tokio::sync::{Mutex, RwLock};
@@ -48,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let core_client = build_core_client(&grpc_target).await?;
 
-    let (session_store, identity_store, node_store, token_store) =
+    let (session_store, identity_store, node_store, token_store, subscription_store, privacy_store) =
         if let Ok(database_url) = std::env::var("DATABASE_URL") {
             let pool = PgPoolOptions::new()
                 .max_connections(10)
@@ -60,6 +66,8 @@ async fn main() -> anyhow::Result<()> {
                 IdentityStore::Postgres(PostgresOAuthRepository::new(pool.clone())),
                 NodeStore::Postgres(PostgresNodeRepository::new(pool.clone())),
                 Some(PostgresTokenRepository::new(pool.clone())),
+                SubscriptionStore::Postgres(PostgresSubscriptionRepository::new(pool.clone())),
+                Some(PostgresPrivacyRepository::new(pool.clone())),
             )
         } else {
             warn!("DATABASE_URL not set; entry using in-memory session/oauth/node stores");
@@ -67,6 +75,8 @@ async fn main() -> anyhow::Result<()> {
                 SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
                 IdentityStore::InMemory(Mutex::new(HashMap::new())),
                 NodeStore::InMemory(Mutex::new(HashMap::new())),
+                None,
+                SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
                 None,
             )
         };
@@ -91,6 +101,8 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(true),
         revoked_token_ids: Mutex::new(HashMap::new()),
         token_store,
+        subscription_store,
+        privacy_store,
         node_freshness_secs: std::env::var("APP_NODE_FRESHNESS_SECS")
             .ok()
             .and_then(|v| v.parse::<i64>().ok())
@@ -99,6 +111,19 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(repo) = state.token_store.clone() {
         tokio::spawn(revocation_cleanup_loop(repo));
+    }
+    if let Some(repo) = state.privacy_store.clone() {
+        tokio::spawn(privacy_cleanup_loop(
+            repo,
+            std::env::var("APP_TERMINATED_SESSION_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(7),
+            std::env::var("APP_AUDIT_RETENTION_DAYS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(30),
+        ));
     }
 
     let app = Router::new()
@@ -137,6 +162,8 @@ struct AppState {
     allow_legacy_customer_header: bool,
     revoked_token_ids: Mutex<HashMap<String, usize>>,
     token_store: Option<PostgresTokenRepository>,
+    subscription_store: SubscriptionStore,
+    privacy_store: Option<PostgresPrivacyRepository>,
     node_freshness_secs: i64,
 }
 
@@ -228,6 +255,11 @@ enum NodeStore {
     Postgres(PostgresNodeRepository),
 }
 
+enum SubscriptionStore {
+    InMemory(Mutex<HashMap<Uuid, Entitlements>>),
+    Postgres(PostgresSubscriptionRepository),
+}
+
 impl IdentityStore {
     async fn resolve_or_create_customer(
         &self,
@@ -255,9 +287,9 @@ impl IdentityStore {
 impl NodeStore {
     async fn select_node(
         &self,
-        region: &str,
+        criteria: &NodeSelectionCriteria,
         freshness_seconds: i64,
-    ) -> Result<Option<Uuid>, ApiError> {
+    ) -> Result<Option<NodeRecord>, ApiError> {
         match self {
             NodeStore::InMemory(store) => {
                 let store = store.lock().await;
@@ -265,15 +297,28 @@ impl NodeStore {
                 Ok(store
                     .values()
                     .filter(|n| {
-                        n.region == region
+                        criteria
+                            .region
+                            .as_deref()
+                            .map_or(true, |region| n.region == region)
+                            && criteria
+                                .country_code
+                                .as_deref()
+                                .map_or(true, |cc| n.country_code == cc)
+                            && criteria
+                                .city_code
+                                .as_deref()
+                                .map_or(true, |city| n.city_code.as_deref() == Some(city))
+                            && criteria.pool.as_deref().map_or(true, |pool| n.pool == pool)
                             && n.healthy
+                            && n.active_peer_count < n.capacity_peers
                             && (now - n.updated_at).num_seconds() <= freshness_seconds
                     })
                     .min_by_key(|n| n.active_peer_count)
-                    .map(|n| n.id))
+                    .cloned())
             }
             NodeStore::Postgres(repo) => repo
-                .select_node(region, freshness_seconds)
+                .select_node(criteria, freshness_seconds)
                 .await
                 .map_err(map_node_repo_error),
         }
@@ -306,11 +351,15 @@ impl NodeStore {
                 let record = NodeRecord {
                     id: input.id,
                     region: input.region,
+                    country_code: input.country_code,
+                    city_code: input.city_code,
+                    pool: input.pool,
                     provider: input.provider,
                     endpoint_host: input.endpoint_host,
                     endpoint_port: input.endpoint_port,
                     healthy: input.healthy,
                     active_peer_count: input.active_peer_count,
+                    capacity_peers: input.capacity_peers,
                     updated_at: Utc::now(),
                 };
                 store.insert(record.id, record.clone());
@@ -413,6 +462,21 @@ impl SessionStore {
     }
 }
 
+impl SubscriptionStore {
+    async fn entitlements_for_customer(&self, customer_id: Uuid) -> Result<Entitlements, ApiError> {
+        match self {
+            SubscriptionStore::InMemory(store) => {
+                let store = store.lock().await;
+                Ok(store.get(&customer_id).cloned().unwrap_or_default())
+            }
+            SubscriptionStore::Postgres(repo) => repo
+                .entitlements_for_customer(customer_id)
+                .await
+                .map_err(map_subscription_repo_error),
+        }
+    }
+}
+
 async fn healthz() -> &'static str {
     "ok"
 }
@@ -425,6 +489,27 @@ async fn revocation_cleanup_loop(repo: PostgresTokenRepository) {
             }
         }
         sleep(Duration::from_secs(3600)).await;
+    }
+}
+
+async fn privacy_cleanup_loop(
+    repo: PostgresPrivacyRepository,
+    session_retention_days: i64,
+    audit_retention_days: i64,
+) {
+    loop {
+        if let Ok((sessions, audits)) = repo
+            .purge_expired_metadata(session_retention_days, audit_retention_days)
+            .await
+        {
+            if sessions > 0 || audits > 0 {
+                info!(
+                    sessions,
+                    audits, "purged expired privacy-sensitive metadata"
+                );
+            }
+        }
+        sleep(Duration::from_secs(6 * 3600)).await;
     }
 }
 
@@ -560,9 +645,16 @@ async fn register_device(
     if payload.name.trim().is_empty() || payload.public_key.trim().is_empty() {
         return Err(ApiError::bad_request("invalid_device_payload"));
     }
+    let entitlements = state
+        .subscription_store
+        .entitlements_for_customer(customer_id)
+        .await?;
 
     let mut devices_map = state.devices_by_customer.write().await;
     let entry = devices_map.entry(customer_id).or_default();
+    if entry.len() as i32 >= entitlements.max_devices {
+        return Err(ApiError::bad_request("device_limit_reached"));
+    }
     let device = Device {
         id: Uuid::new_v4(),
         customer_id,
@@ -592,11 +684,15 @@ async fn list_devices(
 struct UpsertNodeRequest {
     id: Option<Uuid>,
     region: String,
+    country_code: Option<String>,
+    city_code: Option<String>,
+    pool: Option<String>,
     provider: String,
     endpoint_host: String,
     endpoint_port: u16,
     healthy: Option<bool>,
     active_peer_count: Option<i64>,
+    capacity_peers: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -610,11 +706,15 @@ struct UpdateNodeHealthRequest {
 struct NodeResponse {
     id: Uuid,
     region: String,
+    country_code: String,
+    city_code: Option<String>,
+    pool: String,
     provider: String,
     endpoint_host: String,
     endpoint_port: u16,
     healthy: bool,
     active_peer_count: i64,
+    capacity_peers: i64,
     updated_at: chrono::DateTime<Utc>,
 }
 
@@ -623,11 +723,15 @@ impl From<NodeRecord> for NodeResponse {
         Self {
             id: value.id,
             region: value.region,
+            country_code: value.country_code,
+            city_code: value.city_code,
+            pool: value.pool,
             provider: value.provider,
             endpoint_host: value.endpoint_host,
             endpoint_port: value.endpoint_port,
             healthy: value.healthy,
             active_peer_count: value.active_peer_count,
+            capacity_peers: value.capacity_peers,
             updated_at: value.updated_at,
         }
     }
@@ -654,15 +758,31 @@ async fn upsert_node(
     {
         return Err(ApiError::bad_request("invalid_node_payload"));
     }
+    let country_code = payload
+        .country_code
+        .unwrap_or_else(|| "US".to_string())
+        .trim()
+        .to_uppercase();
+    if country_code.len() != 2 {
+        return Err(ApiError::bad_request("invalid_country_code"));
+    }
+    let capacity_peers = payload.capacity_peers.unwrap_or(10000);
+    if capacity_peers <= 0 {
+        return Err(ApiError::bad_request("invalid_capacity_peers"));
+    }
 
     let input = UpsertNodeInput {
         id: payload.id.unwrap_or_else(Uuid::new_v4),
         region: payload.region,
+        country_code,
+        city_code: payload.city_code,
+        pool: payload.pool.unwrap_or_else(|| "general".to_string()),
         provider: payload.provider,
         endpoint_host: payload.endpoint_host,
         endpoint_port: payload.endpoint_port,
         healthy: payload.healthy.unwrap_or(true),
         active_peer_count: payload.active_peer_count.unwrap_or(0),
+        capacity_peers,
     };
 
     let node = state.node_store.upsert_node(input).await?;
@@ -687,7 +807,10 @@ async fn update_node_health(
 #[derive(Deserialize)]
 struct StartSessionRequest {
     device_id: Uuid,
-    region: String,
+    region: Option<String>,
+    country_code: Option<String>,
+    city_code: Option<String>,
+    pool: Option<String>,
     reconnect_session_key: Option<String>,
     node_hint: Option<Uuid>,
 }
@@ -712,6 +835,20 @@ async fn start_session(
     Json(payload): Json<StartSessionRequest>,
 ) -> Result<Json<StartSessionResponse>, ApiError> {
     let customer_id = customer_id_from_request(&state, &headers).await?;
+    let entitlements = state
+        .subscription_store
+        .entitlements_for_customer(customer_id)
+        .await?;
+
+    let requested_region = payload.region.clone().unwrap_or_default();
+    if requested_region.trim().is_empty() {
+        return Err(ApiError::bad_request("missing_region"));
+    }
+    if let Some(allowed_regions) = &entitlements.allowed_regions {
+        if !requested_region.is_empty() && !allowed_regions.iter().any(|r| r == &requested_region) {
+            return Err(ApiError::bad_request("region_not_allowed_by_plan"));
+        }
+    }
 
     let device = {
         let devices_map = state.devices_by_customer.read().await;
@@ -721,13 +858,21 @@ async fn start_session(
     }
     .ok_or_else(|| ApiError::bad_request("unknown_device"))?;
 
+    if entitlements.max_active_sessions > 1 {
+        warn!(
+            customer_id=%customer_id,
+            max_active_sessions=entitlements.max_active_sessions,
+            "plan allows >1 active sessions but current core contract supports single-session semantics",
+        );
+    }
+
     let requested_session_key = format!("sess_{}", Uuid::new_v4().simple());
     let outcome = state
         .session_store
         .start_session(
             customer_id,
             device.id,
-            payload.region.clone(),
+            requested_region.clone(),
             requested_session_key.clone(),
             payload.reconnect_session_key.as_deref(),
         )
@@ -745,7 +890,8 @@ async fn start_session(
         }
         StartSessionOutcome::Reconnected(existing_row) => {
             let selected_node =
-                resolve_node_hint(&state, existing_row.region.as_str(), payload.node_hint).await?;
+                resolve_node_selection(&state, &payload, Some(existing_row.region.as_str()))
+                    .await?;
             let runtime_sessions = state.runtime_sessions_by_customer.read().await;
             if let Some(existing) = runtime_sessions.get(&customer_id) {
                 return Ok(Json(StartSessionResponse::Active {
@@ -764,7 +910,7 @@ async fn start_session(
                 device_id: device.id.to_string(),
                 device_public_key: device.public_key,
                 region: existing_row.region.clone(),
-                node_hint: maybe_uuid_to_string(selected_node),
+                node_hint: maybe_uuid_to_string(selected_node.map(|n| n.id)),
             };
             let connect_response = {
                 let mut client = state.core_client.lock().await;
@@ -797,15 +943,20 @@ async fn start_session(
         }
         StartSessionOutcome::Created(created_row) => {
             let selected_node =
-                resolve_node_hint(&state, payload.region.as_str(), payload.node_hint).await?;
+                resolve_node_selection(&state, &payload, Some(created_row.region.as_str())).await?;
+            let effective_region = selected_node
+                .as_ref()
+                .map(|n| n.region.clone())
+                .or_else(|| payload.region.clone())
+                .unwrap_or_else(|| created_row.region.clone());
             let request = ConnectRequest {
                 request_id: Uuid::new_v4().to_string(),
                 session_key: created_row.session_key.clone(),
                 customer_id: customer_id.to_string(),
                 device_id: device.id.to_string(),
                 device_public_key: device.public_key,
-                region: payload.region.clone(),
-                node_hint: maybe_uuid_to_string(selected_node),
+                region: effective_region.clone(),
+                node_hint: maybe_uuid_to_string(selected_node.map(|n| n.id)),
             };
 
             let connect_response = {
@@ -826,15 +977,15 @@ async fn start_session(
                 customer_id,
                 ActiveSession {
                     session_key: created_row.session_key.clone(),
-                    region: payload.region.clone(),
+                    region: effective_region.clone(),
                     config: config.clone(),
                 },
             );
-            info!(%customer_id, session_key=%created_row.session_key, region=%payload.region, "session started");
+            info!(%customer_id, session_key=%created_row.session_key, region=%effective_region, "session started");
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: created_row.session_key,
-                region: payload.region,
+                region: effective_region,
                 config,
             }));
         }
@@ -1072,21 +1223,57 @@ fn issue_access_token(
     )
 }
 
-async fn resolve_node_hint(
+async fn resolve_node_selection(
     state: &Arc<AppState>,
-    region: &str,
-    requested_hint: Option<Uuid>,
-) -> Result<Option<Uuid>, ApiError> {
+    payload: &StartSessionRequest,
+    default_region: Option<&str>,
+) -> Result<Option<NodeRecord>, ApiError> {
+    let requested_hint = payload.node_hint;
     if let Some(hint) = requested_hint {
-        return Ok(Some(hint));
+        let region = payload
+            .region
+            .clone()
+            .or_else(|| default_region.map(ToString::to_string))
+            .unwrap_or_default();
+        return Ok(Some(NodeRecord {
+            id: hint,
+            region,
+            country_code: payload
+                .country_code
+                .clone()
+                .unwrap_or_else(|| "US".to_string())
+                .to_uppercase(),
+            city_code: payload.city_code.clone(),
+            pool: payload
+                .pool
+                .clone()
+                .unwrap_or_else(|| "general".to_string()),
+            provider: "hint".to_string(),
+            endpoint_host: String::new(),
+            endpoint_port: 0,
+            healthy: true,
+            active_peer_count: 0,
+            capacity_peers: i64::MAX,
+            updated_at: Utc::now(),
+        }));
     }
 
+    let criteria = NodeSelectionCriteria {
+        region: payload
+            .region
+            .clone()
+            .or_else(|| default_region.map(ToString::to_string))
+            .filter(|v| !v.trim().is_empty()),
+        country_code: payload.country_code.clone().map(|v| v.to_uppercase()),
+        city_code: payload.city_code.clone(),
+        pool: payload.pool.clone(),
+    };
     let selected = state
         .node_store
-        .select_node(region, state.node_freshness_secs)
+        .select_node(&criteria, state.node_freshness_secs)
         .await?;
     if selected.is_none() && state.node_store.requires_selection() {
-        return Err(ApiError::bad_request("no_nodes_available_in_region"));
+        return Err(ApiError::bad_request("no_nodes_available_for_selection"));
     }
 
     Ok(selected)
@@ -1133,6 +1320,14 @@ fn map_token_repo_error(err: TokenRepoError) -> ApiError {
 fn map_node_repo_error(err: NodeRepoError) -> ApiError {
     match err {
         NodeRepoError::Database(_) => ApiError::service_unavailable("node_store_failed"),
+    }
+}
+
+fn map_subscription_repo_error(err: SubscriptionRepoError) -> ApiError {
+    match err {
+        SubscriptionRepoError::Database(_) => {
+            ApiError::service_unavailable("subscription_store_failed")
+        }
     }
 }
 
@@ -1288,6 +1483,8 @@ mod tests {
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(HashMap::new()),
             token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
             node_freshness_secs: 60,
         };
 
@@ -1324,6 +1521,8 @@ mod tests {
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(revoked),
             token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
             node_freshness_secs: 60,
         };
 
@@ -1366,6 +1565,8 @@ mod tests {
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(revoked),
             token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
             node_freshness_secs: 60,
         };
 
@@ -1395,11 +1596,15 @@ mod tests {
             NodeRecord {
                 id: stale_id,
                 region: "us-west1".to_string(),
+                country_code: "US".to_string(),
+                city_code: Some("SFO".to_string()),
+                pool: "general".to_string(),
                 provider: "gcp".to_string(),
                 endpoint_host: "stale.example.com".to_string(),
                 endpoint_port: 51820,
                 healthy: true,
                 active_peer_count: 0,
+                capacity_peers: 100,
                 updated_at: Utc::now() - Duration::seconds(120),
             },
         );
@@ -1408,11 +1613,15 @@ mod tests {
             NodeRecord {
                 id: fresh_busy_id,
                 region: "us-west1".to_string(),
+                country_code: "US".to_string(),
+                city_code: Some("SFO".to_string()),
+                pool: "general".to_string(),
                 provider: "gcp".to_string(),
                 endpoint_host: "busy.example.com".to_string(),
                 endpoint_port: 51820,
                 healthy: true,
                 active_peer_count: 5,
+                capacity_peers: 100,
                 updated_at: Utc::now(),
             },
         );
@@ -1421,20 +1630,32 @@ mod tests {
             NodeRecord {
                 id: fresh_best_id,
                 region: "us-west1".to_string(),
+                country_code: "US".to_string(),
+                city_code: Some("SFO".to_string()),
+                pool: "general".to_string(),
                 provider: "gcp".to_string(),
                 endpoint_host: "best.example.com".to_string(),
                 endpoint_port: 51820,
                 healthy: true,
                 active_peer_count: 2,
+                capacity_peers: 100,
                 updated_at: Utc::now(),
             },
         );
 
         let store = NodeStore::InMemory(Mutex::new(nodes));
         let selected = store
-            .select_node("us-west1", 60)
+            .select_node(
+                &NodeSelectionCriteria {
+                    region: Some("us-west1".to_string()),
+                    country_code: Some("US".to_string()),
+                    city_code: Some("SFO".to_string()),
+                    pool: Some("general".to_string()),
+                },
+                60,
+            )
             .await
             .expect("select node");
-        assert_eq!(selected, Some(fresh_best_id));
+        assert_eq!(selected.map(|n| n.id), Some(fresh_best_id));
     }
 }
