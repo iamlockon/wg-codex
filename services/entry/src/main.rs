@@ -5,7 +5,7 @@ mod postgres_session_repo;
 mod session_repo;
 mod token_repo;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
         allow_legacy_customer_header: std::env::var("APP_ALLOW_LEGACY_CUSTOMER_HEADER")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(true),
-        revoked_token_ids: Mutex::new(HashSet::new()),
+        revoked_token_ids: Mutex::new(HashMap::new()),
         token_store,
     });
 
@@ -131,7 +131,7 @@ struct AppState {
     admin_api_token: Option<String>,
     jwt_keys: JwtKeyStore,
     allow_legacy_customer_header: bool,
-    revoked_token_ids: Mutex<HashSet<String>>,
+    revoked_token_ids: Mutex<HashMap<String, usize>>,
     token_store: Option<PostgresTokenRepository>,
 }
 
@@ -516,7 +516,7 @@ async fn logout(
         .revoked_token_ids
         .lock()
         .await
-        .insert(token_id.clone());
+        .insert(token_id.clone(), token_exp);
     if let Some(repo) = &state.token_store {
         let expires_at = chrono::DateTime::<Utc>::from_timestamp(token_exp as i64, 0)
             .ok_or_else(|| ApiError::bad_request("token_invalid_exp"))?;
@@ -925,9 +925,13 @@ async fn auth_context_from_request(
         if let Some(token) = raw.strip_prefix("Bearer ") {
             let ctx = auth_context_from_bearer(token, &state.jwt_keys)?;
             if let Some(token_id) = ctx.token_id.as_deref() {
-                if state.revoked_token_ids.lock().await.contains(token_id) {
+                let now = Utc::now().timestamp() as usize;
+                let mut revoked = state.revoked_token_ids.lock().await;
+                revoked.retain(|_, exp| *exp > now);
+                if revoked.get(token_id).is_some() {
                     return Err(ApiError::unauthorized("revoked_access_token"));
                 }
+                drop(revoked);
                 if let Some(repo) = &state.token_store {
                     if repo
                         .is_revoked(token_id)
@@ -938,7 +942,7 @@ async fn auth_context_from_request(
                             .revoked_token_ids
                             .lock()
                             .await
-                            .insert(token_id.to_string());
+                            .insert(token_id.to_string(), ctx.token_exp.unwrap_or(now + 900));
                         return Err(ApiError::unauthorized("revoked_access_token"));
                     }
                 }
@@ -1259,7 +1263,7 @@ mod tests {
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
-            revoked_token_ids: Mutex::new(HashSet::new()),
+            revoked_token_ids: Mutex::new(HashMap::new()),
             token_store: None,
         };
 
@@ -1277,8 +1281,8 @@ mod tests {
         let customer_id = Uuid::new_v4();
         let token = issue_access_token(customer_id, &keys).expect("token");
         let ctx = auth_context_from_bearer(&token, &keys).expect("ctx");
-        let mut revoked = HashSet::new();
-        revoked.insert(ctx.token_id.expect("jti"));
+        let mut revoked = HashMap::new();
+        revoked.insert(ctx.token_id.expect("jti"), usize::MAX);
 
         let state = AppState {
             runtime_sessions_by_customer: RwLock::new(HashMap::new()),

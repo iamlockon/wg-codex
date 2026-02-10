@@ -57,6 +57,7 @@
   - Postgres-backed revocation checks/writes in `services/entry/src/token_repo.rs`,
   - in-memory revoked cache remains for fast-path checks.
 - Expired revocation cleanup loop added in `entry` when Postgres token store is enabled.
+- In-memory revoked cache now stores `jti -> exp` and prunes expired entries during auth checks.
 - Added structured security/audit logs for OAuth login, logout, session start/reconnect/conflict/terminate.
 
 ## Not Production-Ready Yet
