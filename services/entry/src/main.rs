@@ -28,6 +28,7 @@ use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
 use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
+use subtle::ConstantTimeEq;
 use tokio::sync::{Mutex, RwLock};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{info, warn};
@@ -907,7 +908,9 @@ fn require_admin_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiE
         .to_str()
         .map_err(|_| ApiError::unauthorized("invalid_x_admin_token"))?;
 
-    if provided != configured {
+    if provided.len() != configured.len()
+        || provided.as_bytes().ct_eq(configured.as_bytes()).unwrap_u8() != 1
+    {
         return Err(ApiError::unauthorized("invalid_admin_token"));
     }
 
