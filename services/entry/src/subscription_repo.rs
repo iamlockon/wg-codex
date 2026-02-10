@@ -40,7 +40,7 @@ impl PostgresSubscriptionRepository {
         customer_id: Uuid,
     ) -> Result<Entitlements, SubscriptionRepoError> {
         let row = sqlx::query_as::<_, EntitlementsDbRow>(
-            "SELECT p.max_active_sessions, p.max_devices, p.allowed_regions
+            "SELECT LEAST(p.max_active_sessions, 1) AS max_active_sessions, p.max_devices, p.allowed_regions
              FROM customer_subscriptions s
              JOIN plans p ON p.id = s.plan_id
              WHERE s.customer_id = $1

@@ -865,14 +865,6 @@ async fn start_session(
     }
     .ok_or_else(|| ApiError::bad_request("unknown_device"))?;
 
-    if entitlements.max_active_sessions > 1 {
-        warn!(
-            customer_id=%customer_id,
-            max_active_sessions=entitlements.max_active_sessions,
-            "plan allows >1 active sessions but current core contract supports single-session semantics",
-        );
-    }
-
     let requested_session_key = format!("sess_{}", Uuid::new_v4().simple());
     let outcome = state
         .session_store

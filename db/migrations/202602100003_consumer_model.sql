@@ -3,7 +3,7 @@
 CREATE TABLE plans (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code TEXT NOT NULL UNIQUE,
-    max_active_sessions INTEGER NOT NULL CHECK (max_active_sessions > 0),
+    max_active_sessions INTEGER NOT NULL CHECK (max_active_sessions = 1),
     max_devices INTEGER NOT NULL CHECK (max_devices > 0),
     allowed_regions TEXT[],
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

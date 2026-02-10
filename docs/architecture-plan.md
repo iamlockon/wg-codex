@@ -21,9 +21,9 @@
 
 ### `entry` service
 - Public APIs for OAuth login, device management, and session lifecycle.
-- Plan/entitlement enforcement (concurrency limits, allowed regions/features).
+- Plan/entitlement enforcement (device limits, allowed regions/features).
 - Node pool selection by user intent (`fastest`, `country`, `city`, `streaming profile`, manual node where allowed).
-- Session orchestration and conflict/reconnect behavior.
+- Session orchestration with a strict one-customer-one-active-session policy and reconnect behavior.
 - Privacy-aware storage of customer, device, session, and audit metadata.
 
 ### `core` service
@@ -44,7 +44,7 @@
 1. Client calls `entry` `POST /v1/sessions/start` with `device_id`, selection hint (`region` and optional `node_hint`), and optional reconnect token.
 2. `entry` validates bearer token, plan eligibility, and device ownership.
 3. `entry` applies concurrency policy for the plan:
-   - If at limit, return conflict payload including existing session key(s) according to policy.
+   - If an active session exists and reconnect token does not match, return conflict with existing `session_key`.
    - If reconnect token matches an active session, reuse session contract.
 4. `entry` selects node from fresh, healthy pool in requested geo bucket.
 5. `entry` calls `core.ConnectDevice` via gRPC.
@@ -70,7 +70,7 @@ Current core tables (already present):
 
 Needed additions for consumer VPN:
 - `plans` and `customer_subscriptions`
-- `plan_entitlements` (max concurrent sessions/devices, premium features)
+- `plan_entitlements` (device limits and regional feature gates)
 - `node_pools` and `node_pool_membership` (general, low-latency, streaming-optimized)
 - `session_events` (connect/disconnect/reconnect/fail with bounded retention)
 - optional `egress_ips` mapping for managed pool observability
@@ -140,7 +140,6 @@ What can stay:
 - WireGuard kernel/UAPI integration direction.
 
 What must change:
-- Replace hard-coded single-session policy with plan-driven concurrency policy.
 - Introduce geo/pool semantics beyond raw region.
 - Add consumer subscription/entitlement checks in session start flow.
 - Tighten privacy controls and retention defaults as first-class requirements.
@@ -149,7 +148,7 @@ What must change:
 ## Delivery Phases (Updated)
 1. Product model migration: subscription and entitlement schema + APIs.
 2. Node pool model: region/country/city and profile-based selection.
-3. Session policy migration: configurable concurrent session/device limits.
+3. Session policy lock: keep strict one-customer-one-active-session semantics while applying plan device/region controls.
 4. Privacy hardening: retention, redaction, and audit policy enforcement.
 5. Security hardening: mTLS rollout, secret manager integration, admin auth hardening.
 6. Dataplane maturity: nft-native firewall path and capacity guardrails.

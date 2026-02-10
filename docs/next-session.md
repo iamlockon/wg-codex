@@ -78,7 +78,7 @@
   - `CORE_REQUIRE_TLS` in `core` server startup.
 
 ## Not Production-Ready Yet
-- Core control-plane still supports a single active session per customer, so plan `max_active_sessions > 1` is not yet realizable.
+- Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
 - Subscription lifecycle management APIs/backoffice flows are not implemented yet (only entitlement reads are wired).
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement is opt-in via env flags; not defaulted on in all environments yet.
@@ -86,8 +86,8 @@
 - Remaining shell-based NAT path still exists (`iptables`/`nft` command execution).
 
 ## Priority Next Steps
-1. Refactor `core`/gRPC contract to support multi-session-per-customer semantics (or explicit per-device session APIs), then align `entry` session store/indexes.
-2. Add integration tests against real Postgres + migrations for subscription entitlements, session lifecycle, node selection, and token revocation flows.
+1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
+2. Add subscription lifecycle/admin APIs (assign/update customer plan and status) and validate status before session start.
 3. Move TLS materials and secrets to GCP Secret Manager + IAM policies; turn `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` on by default in deployed environments.
 4. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 5. Add privacy controls: log redaction guarantees and auditable policy toggles on top of retention cleanup.
