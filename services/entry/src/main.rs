@@ -252,9 +252,12 @@ impl NodeStore {
         match self {
             NodeStore::InMemory(store) => {
                 let store = store.lock().await;
+                let now = Utc::now();
                 Ok(store
                     .values()
-                    .filter(|n| n.region == region && n.healthy)
+                    .filter(|n| {
+                        n.region == region && n.healthy && (now - n.updated_at).num_seconds() <= 60
+                    })
                     .min_by_key(|n| n.active_peer_count)
                     .map(|n| n.id))
             }
@@ -296,6 +299,7 @@ impl NodeStore {
                     endpoint_port: input.endpoint_port,
                     healthy: input.healthy,
                     active_peer_count: input.active_peer_count,
+                    updated_at: Utc::now(),
                 };
                 store.insert(record.id, record.clone());
                 Ok(record)
@@ -316,6 +320,7 @@ impl NodeStore {
                 if let Some(node) = store.get_mut(&node_id) {
                     node.healthy = healthy;
                     node.active_peer_count = active_peer_count;
+                    node.updated_at = Utc::now();
                     return Ok(Some(node.clone()));
                 }
                 Ok(None)
@@ -598,6 +603,7 @@ struct NodeResponse {
     endpoint_port: u16,
     healthy: bool,
     active_peer_count: i64,
+    updated_at: chrono::DateTime<Utc>,
 }
 
 impl From<NodeRecord> for NodeResponse {
@@ -610,6 +616,7 @@ impl From<NodeRecord> for NodeResponse {
             endpoint_port: value.endpoint_port,
             healthy: value.healthy,
             active_peer_count: value.active_peer_count,
+            updated_at: value.updated_at,
         }
     }
 }

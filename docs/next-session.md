@@ -28,6 +28,7 @@
   - `POST /v1/admin/nodes` creates/updates node metadata.
   - `POST /v1/internal/nodes/health` updates `healthy` and `active_peer_count`.
   - These endpoints require `x-admin-token` matching `ADMIN_API_TOKEN`.
+- Node selection now requires fresh heartbeat data (`updated_at` within 60s) in addition to `healthy=true`.
 - `core` now has dataplane scaffolding with:
   - pluggable dataplane (`noop` and Linux shell-backed),
   - IPv4 pool allocation/release,

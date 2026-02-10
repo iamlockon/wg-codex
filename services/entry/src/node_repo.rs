@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use thiserror::Error;
 use uuid::Uuid;
@@ -11,6 +12,7 @@ pub struct NodeRecord {
     pub endpoint_port: u16,
     pub healthy: bool,
     pub active_peer_count: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,7 @@ impl PostgresNodeRepository {
              FROM vpn_nodes
              WHERE region = $1
                AND healthy = true
+               AND updated_at > now() - interval '60 seconds'
              ORDER BY active_peer_count ASC, updated_at DESC
              LIMIT 1",
         )
@@ -57,7 +60,7 @@ impl PostgresNodeRepository {
 
     pub async fn list_nodes(&self) -> Result<Vec<NodeRecord>, NodeRepoError> {
         let rows = sqlx::query_as::<_, NodeDbRow>(
-            "SELECT id, region, provider, endpoint_host, endpoint_port, healthy, active_peer_count
+            "SELECT id, region, provider, endpoint_host, endpoint_port, healthy, active_peer_count, updated_at
              FROM vpn_nodes
              ORDER BY region ASC, active_peer_count ASC, updated_at DESC",
         )
@@ -90,7 +93,7 @@ impl PostgresNodeRepository {
                  healthy = EXCLUDED.healthy,
                  active_peer_count = EXCLUDED.active_peer_count,
                  updated_at = now()
-             RETURNING id, region, provider, endpoint_host, endpoint_port, healthy, active_peer_count",
+             RETURNING id, region, provider, endpoint_host, endpoint_port, healthy, active_peer_count, updated_at",
         )
         .bind(input.id)
         .bind(input.region)
@@ -117,7 +120,7 @@ impl PostgresNodeRepository {
                  active_peer_count = $3,
                  updated_at = now()
              WHERE id = $1
-             RETURNING id, region, provider, endpoint_host, endpoint_port, healthy, active_peer_count",
+             RETURNING id, region, provider, endpoint_host, endpoint_port, healthy, active_peer_count, updated_at",
         )
         .bind(node_id)
         .bind(healthy)
@@ -138,6 +141,7 @@ struct NodeDbRow {
     endpoint_port: i32,
     healthy: bool,
     active_peer_count: i64,
+    updated_at: DateTime<Utc>,
 }
 
 impl From<NodeDbRow> for NodeRecord {
@@ -150,6 +154,7 @@ impl From<NodeDbRow> for NodeRecord {
             endpoint_port: value.endpoint_port as u16,
             healthy: value.healthy,
             active_peer_count: value.active_peer_count,
+            updated_at: value.updated_at,
         }
     }
 }
