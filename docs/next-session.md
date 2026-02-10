@@ -42,6 +42,7 @@
   - optional client TLS and client cert in `entry`.
 - OAuth callback now issues signed JWT access tokens (HS256) instead of dev string placeholders.
 - Customer APIs now accept `Authorization: Bearer <token>` (signed by `APP_JWT_SIGNING_KEY`) with legacy `x-customer-id` fallback.
+- Legacy `x-customer-id` fallback is now configurable via `APP_ALLOW_LEGACY_CUSTOMER_HEADER` (set false to require bearer token).
 - JWT key rotation model added:
   - `APP_JWT_SIGNING_KEYS` as comma-separated `kid:secret` list,
   - optional `APP_JWT_ACTIVE_KID` to choose issuance key,

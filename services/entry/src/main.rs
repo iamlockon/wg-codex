@@ -80,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
         node_store,
         admin_api_token: std::env::var("ADMIN_API_TOKEN").ok(),
         jwt_keys,
+        allow_legacy_customer_header: std::env::var("APP_ALLOW_LEGACY_CUSTOMER_HEADER")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true),
     });
 
     let app = Router::new()
@@ -114,6 +117,7 @@ struct AppState {
     node_store: NodeStore,
     admin_api_token: Option<String>,
     jwt_keys: JwtKeyStore,
+    allow_legacy_customer_header: bool,
 }
 
 #[derive(Clone)]
@@ -852,6 +856,10 @@ fn customer_id_from_request(state: &AppState, headers: &HeaderMap) -> Result<Uui
         }
     }
 
+    if !state.allow_legacy_customer_header {
+        return Err(ApiError::unauthorized("missing_bearer_token"));
+    }
+
     customer_id_from_headers(headers)
 }
 
@@ -1120,5 +1128,29 @@ mod tests {
         let err = customer_id_from_bearer("bad-token", &test_keys()).expect_err("should fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "invalid_access_token");
+    }
+
+    #[test]
+    fn customer_id_from_request_requires_bearer_when_legacy_disabled() {
+        let state = AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+        };
+
+        let headers = HeaderMap::new();
+        let err = customer_id_from_request(&state, &headers).expect_err("should fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, "missing_bearer_token");
     }
 }
