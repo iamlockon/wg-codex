@@ -118,8 +118,25 @@ impl CoreService {
         endpoint_template: String,
         server_public_key: String,
     ) -> Self {
+        Self::new_with_pool(
+            dataplane,
+            endpoint_template,
+            server_public_key,
+            Ipv4Pool::new([10, 90, 0], 24, 2, 254),
+        )
+    }
+
+    fn new_with_pool(
+        dataplane: Arc<dyn DataPlane>,
+        endpoint_template: String,
+        server_public_key: String,
+        ip_pool: Ipv4Pool,
+    ) -> Self {
         Self {
-            runtime: Arc::new(RwLock::new(CoreRuntime::default())),
+            runtime: Arc::new(RwLock::new(CoreRuntime {
+                sessions: HashMap::new(),
+                ip_pool,
+            })),
             dataplane,
             endpoint_template,
             server_public_key,
@@ -269,6 +286,7 @@ impl ControlPlane for Arc<CoreService> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tonic::async_trait;
 
     fn connect_request(customer_id: Uuid) -> ConnectRequest {
         ConnectRequest {
@@ -288,6 +306,49 @@ mod tests {
             "{region}.gcp.vpn.example.net:51820".to_string(),
             "server-pub".to_string(),
         ))
+    }
+
+    fn test_service_with_pool(first_host: u8, last_host: u8) -> Arc<CoreService> {
+        Arc::new(CoreService::new_with_pool(
+            Arc::new(NoopDataPlane),
+            "{region}.gcp.vpn.example.net:51820".to_string(),
+            "server-pub".to_string(),
+            Ipv4Pool::new([10, 90, 0], 24, first_host, last_host),
+        ))
+    }
+
+    struct FailingConnectDataPlane;
+    #[async_trait]
+    impl DataPlane for FailingConnectDataPlane {
+        async fn bootstrap(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn connect_peer(&self, _peer: &PeerSpec) -> Result<(), String> {
+            Err("connect boom".to_string())
+        }
+        async fn disconnect_peer(&self, _peer: &PeerSpec) -> Result<(), String> {
+            Ok(())
+        }
+        async fn reconcile(&self, _desired_peers: &[PeerSpec]) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct FailingDisconnectDataPlane;
+    #[async_trait]
+    impl DataPlane for FailingDisconnectDataPlane {
+        async fn bootstrap(&self) -> Result<(), String> {
+            Ok(())
+        }
+        async fn connect_peer(&self, _peer: &PeerSpec) -> Result<(), String> {
+            Ok(())
+        }
+        async fn disconnect_peer(&self, _peer: &PeerSpec) -> Result<(), String> {
+            Err("disconnect boom".to_string())
+        }
+        async fn reconcile(&self, _desired_peers: &[PeerSpec]) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -380,6 +441,71 @@ mod tests {
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert_eq!(err.message(), "customer_id");
+    }
+
+    #[tokio::test]
+    async fn connect_returns_internal_when_dataplane_fails() {
+        let service = Arc::new(CoreService::new(
+            Arc::new(FailingConnectDataPlane),
+            "{region}.gcp.vpn.example.net:51820".to_string(),
+            "server-pub".to_string(),
+        ));
+
+        let err = service
+            .connect_device(Request::new(connect_request(Uuid::new_v4())))
+            .await
+            .expect_err("connect should fail");
+        assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(err.message().contains("dataplane_connect_failed"));
+    }
+
+    #[tokio::test]
+    async fn disconnect_failure_keeps_session_active() {
+        let service = Arc::new(CoreService::new(
+            Arc::new(FailingDisconnectDataPlane),
+            "{region}.gcp.vpn.example.net:51820".to_string(),
+            "server-pub".to_string(),
+        ));
+        let customer_id = Uuid::new_v4();
+        let _ = service
+            .connect_device(Request::new(connect_request(customer_id)))
+            .await
+            .expect("connect");
+
+        let err = service
+            .disconnect_device(Request::new(DisconnectRequest {
+                request_id: Uuid::new_v4().to_string(),
+                session_key: "sess_abc".to_string(),
+                customer_id: customer_id.to_string(),
+            }))
+            .await
+            .expect_err("disconnect should fail");
+        assert_eq!(err.code(), tonic::Code::Internal);
+
+        let still = service
+            .get_session(Request::new(GetSessionRequest {
+                customer_id: customer_id.to_string(),
+            }))
+            .await
+            .expect("lookup")
+            .into_inner();
+        assert!(still.active);
+    }
+
+    #[tokio::test]
+    async fn connect_returns_resource_exhausted_when_pool_empty() {
+        let service = test_service_with_pool(2, 2);
+        let first = service
+            .connect_device(Request::new(connect_request(Uuid::new_v4())))
+            .await;
+        assert!(first.is_ok());
+
+        let second = service
+            .connect_device(Request::new(connect_request(Uuid::new_v4())))
+            .await
+            .expect_err("second should fail");
+        assert_eq!(second.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(second.message(), "ip_pool_exhausted");
     }
 
     #[tokio::test]
