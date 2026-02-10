@@ -4,7 +4,7 @@ mod oauth_repo;
 mod postgres_session_repo;
 mod session_repo;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -84,11 +84,13 @@ async fn main() -> anyhow::Result<()> {
         allow_legacy_customer_header: std::env::var("APP_ALLOW_LEGACY_CUSTOMER_HEADER")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(true),
+        revoked_token_ids: Mutex::new(HashSet::new()),
     });
 
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/auth/oauth/:provider/callback", post(oauth_callback))
+        .route("/v1/auth/logout", post(logout))
         .route("/v1/devices", post(register_device).get(list_devices))
         .route("/v1/sessions/start", post(start_session))
         .route("/v1/sessions/current", get(current_session))
@@ -119,6 +121,12 @@ struct AppState {
     admin_api_token: Option<String>,
     jwt_keys: JwtKeyStore,
     allow_legacy_customer_header: bool,
+    revoked_token_ids: Mutex<HashSet<String>>,
+}
+
+struct AuthContext {
+    customer_id: Uuid,
+    token_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -469,6 +477,18 @@ async fn oauth_callback(
     }))
 }
 
+async fn logout(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let ctx = auth_context_from_request(&state, &headers).await?;
+    let token_id = ctx
+        .token_id
+        .ok_or_else(|| ApiError::bad_request("token_missing_jti"))?;
+    state.revoked_token_ids.lock().await.insert(token_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(Deserialize)]
 struct RegisterDeviceRequest {
     name: String,
@@ -480,7 +500,7 @@ async fn register_device(
     headers: HeaderMap,
     Json(payload): Json<RegisterDeviceRequest>,
 ) -> Result<Json<Device>, ApiError> {
-    let customer_id = customer_id_from_request(&state, &headers)?;
+    let customer_id = customer_id_from_request(&state, &headers).await?;
     if payload.name.trim().is_empty() || payload.public_key.trim().is_empty() {
         return Err(ApiError::bad_request("invalid_device_payload"));
     }
@@ -502,7 +522,7 @@ async fn list_devices(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<Device>>, ApiError> {
-    let customer_id = customer_id_from_request(&state, &headers)?;
+    let customer_id = customer_id_from_request(&state, &headers).await?;
     let devices_map = state.devices_by_customer.read().await;
     Ok(Json(
         devices_map
@@ -633,7 +653,7 @@ async fn start_session(
     headers: HeaderMap,
     Json(payload): Json<StartSessionRequest>,
 ) -> Result<Json<StartSessionResponse>, ApiError> {
-    let customer_id = customer_id_from_request(&state, &headers)?;
+    let customer_id = customer_id_from_request(&state, &headers).await?;
 
     let device = {
         let devices_map = state.devices_by_customer.read().await;
@@ -773,7 +793,7 @@ async fn current_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<CurrentSessionResponse>, ApiError> {
-    let customer_id = customer_id_from_request(&state, &headers)?;
+    let customer_id = customer_id_from_request(&state, &headers).await?;
 
     let response = {
         let mut client = state.core_client.lock().await;
@@ -820,7 +840,7 @@ async fn terminate_session(
     headers: HeaderMap,
     Path(session_key): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let customer_id = customer_id_from_request(&state, &headers)?;
+    let customer_id = customer_id_from_request(&state, &headers).await?;
 
     state
         .session_store
@@ -847,13 +867,26 @@ async fn terminate_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn customer_id_from_request(state: &AppState, headers: &HeaderMap) -> Result<Uuid, ApiError> {
+async fn customer_id_from_request(state: &AppState, headers: &HeaderMap) -> Result<Uuid, ApiError> {
+    Ok(auth_context_from_request(state, headers).await?.customer_id)
+}
+
+async fn auth_context_from_request(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<AuthContext, ApiError> {
     if let Some(auth) = headers.get("authorization") {
         let raw = auth
             .to_str()
             .map_err(|_| ApiError::unauthorized("invalid_authorization_header"))?;
         if let Some(token) = raw.strip_prefix("Bearer ") {
-            return customer_id_from_bearer(token, &state.jwt_keys);
+            let ctx = auth_context_from_bearer(token, &state.jwt_keys)?;
+            if let Some(token_id) = ctx.token_id.as_deref() {
+                if state.revoked_token_ids.lock().await.contains(token_id) {
+                    return Err(ApiError::unauthorized("revoked_access_token"));
+                }
+            }
+            return Ok(ctx);
         }
     }
 
@@ -861,10 +894,13 @@ fn customer_id_from_request(state: &AppState, headers: &HeaderMap) -> Result<Uui
         return Err(ApiError::unauthorized("missing_bearer_token"));
     }
 
-    customer_id_from_headers(headers)
+    Ok(AuthContext {
+        customer_id: customer_id_from_headers(headers)?,
+        token_id: None,
+    })
 }
 
-fn customer_id_from_bearer(token: &str, keys: &JwtKeyStore) -> Result<Uuid, ApiError> {
+fn auth_context_from_bearer(token: &str, keys: &JwtKeyStore) -> Result<AuthContext, ApiError> {
     let header =
         decode_header(token).map_err(|_| ApiError::unauthorized("invalid_access_token"))?;
     let kid = header
@@ -884,7 +920,11 @@ fn customer_id_from_bearer(token: &str, keys: &JwtKeyStore) -> Result<Uuid, ApiE
     )
     .map_err(|_| ApiError::unauthorized("invalid_access_token"))?;
 
-    Uuid::parse_str(&decoded.claims.sub).map_err(|_| ApiError::unauthorized("invalid_customer_id"))
+    Ok(AuthContext {
+        customer_id: Uuid::parse_str(&decoded.claims.sub)
+            .map_err(|_| ApiError::unauthorized("invalid_customer_id"))?,
+        token_id: decoded.claims.jti,
+    })
 }
 
 fn customer_id_from_headers(headers: &HeaderMap) -> Result<Uuid, ApiError> {
@@ -921,6 +961,7 @@ fn require_admin_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiE
 struct AccessTokenClaims {
     sub: String,
     iss: String,
+    jti: Option<String>,
     iat: usize,
     exp: usize,
 }
@@ -936,6 +977,7 @@ fn issue_access_token(
     let claims = AccessTokenClaims {
         sub: customer_id.to_string(),
         iss: "entry".to_string(),
+        jti: Some(Uuid::new_v4().to_string()),
         iat: now,
         exp: now + 15 * 60,
     };
@@ -1115,6 +1157,7 @@ mod tests {
         .expect("decoded");
         assert_eq!(decoded.claims.sub, customer_id.to_string());
         assert_eq!(decoded.claims.iss, "entry");
+        assert!(decoded.claims.jti.is_some());
     }
 
     #[test]
@@ -1122,19 +1165,21 @@ mod tests {
         let customer_id = Uuid::new_v4();
         let keys = test_keys();
         let token = issue_access_token(customer_id, &keys).expect("token");
-        let parsed = customer_id_from_bearer(&token, &keys).expect("parsed");
-        assert_eq!(parsed, customer_id);
+        let parsed = auth_context_from_bearer(&token, &keys).expect("parsed");
+        assert_eq!(parsed.customer_id, customer_id);
+        assert!(parsed.token_id.is_some());
     }
 
     #[test]
     fn customer_id_from_bearer_rejects_bad_token() {
-        let err = customer_id_from_bearer("bad-token", &test_keys()).expect_err("should fail");
+        let err = auth_context_from_bearer("bad-token", &test_keys()).expect_err("should fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "invalid_access_token");
     }
 
     #[test]
-    fn customer_id_from_request_requires_bearer_when_legacy_disabled() {
+    #[tokio::test]
+    async fn customer_id_from_request_requires_bearer_when_legacy_disabled() {
         let state = AppState {
             runtime_sessions_by_customer: RwLock::new(HashMap::new()),
             devices_by_customer: RwLock::new(HashMap::new()),
@@ -1149,11 +1194,53 @@ mod tests {
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashSet::new()),
         };
 
         let headers = HeaderMap::new();
-        let err = customer_id_from_request(&state, &headers).expect_err("should fail");
+        let err = customer_id_from_request(&state, &headers)
+            .await
+            .expect_err("should fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "missing_bearer_token");
+    }
+
+    #[tokio::test]
+    async fn auth_context_rejects_revoked_bearer_token() {
+        let keys = test_keys();
+        let customer_id = Uuid::new_v4();
+        let token = issue_access_token(customer_id, &keys).expect("token");
+        let ctx = auth_context_from_bearer(&token, &keys).expect("ctx");
+        let mut revoked = HashSet::new();
+        revoked.insert(ctx.token_id.expect("jti"));
+
+        let state = AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: keys,
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(revoked),
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("header"),
+        );
+
+        let err = auth_context_from_request(&state, &headers)
+            .await
+            .expect_err("revoked should fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, "revoked_access_token");
     }
 }

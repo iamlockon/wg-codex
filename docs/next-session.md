@@ -47,6 +47,10 @@
   - `APP_JWT_SIGNING_KEYS` as comma-separated `kid:secret` list,
   - optional `APP_JWT_ACTIVE_KID` to choose issuance key,
   - verification selects key by token header `kid`.
+- Token revocation support added:
+  - JWTs now include `jti`,
+  - `POST /v1/auth/logout` revokes current bearer token `jti`,
+  - bearer-authenticated API access rejects revoked tokens.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -58,7 +62,7 @@
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Add token revocation/session binding strategy (current JWTs are self-contained and short-lived only).
+4. Persist token revocation/session binding in Postgres (current revocation store is in-memory).
 5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 
 ## Open Risks / Watch Items
