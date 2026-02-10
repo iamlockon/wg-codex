@@ -1,3 +1,6 @@
+use futures_util::TryStreamExt;
+use ipnet::IpNet;
+use std::fs;
 use std::process::Command;
 use tokio::task;
 use tonic::async_trait;
@@ -80,6 +83,60 @@ impl LinuxShellDataPlane {
         let _ = Self::run(args);
     }
 
+    async fn configure_interface_via_netlink(&self) -> Result<(), String> {
+        let (connection, handle, _) =
+            rtnetlink::new_connection().map_err(|err| format!("netlink init failed: {err}"))?;
+        tokio::spawn(connection);
+
+        let mut links = handle
+            .link()
+            .get()
+            .match_name(self.cfg.iface.clone())
+            .execute();
+        let link = links
+            .try_next()
+            .await
+            .map_err(|err| format!("netlink link lookup failed: {err}"))?
+            .ok_or_else(|| format!("wireguard link {} not found", self.cfg.iface))?;
+        let ifindex = link.header.index;
+
+        let cidr: IpNet = self
+            .cfg
+            .interface_cidr
+            .parse()
+            .map_err(|err| format!("invalid interface cidr: {err}"))?;
+        match cidr {
+            IpNet::V4(v4) => {
+                let _ = handle
+                    .address()
+                    .add(ifindex, v4.addr().into(), v4.prefix_len())
+                    .execute()
+                    .await;
+            }
+            IpNet::V6(v6) => {
+                let _ = handle
+                    .address()
+                    .add(ifindex, v6.addr().into(), v6.prefix_len())
+                    .execute()
+                    .await;
+            }
+        }
+
+        handle
+            .link()
+            .set(ifindex)
+            .up()
+            .execute()
+            .await
+            .map_err(|err| format!("netlink set link up failed: {err}"))?;
+        Ok(())
+    }
+
+    fn enable_ipv4_forwarding(&self) -> Result<(), String> {
+        fs::write("/proc/sys/net/ipv4/ip_forward", b"1\n")
+            .map_err(|err| format!("set ip_forward failed: {err}"))
+    }
+
     fn ensure_nat_rule(&self) -> Result<(), String> {
         let check = Self::run(&[
             "iptables",
@@ -145,8 +202,8 @@ impl DataPlane for LinuxShellDataPlane {
             &self.cfg.private_key_path,
         ])?;
 
-        Self::run(&["ip", "link", "set", "up", "dev", &self.cfg.iface])?;
-        Self::run(&["sysctl", "-w", "net.ipv4.ip_forward=1"])?;
+        self.configure_interface_via_netlink().await?;
+        self.enable_ipv4_forwarding()?;
         self.ensure_nat_rule()?;
         Ok(())
     }

@@ -33,6 +33,8 @@
   - IPv4 pool allocation/release,
   - periodic reconciliation loop.
 - Linux dataplane now uses Rust-native WireGuard UAPI socket operations for peer add/remove (host bootstrap/NAT still shell-based).
+- Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
+- Remaining shell-managed host step is NAT rule management (`iptables`).
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,
@@ -51,7 +53,7 @@
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
 4. Implement signing-key rotation and key-ID based verification for `entry` tokens.
-5. Replace remaining shell-based host bootstrap/NAT with Rust-native netlink/firewall management.
+5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
