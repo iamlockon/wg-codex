@@ -18,7 +18,7 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
-use node_repo::{NodeRepoError, PostgresNodeRepository};
+use node_repo::{NodeRecord, NodeRepoError, PostgresNodeRepository, UpsertNodeInput};
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
             (
                 SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
                 IdentityStore::InMemory(Mutex::new(HashMap::new())),
-                NodeStore::InMemory,
+                NodeStore::InMemory(Mutex::new(HashMap::new())),
             )
         };
 
@@ -69,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         google_oidc: GoogleOidcConfig::from_env(),
         identity_store,
         node_store,
+        admin_api_token: std::env::var("ADMIN_API_TOKEN").ok(),
     });
 
     let app = Router::new()
@@ -77,6 +78,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/devices", post(register_device).get(list_devices))
         .route("/v1/sessions/start", post(start_session))
         .route("/v1/sessions/current", get(current_session))
+        .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
+        .route("/v1/internal/nodes/health", post(update_node_health))
         .route(
             "/v1/sessions/:session_key/terminate",
             post(terminate_session),
@@ -99,6 +102,7 @@ struct AppState {
     google_oidc: Option<GoogleOidcConfig>,
     identity_store: IdentityStore,
     node_store: NodeStore,
+    admin_api_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -119,7 +123,7 @@ enum IdentityStore {
 }
 
 enum NodeStore {
-    InMemory,
+    InMemory(Mutex<HashMap<Uuid, NodeRecord>>),
     Postgres(PostgresNodeRepository),
 }
 
@@ -150,7 +154,14 @@ impl IdentityStore {
 impl NodeStore {
     async fn select_node(&self, region: &str) -> Result<Option<Uuid>, ApiError> {
         match self {
-            NodeStore::InMemory => Ok(None),
+            NodeStore::InMemory(store) => {
+                let store = store.lock().await;
+                Ok(store
+                    .values()
+                    .filter(|n| n.region == region && n.healthy)
+                    .min_by_key(|n| n.active_peer_count)
+                    .map(|n| n.id))
+            }
             NodeStore::Postgres(repo) => {
                 repo.select_node(region).await.map_err(map_node_repo_error)
             }
@@ -159,6 +170,65 @@ impl NodeStore {
 
     fn requires_selection(&self) -> bool {
         matches!(self, NodeStore::Postgres(_))
+    }
+
+    async fn list_nodes(&self) -> Result<Vec<NodeRecord>, ApiError> {
+        match self {
+            NodeStore::InMemory(store) => {
+                let store = store.lock().await;
+                let mut nodes: Vec<NodeRecord> = store.values().cloned().collect();
+                nodes.sort_by(|a, b| {
+                    a.region
+                        .cmp(&b.region)
+                        .then_with(|| a.active_peer_count.cmp(&b.active_peer_count))
+                });
+                Ok(nodes)
+            }
+            NodeStore::Postgres(repo) => repo.list_nodes().await.map_err(map_node_repo_error),
+        }
+    }
+
+    async fn upsert_node(&self, input: UpsertNodeInput) -> Result<NodeRecord, ApiError> {
+        match self {
+            NodeStore::InMemory(store) => {
+                let mut store = store.lock().await;
+                let record = NodeRecord {
+                    id: input.id,
+                    region: input.region,
+                    provider: input.provider,
+                    endpoint_host: input.endpoint_host,
+                    endpoint_port: input.endpoint_port,
+                    healthy: input.healthy,
+                    active_peer_count: input.active_peer_count,
+                };
+                store.insert(record.id, record.clone());
+                Ok(record)
+            }
+            NodeStore::Postgres(repo) => repo.upsert_node(input).await.map_err(map_node_repo_error),
+        }
+    }
+
+    async fn update_node_health(
+        &self,
+        node_id: Uuid,
+        healthy: bool,
+        active_peer_count: i64,
+    ) -> Result<Option<NodeRecord>, ApiError> {
+        match self {
+            NodeStore::InMemory(store) => {
+                let mut store = store.lock().await;
+                if let Some(node) = store.get_mut(&node_id) {
+                    node.healthy = healthy;
+                    node.active_peer_count = active_peer_count;
+                    return Ok(Some(node.clone()));
+                }
+                Ok(None)
+            }
+            NodeStore::Postgres(repo) => repo
+                .update_node_health(node_id, healthy, active_peer_count)
+                .await
+                .map_err(map_node_repo_error),
+        }
     }
 }
 
@@ -327,6 +397,100 @@ async fn list_devices(
             .cloned()
             .unwrap_or_else(Vec::new),
     ))
+}
+
+#[derive(Deserialize)]
+struct UpsertNodeRequest {
+    id: Option<Uuid>,
+    region: String,
+    provider: String,
+    endpoint_host: String,
+    endpoint_port: u16,
+    healthy: Option<bool>,
+    active_peer_count: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct UpdateNodeHealthRequest {
+    node_id: Uuid,
+    healthy: bool,
+    active_peer_count: i64,
+}
+
+#[derive(Serialize)]
+struct NodeResponse {
+    id: Uuid,
+    region: String,
+    provider: String,
+    endpoint_host: String,
+    endpoint_port: u16,
+    healthy: bool,
+    active_peer_count: i64,
+}
+
+impl From<NodeRecord> for NodeResponse {
+    fn from(value: NodeRecord) -> Self {
+        Self {
+            id: value.id,
+            region: value.region,
+            provider: value.provider,
+            endpoint_host: value.endpoint_host,
+            endpoint_port: value.endpoint_port,
+            healthy: value.healthy,
+            active_peer_count: value.active_peer_count,
+        }
+    }
+}
+
+async fn list_nodes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<NodeResponse>>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let nodes = state.node_store.list_nodes().await?;
+    Ok(Json(nodes.into_iter().map(NodeResponse::from).collect()))
+}
+
+async fn upsert_node(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertNodeRequest>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    if payload.region.trim().is_empty()
+        || payload.provider.trim().is_empty()
+        || payload.endpoint_host.trim().is_empty()
+    {
+        return Err(ApiError::bad_request("invalid_node_payload"));
+    }
+
+    let input = UpsertNodeInput {
+        id: payload.id.unwrap_or_else(Uuid::new_v4),
+        region: payload.region,
+        provider: payload.provider,
+        endpoint_host: payload.endpoint_host,
+        endpoint_port: payload.endpoint_port,
+        healthy: payload.healthy.unwrap_or(true),
+        active_peer_count: payload.active_peer_count.unwrap_or(0),
+    };
+
+    let node = state.node_store.upsert_node(input).await?;
+    Ok(Json(NodeResponse::from(node)))
+}
+
+async fn update_node_health(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateNodeHealthRequest>,
+) -> Result<Json<NodeResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let node = state
+        .node_store
+        .update_node_health(payload.node_id, payload.healthy, payload.active_peer_count)
+        .await?
+        .ok_or_else(|| ApiError::not_found("node_not_found"))?;
+
+    Ok(Json(NodeResponse::from(node)))
 }
 
 #[derive(Deserialize)]
@@ -578,6 +742,24 @@ fn customer_id_from_headers(headers: &HeaderMap) -> Result<Uuid, ApiError> {
         .map_err(|_| ApiError::unauthorized("invalid_x_customer_id"))?;
 
     Uuid::parse_str(raw).map_err(|_| ApiError::unauthorized("invalid_customer_id"))
+}
+
+fn require_admin_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let configured = state
+        .admin_api_token
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("admin_api_not_configured"))?;
+    let provided = headers
+        .get("x-admin-token")
+        .ok_or_else(|| ApiError::unauthorized("missing_x_admin_token"))?
+        .to_str()
+        .map_err(|_| ApiError::unauthorized("invalid_x_admin_token"))?;
+
+    if provided != configured {
+        return Err(ApiError::unauthorized("invalid_admin_token"));
+    }
+
+    Ok(())
 }
 
 async fn resolve_node_hint(

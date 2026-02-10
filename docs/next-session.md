@@ -23,6 +23,11 @@
   - `services/entry/src/node_repo.rs` selects healthy nodes from `vpn_nodes` by region and load (`active_peer_count`).
   - `start_session` now auto-selects node in Postgres mode when `node_hint` is not provided.
   - Returns `no_nodes_available_in_region` if no healthy node exists in requested region.
+- Node lifecycle and health APIs are now wired in `entry`:
+  - `GET /v1/admin/nodes` lists nodes.
+  - `POST /v1/admin/nodes` creates/updates node metadata.
+  - `POST /v1/internal/nodes/health` updates `healthy` and `active_peer_count`.
+  - These endpoints require `x-admin-token` matching `ADMIN_API_TOKEN`.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -35,7 +40,7 @@
 2. Add mTLS between services and move secrets to GCP Secret Manager.
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
 4. Replace dev `access_token` placeholder with signed JWT/session token issuance and key rotation flow.
-5. Add `vpn_nodes` lifecycle/admin APIs and health updater to keep selection data fresh.
+5. Add periodic/streamed node heartbeat updates from `core` nodes to `entry` health API.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
