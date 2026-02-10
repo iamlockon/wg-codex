@@ -344,6 +344,9 @@ impl ControlPlane for CoreService {
             .get(&customer_id)
             .cloned();
         if let Some(session) = session {
+            if session.snapshot.session_key != req.session_key {
+                return Err(Status::new(Code::InvalidArgument, "session_key_mismatch"));
+            }
             if let Err(err) = self.dataplane.disconnect_peer(&session.peer).await {
                 self.set_healthy(false);
                 return Err(Status::new(
@@ -645,5 +648,27 @@ mod tests {
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert_eq!(err.message(), "customer_id");
+    }
+
+    #[tokio::test]
+    async fn disconnect_rejects_session_key_mismatch() {
+        let service = test_service();
+        let customer_id = Uuid::new_v4();
+        let _ = service
+            .connect_device(Request::new(connect_request(customer_id)))
+            .await
+            .expect("connect");
+
+        let err = service
+            .disconnect_device(Request::new(DisconnectRequest {
+                request_id: Uuid::new_v4().to_string(),
+                session_key: "wrong-session-key".to_string(),
+                customer_id: customer_id.to_string(),
+            }))
+            .await
+            .expect_err("disconnect should fail");
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.message(), "session_key_mismatch");
     }
 }
