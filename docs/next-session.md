@@ -37,6 +37,7 @@
   - optional server TLS in `core`,
   - optional client TLS and client cert in `entry`.
 - OAuth callback now issues signed JWT access tokens (HS256) instead of dev string placeholders.
+- Customer APIs now accept `Authorization: Bearer <token>` (signed by `APP_JWT_SIGNING_KEY`) with legacy `x-customer-id` fallback.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -48,7 +49,7 @@
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Implement signing-key rotation and token verification middleware for `entry` APIs.
+4. Implement signing-key rotation and key-ID based verification for `entry` tokens.
 5. Replace shell-command dataplane with direct netlink/WireGuard UAPI integration in Rust.
 
 ## Open Risks / Watch Items

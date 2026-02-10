@@ -19,7 +19,7 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
-use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, encode};
 use node_repo::{NodeRecord, NodeRepoError, PostgresNodeRepository, UpsertNodeInput};
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
@@ -414,7 +414,7 @@ async fn register_device(
     headers: HeaderMap,
     Json(payload): Json<RegisterDeviceRequest>,
 ) -> Result<Json<Device>, ApiError> {
-    let customer_id = customer_id_from_headers(&headers)?;
+    let customer_id = customer_id_from_request(&state, &headers)?;
     if payload.name.trim().is_empty() || payload.public_key.trim().is_empty() {
         return Err(ApiError::bad_request("invalid_device_payload"));
     }
@@ -436,7 +436,7 @@ async fn list_devices(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<Device>>, ApiError> {
-    let customer_id = customer_id_from_headers(&headers)?;
+    let customer_id = customer_id_from_request(&state, &headers)?;
     let devices_map = state.devices_by_customer.read().await;
     Ok(Json(
         devices_map
@@ -567,7 +567,7 @@ async fn start_session(
     headers: HeaderMap,
     Json(payload): Json<StartSessionRequest>,
 ) -> Result<Json<StartSessionResponse>, ApiError> {
-    let customer_id = customer_id_from_headers(&headers)?;
+    let customer_id = customer_id_from_request(&state, &headers)?;
 
     let device = {
         let devices_map = state.devices_by_customer.read().await;
@@ -707,7 +707,7 @@ async fn current_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<CurrentSessionResponse>, ApiError> {
-    let customer_id = customer_id_from_headers(&headers)?;
+    let customer_id = customer_id_from_request(&state, &headers)?;
 
     let response = {
         let mut client = state.core_client.lock().await;
@@ -754,7 +754,7 @@ async fn terminate_session(
     headers: HeaderMap,
     Path(session_key): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let customer_id = customer_id_from_headers(&headers)?;
+    let customer_id = customer_id_from_request(&state, &headers)?;
 
     state
         .session_store
@@ -779,6 +779,32 @@ async fn terminate_session(
         .await
         .remove(&customer_id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn customer_id_from_request(state: &AppState, headers: &HeaderMap) -> Result<Uuid, ApiError> {
+    if let Some(auth) = headers.get("authorization") {
+        let raw = auth
+            .to_str()
+            .map_err(|_| ApiError::unauthorized("invalid_authorization_header"))?;
+        if let Some(token) = raw.strip_prefix("Bearer ") {
+            return customer_id_from_bearer(token, &state.jwt_signing_key);
+        }
+    }
+
+    customer_id_from_headers(headers)
+}
+
+fn customer_id_from_bearer(token: &str, signing_key: &str) -> Result<Uuid, ApiError> {
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_issuer(&["entry"]);
+    let decoded = jsonwebtoken::decode::<AccessTokenClaims>(
+        token,
+        &DecodingKey::from_secret(signing_key.as_bytes()),
+        &validation,
+    )
+    .map_err(|_| ApiError::unauthorized("invalid_access_token"))?;
+
+    Uuid::parse_str(&decoded.claims.sub).map_err(|_| ApiError::unauthorized("invalid_customer_id"))
 }
 
 fn customer_id_from_headers(headers: &HeaderMap) -> Result<Uuid, ApiError> {
@@ -992,5 +1018,20 @@ mod tests {
         .expect("decoded");
         assert_eq!(decoded.claims.sub, customer_id.to_string());
         assert_eq!(decoded.claims.iss, "entry");
+    }
+
+    #[test]
+    fn customer_id_from_bearer_parses_signed_token() {
+        let customer_id = Uuid::new_v4();
+        let token = issue_access_token(customer_id, "test-key").expect("token");
+        let parsed = customer_id_from_bearer(&token, "test-key").expect("parsed");
+        assert_eq!(parsed, customer_id);
+    }
+
+    #[test]
+    fn customer_id_from_bearer_rejects_bad_token() {
+        let err = customer_id_from_bearer("bad-token", "test-key").expect_err("should fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, "invalid_access_token");
     }
 }
