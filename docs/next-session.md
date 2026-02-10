@@ -35,7 +35,7 @@
 - Linux dataplane now uses Rust-native WireGuard UAPI socket operations for peer add/remove (host bootstrap/NAT still shell-based).
 - WireGuard device bootstrap (`private_key`, `listen_port`) is now also applied via Rust UAPI, removing `wg set` shell dependency.
 - Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
-- Remaining shell-managed host step is NAT rule management (`iptables`).
+- NAT backend is now configurable in `core` via `WG_NAT_BACKEND` (`iptables` default, `nft` optional).
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,

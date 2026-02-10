@@ -16,7 +16,9 @@ use control_plane::{
     ControlPlane, ControlPlaneServer, config_to_proto, into_rfc3339, parse_optional_uuid,
     parse_uuid,
 };
-use dataplane::{DataPlane, LinuxDataPlaneConfig, LinuxShellDataPlane, NoopDataPlane, PeerSpec};
+use dataplane::{
+    DataPlane, LinuxDataPlaneConfig, LinuxShellDataPlane, NatBackend, NoopDataPlane, PeerSpec,
+};
 use domain::WireGuardClientConfig;
 use ip_pool::Ipv4Pool;
 use tokio::sync::RwLock;
@@ -56,6 +58,16 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|v| v.parse::<u16>().ok())
                 .unwrap_or(51820),
             egress_iface: std::env::var("WG_EGRESS_IFACE").unwrap_or_else(|_| "eth0".to_string()),
+            nat_backend: std::env::var("WG_NAT_BACKEND")
+                .ok()
+                .map(|v| {
+                    if v.eq_ignore_ascii_case("nft") {
+                        NatBackend::Nft
+                    } else {
+                        NatBackend::Iptables
+                    }
+                })
+                .unwrap_or(NatBackend::Iptables),
         };
         Arc::new(LinuxShellDataPlane::new(cfg))
     };
