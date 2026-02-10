@@ -15,6 +15,10 @@
   - Postgres backend when `DATABASE_URL` is set.
   - In-memory fallback when `DATABASE_URL` is not set.
 - Google OAuth callback in `entry` now performs OIDC code exchange and ID token validation (JWKS signature + audience/issuer + optional nonce) via `services/entry/src/google_oidc.rs`.
+- OAuth identity persistence is now wired:
+  - `services/entry/src/oauth_repo.rs` resolves/creates `customers` + `oauth_identities` in Postgres.
+  - `oauth_callback` now uses this repository when `DATABASE_URL` is set.
+  - In-memory fallback store is used when Postgres is not configured.
 
 ## Not Production-Ready Yet
 - No real OAuth token verification against Google OIDC.
@@ -23,11 +27,11 @@
 - No hardened authz/rate limits/audit integrity guarantees yet.
 
 ## Priority Next Steps
-1. Persist OAuth identity mapping (`oauth_identities`) and customer creation in Postgres (replace deterministic UUID-only placeholder mapping).
-2. Add node selection logic backed by `vpn_nodes` table (region + health + load score).
-3. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
-4. Add mTLS between services and move secrets to GCP Secret Manager.
-5. Add integration tests against real Postgres + migrations for `entry` session and OAuth flows.
+1. Add node selection logic backed by `vpn_nodes` table (region + health + load score).
+2. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
+3. Add mTLS between services and move secrets to GCP Secret Manager.
+4. Add integration tests against real Postgres + migrations for `entry` session and OAuth flows.
+5. Replace dev `access_token` placeholder with signed JWT/session token issuance and key rotation flow.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
