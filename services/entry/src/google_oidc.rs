@@ -40,6 +40,7 @@ impl GoogleOidcConfig {
 #[derive(Debug, Clone)]
 pub struct GoogleIdentity {
     pub sub: String,
+    pub email: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -86,8 +87,7 @@ struct GoogleClaims {
     #[serde(rename = "iss")]
     _iss: String,
     nonce: Option<String>,
-    #[serde(rename = "email")]
-    _email: Option<String>,
+    email: Option<String>,
 }
 
 pub async fn authenticate_google(
@@ -165,7 +165,10 @@ async fn validate_id_token(
         }
     }
 
-    Ok(GoogleIdentity { sub: claims.sub })
+    Ok(GoogleIdentity {
+        sub: claims.sub,
+        email: claims.email,
+    })
 }
 
 #[cfg(test)]

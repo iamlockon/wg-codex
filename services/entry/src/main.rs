@@ -1,4 +1,5 @@
 mod google_oidc;
+mod oauth_repo;
 mod postgres_session_repo;
 mod session_repo;
 
@@ -16,6 +17,7 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
+use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
 use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
@@ -35,16 +37,22 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let core_client = ControlPlaneClient::connect(grpc_target.clone()).await?;
 
-    let session_store = if let Ok(database_url) = std::env::var("DATABASE_URL") {
+    let (session_store, identity_store) = if let Ok(database_url) = std::env::var("DATABASE_URL") {
         let pool = PgPoolOptions::new()
             .max_connections(10)
             .connect(&database_url)
             .await?;
-        info!("entry using postgres session store");
-        SessionStore::Postgres(PostgresSessionRepository::new(pool))
+        info!("entry using postgres session and oauth stores");
+        (
+            SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
+            IdentityStore::Postgres(PostgresOAuthRepository::new(pool)),
+        )
     } else {
-        warn!("DATABASE_URL not set; entry using in-memory session store");
-        SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default()))
+        warn!("DATABASE_URL not set; entry using in-memory session/oauth stores");
+        (
+            SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            IdentityStore::InMemory(Mutex::new(HashMap::new())),
+        )
     };
 
     let state = Arc::new(AppState {
@@ -54,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
         session_store,
         http_client: reqwest::Client::new(),
         google_oidc: GoogleOidcConfig::from_env(),
+        identity_store,
     });
 
     let app = Router::new()
@@ -82,6 +91,7 @@ struct AppState {
     session_store: SessionStore,
     http_client: reqwest::Client,
     google_oidc: Option<GoogleOidcConfig>,
+    identity_store: IdentityStore,
 }
 
 #[derive(Clone)]
@@ -94,6 +104,35 @@ struct ActiveSession {
 enum SessionStore {
     InMemory(Mutex<InMemorySessionRepository>),
     Postgres(PostgresSessionRepository),
+}
+
+enum IdentityStore {
+    InMemory(Mutex<HashMap<(String, String), Uuid>>),
+    Postgres(PostgresOAuthRepository),
+}
+
+impl IdentityStore {
+    async fn resolve_or_create_customer(
+        &self,
+        provider: &str,
+        subject: &str,
+        email: Option<&str>,
+    ) -> Result<Uuid, ApiError> {
+        match self {
+            IdentityStore::InMemory(store) => {
+                let mut store = store.lock().await;
+                let key = (provider.to_string(), subject.to_string());
+                let id = store
+                    .entry(key)
+                    .or_insert_with(|| Uuid::new_v5(&Uuid::NAMESPACE_OID, subject.as_bytes()));
+                Ok(*id)
+            }
+            IdentityStore::Postgres(repo) => repo
+                .resolve_or_create_customer(provider, subject, email)
+                .await
+                .map_err(map_oauth_repo_error),
+        }
+    }
 }
 
 impl SessionStore {
@@ -209,8 +248,10 @@ async fn oauth_callback(
     .await
     .map_err(map_oidc_error)?;
 
-    // Stable mapping from Google subject to customer identity.
-    let customer_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, identity.sub.as_bytes());
+    let customer_id = state
+        .identity_store
+        .resolve_or_create_customer("google", &identity.sub, identity.email.as_deref())
+        .await?;
     Ok(Json(OAuthCallbackResponse {
         provider,
         customer_id,
@@ -531,6 +572,12 @@ fn map_oidc_error(err: OidcError) -> ApiError {
         | OidcError::InvalidNonce
         | OidcError::Jwt(_) => ApiError::unauthorized("oauth_invalid_identity"),
         OidcError::Http(_) => ApiError::service_unavailable("oauth_provider_unreachable"),
+    }
+}
+
+fn map_oauth_repo_error(err: OAuthRepoError) -> ApiError {
+    match err {
+        OAuthRepoError::Database(_) => ApiError::service_unavailable("identity_store_failed"),
     }
 }
 
