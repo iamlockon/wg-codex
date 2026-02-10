@@ -282,7 +282,53 @@ impl DataPlane for LinuxShellDataPlane {
     }
 
     async fn reconcile(&self, _desired_peers: &[PeerSpec]) -> Result<(), String> {
-        // Placeholder reconciliation hook. A future revision should diff live peers vs desired set.
-        Ok(())
+        let uapi = self.uapi.clone();
+        let desired = _desired_peers.to_vec();
+        task::spawn_blocking(move || {
+            let live = uapi.list_peer_public_keys()?;
+            let desired_keys: std::collections::HashSet<String> = desired
+                .iter()
+                .map(|p| p.device_public_key.clone())
+                .collect();
+
+            // Re-apply desired peer state (idempotent) to repair drift.
+            for peer in &desired {
+                uapi.set_peer(
+                    &peer.device_public_key,
+                    Some(&peer.assigned_ip),
+                    Some(25),
+                    false,
+                )?;
+            }
+
+            // Remove peers not present in desired state.
+            for public_key in live {
+                if !desired_keys.contains(&public_key) {
+                    uapi.set_peer(&public_key, None, None, true)?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|err| format!("uapi reconcile join failure: {err}"))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_op_dataplane_reconcile_accepts_any_desired_state() {
+        let dp = NoopDataPlane;
+        let desired = vec![PeerSpec {
+            _session_key: "sess".to_string(),
+            device_public_key: "pub".to_string(),
+            assigned_ip: "10.90.0.2/24".to_string(),
+        }];
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async move {
+            dp.reconcile(&desired).await.expect("reconcile");
+        });
     }
 }

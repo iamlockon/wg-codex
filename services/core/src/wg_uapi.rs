@@ -65,7 +65,25 @@ impl WireGuardUapiClient {
         self.request(&request)
     }
 
+    pub fn list_peer_public_keys(&self) -> Result<Vec<String>, String> {
+        let response = self.raw_request("get=1\n\n")?;
+        Ok(parse_peer_public_keys(&response))
+    }
+
     fn request(&self, request: &str) -> Result<(), String> {
+        let response = self.raw_request(request)?;
+        let errno = response
+            .lines()
+            .find_map(|line| line.strip_prefix("errno="))
+            .ok_or_else(|| format!("uapi missing errno: {response}"))?;
+        if errno == "0" {
+            Ok(())
+        } else {
+            Err(format!("uapi errno={errno} response={response}"))
+        }
+    }
+
+    fn raw_request(&self, request: &str) -> Result<String, String> {
         let mut stream = UnixStream::connect(&self.socket_path)
             .map_err(|err| format!("uapi connect failed: {err}"))?;
         stream
@@ -79,15 +97,27 @@ impl WireGuardUapiClient {
         stream
             .read_to_string(&mut response)
             .map_err(|err| format!("uapi read failed: {err}"))?;
+        Ok(response)
+    }
+}
 
-        let errno = response
-            .lines()
-            .find_map(|line| line.strip_prefix("errno="))
-            .ok_or_else(|| format!("uapi missing errno: {response}"))?;
-        if errno == "0" {
-            Ok(())
-        } else {
-            Err(format!("uapi errno={errno} response={response}"))
-        }
+fn parse_peer_public_keys(response: &str) -> Vec<String> {
+    response
+        .lines()
+        .filter_map(|line| line.strip_prefix("public_key="))
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_peer_public_keys_extracts_all_peers() {
+        let sample = "private_key=abc\nlisten_port=51820\npublic_key=peer1\nallowed_ip=10.0.0.2/32\npublic_key=peer2\nerrno=0\n";
+        let keys = parse_peer_public_keys(sample);
+        assert_eq!(keys, vec!["peer1".to_string(), "peer2".to_string()]);
     }
 }
