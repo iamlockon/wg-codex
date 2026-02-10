@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::{fs, str};
 
 #[derive(Clone)]
 pub struct WireGuardUapiClient {
@@ -41,6 +42,25 @@ impl WireGuardUapiClient {
             }
         }
 
+        request.push('\n');
+        self.request(&request)
+    }
+
+    pub fn configure_device(&self, private_key_path: &str, listen_port: u16) -> Result<(), String> {
+        let key = fs::read_to_string(private_key_path)
+            .map_err(|err| format!("read private key failed: {err}"))?;
+        let private_key = key.trim();
+        if private_key.is_empty() {
+            return Err("private key file is empty".to_string());
+        }
+
+        let mut request = String::from("set=1\n");
+        request.push_str("private_key=");
+        request.push_str(private_key);
+        request.push('\n');
+        request.push_str("listen_port=");
+        request.push_str(&listen_port.to_string());
+        request.push('\n');
         request.push('\n');
         self.request(&request)
     }

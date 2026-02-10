@@ -33,6 +33,7 @@
   - IPv4 pool allocation/release,
   - periodic reconciliation loop.
 - Linux dataplane now uses Rust-native WireGuard UAPI socket operations for peer add/remove (host bootstrap/NAT still shell-based).
+- WireGuard device bootstrap (`private_key`, `listen_port`) is now also applied via Rust UAPI, removing `wg set` shell dependency.
 - Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
 - Remaining shell-managed host step is NAT rule management (`iptables`).
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.

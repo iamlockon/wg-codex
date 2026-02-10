@@ -192,15 +192,12 @@ impl DataPlane for LinuxShellDataPlane {
             &self.cfg.iface,
         ]);
 
-        Self::run(&[
-            "wg",
-            "set",
-            &self.cfg.iface,
-            "listen-port",
-            &self.cfg.listen_port.to_string(),
-            "private-key",
-            &self.cfg.private_key_path,
-        ])?;
+        let uapi = self.uapi.clone();
+        let key_path = self.cfg.private_key_path.clone();
+        let listen_port = self.cfg.listen_port;
+        task::spawn_blocking(move || uapi.configure_device(&key_path, listen_port))
+            .await
+            .map_err(|err| format!("uapi bootstrap join failure: {err}"))??;
 
         self.configure_interface_via_netlink().await?;
         self.enable_ipv4_forwarding()?;
