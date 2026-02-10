@@ -209,3 +209,85 @@ impl From<NodeDbRow> for NodeRecord {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn setup_repo() -> Option<PostgresNodeRepository> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()?;
+        let schema = format!("test_node_{}", Uuid::new_v4().simple());
+        let set_path = format!("SET search_path TO {schema}");
+        let create_schema = format!("CREATE SCHEMA {schema}");
+
+        sqlx::query(&create_schema).execute(&pool).await.ok()?;
+        sqlx::query(&set_path).execute(&pool).await.ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602090001_initial_schema.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602100003_consumer_model.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+        Some(PostgresNodeRepository::new(pool))
+    }
+
+    #[tokio::test]
+    async fn select_node_prefers_lowest_utilization_matching_geo_pool() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let target_a = Uuid::new_v4();
+        let target_b = Uuid::new_v4();
+        let other = Uuid::new_v4();
+
+        for (id, city, active, capacity) in [
+            (target_a, "SFO", 80_i64, 100_i64),
+            (target_b, "SFO", 20_i64, 100_i64),
+            (other, "LAX", 1_i64, 100_i64),
+        ] {
+            repo.upsert_node(UpsertNodeInput {
+                id,
+                region: "us-west1".to_string(),
+                country_code: "US".to_string(),
+                city_code: Some(city.to_string()),
+                pool: "general".to_string(),
+                provider: "gcp".to_string(),
+                endpoint_host: format!("{id}.example.net"),
+                endpoint_port: 51820,
+                healthy: true,
+                active_peer_count: active,
+                capacity_peers: capacity,
+            })
+            .await
+            .expect("upsert");
+        }
+
+        let selected = repo
+            .select_node(
+                &NodeSelectionCriteria {
+                    region: Some("us-west1".to_string()),
+                    country_code: Some("US".to_string()),
+                    city_code: Some("SFO".to_string()),
+                    pool: Some("general".to_string()),
+                },
+                120,
+            )
+            .await
+            .expect("select")
+            .expect("node");
+
+        assert_eq!(selected.id, target_b);
+    }
+}

@@ -233,3 +233,118 @@ impl From<SessionDbRow> for SessionRow {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn setup_repo() -> Option<PostgresSessionRepository> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()?;
+        let schema = format!("test_sess_{}", Uuid::new_v4().simple());
+        let set_path = format!("SET search_path TO {schema}");
+        let create_schema = format!("CREATE SCHEMA {schema}");
+
+        sqlx::query(&create_schema).execute(&pool).await.ok()?;
+        sqlx::query(&set_path).execute(&pool).await.ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602090001_initial_schema.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+
+        Some(PostgresSessionRepository::new(pool))
+    }
+
+    async fn insert_customer_with_device(
+        repo: &PostgresSessionRepository,
+    ) -> Result<(Uuid, Uuid), sqlx::Error> {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO customers (id) VALUES ($1)")
+            .bind(customer_id)
+            .execute(&repo.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO devices (id, customer_id, name, public_key) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(device_id)
+        .bind(customer_id)
+        .bind("device")
+        .bind(format!("pk-{}", Uuid::new_v4()))
+        .execute(&repo.pool)
+        .await?;
+        Ok((customer_id, device_id))
+    }
+
+    #[tokio::test]
+    async fn start_session_conflicts_when_active_exists() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let (customer_id, device_id) = insert_customer_with_device(&repo)
+            .await
+            .expect("seed customer/device");
+
+        let first = repo
+            .start_session(
+                customer_id,
+                device_id,
+                "us-west1".to_string(),
+                "sess_one".to_string(),
+                None,
+            )
+            .await
+            .expect("first start");
+        assert!(matches!(first, StartSessionOutcome::Created(_)));
+
+        let second = repo
+            .start_session(
+                customer_id,
+                device_id,
+                "us-west1".to_string(),
+                "sess_two".to_string(),
+                None,
+            )
+            .await
+            .expect("second start");
+        assert_eq!(
+            second,
+            StartSessionOutcome::Conflict {
+                existing_session_key: "sess_one".to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_session_requires_matching_key() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let (customer_id, device_id) = insert_customer_with_device(&repo)
+            .await
+            .expect("seed customer/device");
+
+        repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_one".to_string(),
+            None,
+        )
+        .await
+        .expect("start");
+
+        let err = repo
+            .terminate_session(customer_id, "sess_wrong")
+            .await
+            .expect_err("mismatch should fail");
+        assert!(matches!(err, PostgresRepoError::SessionKeyMismatch));
+    }
+}
