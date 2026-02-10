@@ -19,6 +19,7 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use node_repo::{NodeRecord, NodeRepoError, PostgresNodeRepository, UpsertNodeInput};
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
@@ -61,6 +62,11 @@ async fn main() -> anyhow::Result<()> {
                 NodeStore::InMemory(Mutex::new(HashMap::new())),
             )
         };
+    let jwt_signing_key = std::env::var("APP_JWT_SIGNING_KEY")
+        .unwrap_or_else(|_| "dev-insecure-signing-key-change-me".to_string());
+    if jwt_signing_key == "dev-insecure-signing-key-change-me" {
+        warn!("APP_JWT_SIGNING_KEY not set; using insecure development signing key");
+    }
 
     let state = Arc::new(AppState {
         runtime_sessions_by_customer: RwLock::new(HashMap::new()),
@@ -72,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         identity_store,
         node_store,
         admin_api_token: std::env::var("ADMIN_API_TOKEN").ok(),
+        jwt_signing_key,
     });
 
     let app = Router::new()
@@ -105,6 +112,7 @@ struct AppState {
     identity_store: IdentityStore,
     node_store: NodeStore,
     admin_api_token: Option<String>,
+    jwt_signing_key: String,
 }
 
 #[derive(Clone)]
@@ -386,10 +394,12 @@ async fn oauth_callback(
         .identity_store
         .resolve_or_create_customer("google", &identity.sub, identity.email.as_deref())
         .await?;
+    let access_token = issue_access_token(customer_id, &state.jwt_signing_key)
+        .map_err(|_| ApiError::service_unavailable("oauth_token_issue_failed"))?;
     Ok(Json(OAuthCallbackResponse {
         provider,
         customer_id,
-        access_token: format!("dev-token-{customer_id}"),
+        access_token,
     }))
 }
 
@@ -799,6 +809,32 @@ fn require_admin_token(state: &AppState, headers: &HeaderMap) -> Result<(), ApiE
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct AccessTokenClaims {
+    sub: String,
+    iss: String,
+    iat: usize,
+    exp: usize,
+}
+
+fn issue_access_token(
+    customer_id: Uuid,
+    signing_key: &str,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = Utc::now().timestamp() as usize;
+    let claims = AccessTokenClaims {
+        sub: customer_id.to_string(),
+        iss: "entry".to_string(),
+        iat: now,
+        exp: now + 15 * 60,
+    };
+    encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(signing_key.as_bytes()),
+    )
+}
+
 async fn resolve_node_hint(
     state: &Arc<AppState>,
     region: &str,
@@ -942,5 +978,19 @@ mod tests {
         let err = map_oidc_error(OidcError::Jwt(jwt_err));
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "oauth_invalid_identity");
+    }
+
+    #[test]
+    fn issue_access_token_embeds_customer_subject() {
+        let customer_id = Uuid::new_v4();
+        let token = issue_access_token(customer_id, "test-key").expect("token");
+        let decoded = jsonwebtoken::decode::<AccessTokenClaims>(
+            &token,
+            &jsonwebtoken::DecodingKey::from_secret("test-key".as_bytes()),
+            &jsonwebtoken::Validation::new(Algorithm::HS256),
+        )
+        .expect("decoded");
+        assert_eq!(decoded.claims.sub, customer_id.to_string());
+        assert_eq!(decoded.claims.iss, "entry");
     }
 }

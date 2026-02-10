@@ -36,6 +36,7 @@
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,
   - optional client TLS and client cert in `entry`.
+- OAuth callback now issues signed JWT access tokens (HS256) instead of dev string placeholders.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -47,7 +48,7 @@
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Replace dev `access_token` placeholder with signed JWT/session token issuance and key rotation flow.
+4. Implement signing-key rotation and token verification middleware for `entry` APIs.
 5. Replace shell-command dataplane with direct netlink/WireGuard UAPI integration in Rust.
 
 ## Open Risks / Watch Items
