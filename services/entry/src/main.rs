@@ -34,7 +34,9 @@ use privacy_repo::PostgresPrivacyRepository;
 use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
-use subscription_repo::{Entitlements, PostgresSubscriptionRepository, SubscriptionRepoError};
+use subscription_repo::{
+    Entitlements, PostgresSubscriptionRepository, SubscriptionRepoError, SubscriptionStatus,
+};
 use subtle::ConstantTimeEq;
 use token_repo::{PostgresTokenRepository, TokenRepoError};
 use tokio::sync::{Mutex, RwLock};
@@ -134,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sessions/start", post(start_session))
         .route("/v1/sessions/current", get(current_session))
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
+        .route("/v1/admin/subscriptions", post(upsert_subscription))
         .route("/v1/internal/nodes/health", post(update_node_health))
         .route(
             "/v1/sessions/:session_key/terminate",
@@ -256,8 +259,14 @@ enum NodeStore {
 }
 
 enum SubscriptionStore {
-    InMemory(Mutex<HashMap<Uuid, Entitlements>>),
+    InMemory(Mutex<HashMap<Uuid, SubscriptionProfile>>),
     Postgres(PostgresSubscriptionRepository),
+}
+
+#[derive(Clone)]
+struct SubscriptionProfile {
+    entitlements: Entitlements,
+    session_eligible: bool,
 }
 
 impl IdentityStore {
@@ -467,10 +476,66 @@ impl SubscriptionStore {
         match self {
             SubscriptionStore::InMemory(store) => {
                 let store = store.lock().await;
-                Ok(store.get(&customer_id).cloned().unwrap_or_default())
+                Ok(store
+                    .get(&customer_id)
+                    .map(|v| v.entitlements.clone())
+                    .unwrap_or_default())
             }
             SubscriptionStore::Postgres(repo) => repo
                 .entitlements_for_customer(customer_id)
+                .await
+                .map_err(map_subscription_repo_error),
+        }
+    }
+
+    async fn is_customer_session_eligible(&self, customer_id: Uuid) -> Result<bool, ApiError> {
+        match self {
+            SubscriptionStore::InMemory(store) => {
+                let store = store.lock().await;
+                Ok(store
+                    .get(&customer_id)
+                    .map(|v| v.session_eligible)
+                    .unwrap_or(true))
+            }
+            SubscriptionStore::Postgres(repo) => repo
+                .is_customer_session_eligible(customer_id)
+                .await
+                .map_err(map_subscription_repo_error),
+        }
+    }
+
+    async fn upsert_customer_subscription(
+        &self,
+        customer_id: Uuid,
+        plan_code: &str,
+        status: SubscriptionStatus,
+    ) -> Result<(), ApiError> {
+        match self {
+            SubscriptionStore::InMemory(store) => {
+                let mut store = store.lock().await;
+                let session_eligible = matches!(
+                    status,
+                    SubscriptionStatus::Active | SubscriptionStatus::Trialing
+                );
+                let profile = store
+                    .entry(customer_id)
+                    .or_insert_with(|| SubscriptionProfile {
+                        entitlements: Entitlements::default(),
+                        session_eligible: true,
+                    });
+                profile.session_eligible = session_eligible;
+                profile.entitlements.max_active_sessions = 1;
+                if plan_code == "plus" {
+                    profile.entitlements.max_devices = 7;
+                } else if plan_code == "max" {
+                    profile.entitlements.max_devices = 10;
+                } else {
+                    profile.entitlements.max_devices = 3;
+                }
+                Ok(())
+            }
+            SubscriptionStore::Postgres(repo) => repo
+                .upsert_customer_subscription(customer_id, plan_code, status)
                 .await
                 .map_err(map_subscription_repo_error),
         }
@@ -709,6 +774,20 @@ struct UpdateNodeHealthRequest {
     active_peer_count: i64,
 }
 
+#[derive(Deserialize)]
+struct UpsertSubscriptionRequest {
+    customer_id: Uuid,
+    plan_code: String,
+    status: String,
+}
+
+#[derive(Serialize)]
+struct UpsertSubscriptionResponse {
+    customer_id: Uuid,
+    plan_code: String,
+    status: String,
+}
+
 #[derive(Serialize)]
 struct NodeResponse {
     id: Uuid,
@@ -811,6 +890,36 @@ async fn update_node_health(
     Ok(Json(NodeResponse::from(node)))
 }
 
+async fn upsert_subscription(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<UpsertSubscriptionRequest>,
+) -> Result<Json<UpsertSubscriptionResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    if payload.plan_code.trim().is_empty() {
+        return Err(ApiError::bad_request("invalid_plan_code"));
+    }
+    let normalized_plan = payload.plan_code.trim().to_lowercase();
+    let status = SubscriptionStatus::parse(payload.status.trim())
+        .ok_or_else(|| ApiError::bad_request("invalid_subscription_status"))?;
+    state
+        .subscription_store
+        .upsert_customer_subscription(payload.customer_id, &normalized_plan, status)
+        .await?;
+    info!(
+        customer_id=%payload.customer_id,
+        plan_code=%payload.plan_code,
+        status=%payload.status,
+        "subscription updated"
+    );
+
+    Ok(Json(UpsertSubscriptionResponse {
+        customer_id: payload.customer_id,
+        plan_code: normalized_plan,
+        status: payload.status,
+    }))
+}
+
 #[derive(Deserialize)]
 struct StartSessionRequest {
     device_id: Uuid,
@@ -842,6 +951,13 @@ async fn start_session(
     Json(payload): Json<StartSessionRequest>,
 ) -> Result<Json<StartSessionResponse>, ApiError> {
     let customer_id = customer_id_from_request(&state, &headers).await?;
+    if !state
+        .subscription_store
+        .is_customer_session_eligible(customer_id)
+        .await?
+    {
+        return Err(ApiError::unauthorized("subscription_inactive"));
+    }
     let entitlements = state
         .subscription_store
         .entitlements_for_customer(customer_id)
@@ -1324,6 +1440,7 @@ fn map_node_repo_error(err: NodeRepoError) -> ApiError {
 
 fn map_subscription_repo_error(err: SubscriptionRepoError) -> ApiError {
     match err {
+        SubscriptionRepoError::PlanNotFound => ApiError::bad_request("plan_not_found"),
         SubscriptionRepoError::Database(_) => {
             ApiError::service_unavailable("subscription_store_failed")
         }
@@ -1671,13 +1788,16 @@ mod tests {
         let mut devices = HashMap::new();
         devices.insert(customer_id, vec![existing]);
 
-        let mut entitlements = HashMap::new();
-        entitlements.insert(
+        let mut subscriptions = HashMap::new();
+        subscriptions.insert(
             customer_id,
-            Entitlements {
-                max_active_sessions: 1,
-                max_devices: 1,
-                allowed_regions: None,
+            SubscriptionProfile {
+                entitlements: Entitlements {
+                    max_active_sessions: 1,
+                    max_devices: 1,
+                    allowed_regions: None,
+                },
+                session_eligible: true,
             },
         );
 
@@ -1697,7 +1817,7 @@ mod tests {
             allow_legacy_customer_header: true,
             revoked_token_ids: Mutex::new(HashMap::new()),
             token_store: None,
-            subscription_store: SubscriptionStore::InMemory(Mutex::new(entitlements)),
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
             node_freshness_secs: 60,
         });
@@ -1737,13 +1857,16 @@ mod tests {
             }],
         );
 
-        let mut entitlements = HashMap::new();
-        entitlements.insert(
+        let mut subscriptions = HashMap::new();
+        subscriptions.insert(
             customer_id,
-            Entitlements {
-                max_active_sessions: 1,
-                max_devices: 3,
-                allowed_regions: Some(vec!["us-east1".to_string()]),
+            SubscriptionProfile {
+                entitlements: Entitlements {
+                    max_active_sessions: 1,
+                    max_devices: 3,
+                    allowed_regions: Some(vec!["us-east1".to_string()]),
+                },
+                session_eligible: true,
             },
         );
 
@@ -1763,7 +1886,7 @@ mod tests {
             allow_legacy_customer_header: true,
             revoked_token_ids: Mutex::new(HashMap::new()),
             token_store: None,
-            subscription_store: SubscriptionStore::InMemory(Mutex::new(entitlements)),
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
             node_freshness_secs: 60,
         });
@@ -1790,5 +1913,75 @@ mod tests {
         .await
         .expect_err("region policy should reject");
         assert_eq!(err.code, "region_not_allowed_by_plan");
+    }
+
+    #[tokio::test]
+    async fn start_session_rejects_when_subscription_inactive() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut devices = HashMap::new();
+        devices.insert(
+            customer_id,
+            vec![Device {
+                id: device_id,
+                customer_id,
+                name: "phone".to_string(),
+                public_key: "pk".to_string(),
+                created_at: Utc::now(),
+            }],
+        );
+
+        let mut subscriptions = HashMap::new();
+        subscriptions.insert(
+            customer_id,
+            SubscriptionProfile {
+                entitlements: Entitlements::default(),
+                session_eligible: false,
+            },
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(devices),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
+            privacy_store: None,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-customer-id",
+            HeaderValue::from_str(&customer_id.to_string()).expect("header"),
+        );
+
+        let err = start_session(
+            State(state),
+            headers,
+            Json(StartSessionRequest {
+                device_id,
+                region: Some("us-west1".to_string()),
+                country_code: Some("US".to_string()),
+                city_code: None,
+                pool: Some("general".to_string()),
+                reconnect_session_key: None,
+                node_hint: None,
+            }),
+        )
+        .await
+        .expect_err("inactive subscription should reject");
+        assert_eq!(err.code, "subscription_inactive");
     }
 }

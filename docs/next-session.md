@@ -70,7 +70,10 @@
   - node geo/pool/capacity metadata on `vpn_nodes`.
 - `entry` now enforces subscription entitlements:
   - device registration respects `max_devices`,
-  - session start validates region against `allowed_regions`.
+  - session start validates region against `allowed_regions`,
+  - session start requires active/trialing subscription status.
+- Admin subscription endpoint added:
+  - `POST /v1/admin/subscriptions` updates customer plan/status.
 - `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring.
 - Privacy metadata cleanup worker added in `entry` for terminated sessions and audit events (retention env-configurable).
 - TLS enforcement toggles added:
@@ -80,6 +83,7 @@
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
 - Subscription lifecycle management APIs/backoffice flows are not implemented yet (only entitlement reads are wired).
+- Subscription listing/history APIs are not implemented yet (only upsert-style admin write is wired).
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement is opt-in via env flags; not defaulted on in all environments yet.
 - Privacy policy enforcement is incomplete (retention/redaction/minimal logging controls still need hardening).
@@ -87,7 +91,7 @@
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
-2. Add subscription lifecycle/admin APIs (assign/update customer plan and status) and validate status before session start.
+2. Add subscription read APIs/backoffice views (current coverage is admin upsert + runtime eligibility checks).
 3. Move TLS materials and secrets to GCP Secret Manager + IAM policies; turn `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` on by default in deployed environments.
 4. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 5. Add privacy controls: log redaction guarantees and auditable policy toggles on top of retention cleanup.

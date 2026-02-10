@@ -2,6 +2,14 @@ use sqlx::PgPool;
 use thiserror::Error;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubscriptionStatus {
+    Active,
+    Trialing,
+    PastDue,
+    Canceled,
+}
+
 #[derive(Debug, Clone)]
 pub struct Entitlements {
     pub max_active_sessions: i32,
@@ -21,6 +29,8 @@ impl Default for Entitlements {
 
 #[derive(Debug, Error)]
 pub enum SubscriptionRepoError {
+    #[error("plan not found")]
+    PlanNotFound,
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }
@@ -55,6 +65,80 @@ impl PostgresSubscriptionRepository {
         .await?;
 
         Ok(row.map(Into::into).unwrap_or_default())
+    }
+
+    pub async fn is_customer_session_eligible(
+        &self,
+        customer_id: Uuid,
+    ) -> Result<bool, SubscriptionRepoError> {
+        let row = sqlx::query_scalar::<_, i64>(
+            "SELECT 1
+             FROM customer_subscriptions s
+             WHERE s.customer_id = $1
+               AND s.status IN ('active', 'trialing')
+               AND s.starts_at <= now()
+               AND (s.ends_at IS NULL OR s.ends_at >= now())
+             LIMIT 1",
+        )
+        .bind(customer_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.is_some())
+    }
+
+    pub async fn upsert_customer_subscription(
+        &self,
+        customer_id: Uuid,
+        plan_code: &str,
+        status: SubscriptionStatus,
+    ) -> Result<(), SubscriptionRepoError> {
+        let plan_id = sqlx::query_scalar::<_, Uuid>("SELECT id FROM plans WHERE code = $1 LIMIT 1")
+            .bind(plan_code)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or(SubscriptionRepoError::PlanNotFound)?;
+
+        let status_text = status.as_str();
+        sqlx::query(
+            "INSERT INTO customer_subscriptions (customer_id, plan_id, status, starts_at, created_at, updated_at)
+             VALUES ($1, $2, $3, now(), now(), now())
+             ON CONFLICT (customer_id) WHERE status IN ('active', 'trialing')
+             DO UPDATE SET
+                 plan_id = EXCLUDED.plan_id,
+                 status = EXCLUDED.status,
+                 starts_at = now(),
+                 ends_at = NULL,
+                 updated_at = now()",
+        )
+        .bind(customer_id)
+        .bind(plan_id)
+        .bind(status_text)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+}
+
+impl SubscriptionStatus {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "trialing" => Some(Self::Trialing),
+            "past_due" => Some(Self::PastDue),
+            "canceled" => Some(Self::Canceled),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Trialing => "trialing",
+            Self::PastDue => "past_due",
+            Self::Canceled => "canceled",
+        }
     }
 }
 

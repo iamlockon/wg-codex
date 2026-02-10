@@ -124,6 +124,7 @@ Public (`entry`):
 Admin/Internal (`entry`):
 - `GET /v1/admin/nodes`
 - `POST /v1/admin/nodes`
+- `POST /v1/admin/subscriptions`
 - `POST /v1/internal/nodes/health`
 
 Internal gRPC (`core`):
