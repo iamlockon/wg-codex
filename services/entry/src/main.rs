@@ -91,6 +91,10 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(true),
         revoked_token_ids: Mutex::new(HashMap::new()),
         token_store,
+        node_freshness_secs: std::env::var("APP_NODE_FRESHNESS_SECS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(60),
     });
 
     if let Some(repo) = state.token_store.clone() {
@@ -133,6 +137,7 @@ struct AppState {
     allow_legacy_customer_header: bool,
     revoked_token_ids: Mutex<HashMap<String, usize>>,
     token_store: Option<PostgresTokenRepository>,
+    node_freshness_secs: i64,
 }
 
 struct AuthContext {
@@ -248,7 +253,11 @@ impl IdentityStore {
 }
 
 impl NodeStore {
-    async fn select_node(&self, region: &str) -> Result<Option<Uuid>, ApiError> {
+    async fn select_node(
+        &self,
+        region: &str,
+        freshness_seconds: i64,
+    ) -> Result<Option<Uuid>, ApiError> {
         match self {
             NodeStore::InMemory(store) => {
                 let store = store.lock().await;
@@ -256,14 +265,17 @@ impl NodeStore {
                 Ok(store
                     .values()
                     .filter(|n| {
-                        n.region == region && n.healthy && (now - n.updated_at).num_seconds() <= 60
+                        n.region == region
+                            && n.healthy
+                            && (now - n.updated_at).num_seconds() <= freshness_seconds
                     })
                     .min_by_key(|n| n.active_peer_count)
                     .map(|n| n.id))
             }
-            NodeStore::Postgres(repo) => {
-                repo.select_node(region).await.map_err(map_node_repo_error)
-            }
+            NodeStore::Postgres(repo) => repo
+                .select_node(region, freshness_seconds)
+                .await
+                .map_err(map_node_repo_error),
         }
     }
 
@@ -1069,7 +1081,10 @@ async fn resolve_node_hint(
         return Ok(Some(hint));
     }
 
-    let selected = state.node_store.select_node(region).await?;
+    let selected = state
+        .node_store
+        .select_node(region, state.node_freshness_secs)
+        .await?;
     if selected.is_none() && state.node_store.requires_selection() {
         return Err(ApiError::bad_request("no_nodes_available_in_region"));
     }
@@ -1272,6 +1287,7 @@ mod tests {
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(HashMap::new()),
             token_store: None,
+            node_freshness_secs: 60,
         };
 
         let headers = HeaderMap::new();
@@ -1307,6 +1323,7 @@ mod tests {
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(revoked),
             token_store: None,
+            node_freshness_secs: 60,
         };
 
         let mut headers = HeaderMap::new();

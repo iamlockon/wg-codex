@@ -42,17 +42,22 @@ impl PostgresNodeRepository {
         Self { pool }
     }
 
-    pub async fn select_node(&self, region: &str) -> Result<Option<Uuid>, NodeRepoError> {
+    pub async fn select_node(
+        &self,
+        region: &str,
+        freshness_seconds: i64,
+    ) -> Result<Option<Uuid>, NodeRepoError> {
         sqlx::query_scalar::<_, Uuid>(
             "SELECT id
              FROM vpn_nodes
              WHERE region = $1
                AND healthy = true
-               AND updated_at > now() - interval '60 seconds'
+               AND updated_at > now() - ($2::bigint * interval '1 second')
              ORDER BY active_peer_count ASC, updated_at DESC
              LIMIT 1",
         )
         .bind(region)
+        .bind(freshness_seconds)
         .fetch_optional(&self.pool)
         .await
         .map_err(NodeRepoError::from)
