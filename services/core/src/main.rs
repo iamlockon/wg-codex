@@ -562,6 +562,7 @@ mod tests {
             .expect_err("connect should fail");
         assert_eq!(err.code(), tonic::Code::Internal);
         assert!(err.message().contains("dataplane_connect_failed"));
+        assert!(!service.is_healthy());
     }
 
     #[tokio::test]
@@ -586,6 +587,7 @@ mod tests {
             .await
             .expect_err("disconnect should fail");
         assert_eq!(err.code(), tonic::Code::Internal);
+        assert!(!service.is_healthy());
 
         let still = service
             .get_session(Request::new(GetSessionRequest {
