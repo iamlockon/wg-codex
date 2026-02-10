@@ -55,6 +55,7 @@
   - `revoked_tokens` migration added,
   - Postgres-backed revocation checks/writes in `services/entry/src/token_repo.rs`,
   - in-memory revoked cache remains for fast-path checks.
+- Expired revocation cleanup loop added in `entry` when Postgres token store is enabled.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -66,7 +67,7 @@
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Add cleanup/TTL job for expired rows in `revoked_tokens`.
+4. Move revocation cleanup to DB-native TTL/cron job or dedicated worker (current cleanup runs in-process).
 5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 
 ## Open Risks / Watch Items

@@ -32,6 +32,7 @@ use sqlx::postgres::PgPoolOptions;
 use subtle::ConstantTimeEq;
 use token_repo::{PostgresTokenRepository, TokenRepoError};
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::{Duration, sleep};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -91,6 +92,10 @@ async fn main() -> anyhow::Result<()> {
         revoked_token_ids: Mutex::new(HashSet::new()),
         token_store,
     });
+
+    if let Some(repo) = state.token_store.clone() {
+        tokio::spawn(revocation_cleanup_loop(repo));
+    }
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -393,6 +398,17 @@ impl SessionStore {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn revocation_cleanup_loop(repo: PostgresTokenRepository) {
+    loop {
+        if let Ok(removed) = repo.purge_expired().await {
+            if removed > 0 {
+                info!(removed, "purged expired revoked tokens");
+            }
+        }
+        sleep(Duration::from_secs(3600)).await;
+    }
 }
 
 async fn build_core_client(grpc_target: &str) -> anyhow::Result<ControlPlaneClient<Channel>> {

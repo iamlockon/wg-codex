@@ -55,4 +55,11 @@ impl PostgresTokenRepository {
         .await?;
         Ok(exists)
     }
+
+    pub async fn purge_expired(&self) -> Result<u64, TokenRepoError> {
+        let result = sqlx::query("DELETE FROM revoked_tokens WHERE expires_at <= now()")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
 }
