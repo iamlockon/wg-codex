@@ -65,6 +65,9 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     tokio::spawn(reconciliation_loop(service.clone()));
+    if let Some(cfg) = HealthReporterConfig::from_env() {
+        tokio::spawn(health_report_loop(service.clone(), cfg));
+    }
 
     info!(%addr, "core gRPC service started");
     tonic::transport::Server::builder()
@@ -82,6 +85,54 @@ async fn reconciliation_loop(service: Arc<CoreService>) {
             error!(%err, "dataplane reconciliation failed");
         }
         sleep(Duration::from_secs(30)).await;
+    }
+}
+
+#[derive(Clone)]
+struct HealthReporterConfig {
+    node_id: Uuid,
+    entry_health_url: String,
+    admin_api_token: String,
+}
+
+impl HealthReporterConfig {
+    fn from_env() -> Option<Self> {
+        let node_id = std::env::var("CORE_NODE_ID")
+            .ok()
+            .and_then(|v| Uuid::parse_str(&v).ok())?;
+        let admin_api_token = std::env::var("ADMIN_API_TOKEN").ok()?;
+        let entry_health_url = std::env::var("CORE_ENTRY_HEALTH_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8080/v1/internal/nodes/health".to_string());
+
+        Some(Self {
+            node_id,
+            entry_health_url,
+            admin_api_token,
+        })
+    }
+}
+
+async fn health_report_loop(service: Arc<CoreService>, cfg: HealthReporterConfig) {
+    let http = reqwest::Client::new();
+    loop {
+        let active_peer_count = service.active_peer_count().await;
+        let body = serde_json::json!({
+            "node_id": cfg.node_id,
+            "healthy": true,
+            "active_peer_count": active_peer_count,
+        });
+
+        let res = http
+            .post(&cfg.entry_health_url)
+            .header("x-admin-token", &cfg.admin_api_token)
+            .json(&body)
+            .send()
+            .await;
+        if let Err(err) = res {
+            error!(%err, "failed to publish node health");
+        }
+
+        sleep(Duration::from_secs(10)).await;
     }
 }
 
@@ -151,6 +202,10 @@ impl CoreService {
             .values()
             .map(|s| s.peer.clone())
             .collect()
+    }
+
+    async fn active_peer_count(&self) -> i64 {
+        self.runtime.read().await.sessions.len() as i64
     }
 
     fn endpoint_for_region(&self, region: &str) -> String {

@@ -9,6 +9,8 @@ anyhow.workspace = true
 chrono.workspace = true
 control-plane = { path = "../../crates/control-plane" }
 domain = { path = "../../crates/domain" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json.workspace = true
 tokio.workspace = true
 tonic = "0.12"
 tracing.workspace = true
