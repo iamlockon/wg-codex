@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package vpn.control.v1;
+
+service ControlPlane {
+  rpc ConnectDevice(ConnectRequest) returns (ConnectResponse);
+  rpc DisconnectDevice(DisconnectRequest) returns (DisconnectResponse);
+  rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+}
+
+message WireGuardClientConfig {
+  string endpoint = 1;
+  string server_public_key = 2;
+  string preshared_key = 3;
+  string assigned_ip = 4;
+  repeated string dns_servers = 5;
+  uint32 persistent_keepalive_secs = 6;
+  string qr_payload = 7;
+}
+
+message ConnectRequest {
+  string request_id = 1;
+  string session_key = 2;
+  string customer_id = 3;
+  string device_id = 4;
+  string device_public_key = 5;
+  string region = 6;
+  string node_hint = 7;
+}
+
+message ConnectResponse {
+  string node_id = 1;
+  string allocated_at = 2;
+  WireGuardClientConfig config = 3;
+}
+
+message DisconnectRequest {
+  string request_id = 1;
+  string session_key = 2;
+  string customer_id = 3;
+}
+
+message DisconnectResponse {
+  bool removed = 1;
+  string completed_at = 2;
+}
+
+message GetSessionRequest {
+  string customer_id = 1;
+}
+
+message SessionSnapshot {
+  string session_key = 1;
+  string region = 2;
+  string connected_at = 3;
+}
+
+message GetSessionResponse {
+  bool active = 1;
+  SessionSnapshot session = 2;
+}

@@ -1,0 +1,23 @@
+[package]
+name = "entry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+control-plane = { path = "../../crates/control-plane" }
+domain = { path = "../../crates/domain" }
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "derive"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tonic = "0.12"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

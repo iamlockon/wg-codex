@@ -1,0 +1,16 @@
+[package]
+name = "core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+control-plane = { path = "../../crates/control-plane" }
+domain = { path = "../../crates/domain" }
+tokio.workspace = true
+tonic = "0.12"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

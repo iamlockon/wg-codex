@@ -1,0 +1,17 @@
+[package]
+name = "control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+domain = { path = "../domain" }
+prost = "0.13"
+serde.workspace = true
+tonic = "0.12"
+uuid.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored = "3"
+tonic-build = "0.12"
