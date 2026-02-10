@@ -1188,6 +1188,7 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use chrono::Duration;
     use jsonwebtoken::errors::{Error as JwtError, ErrorKind};
 
     fn test_keys() -> JwtKeyStore {
@@ -1337,5 +1338,103 @@ mod tests {
             .expect_err("revoked should fail");
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "revoked_access_token");
+    }
+
+    #[tokio::test]
+    async fn auth_context_ignores_expired_revocation_cache_entries() {
+        let keys = test_keys();
+        let customer_id = Uuid::new_v4();
+        let token = issue_access_token(customer_id, &keys).expect("token");
+        let ctx = auth_context_from_bearer(&token, &keys).expect("ctx");
+        let token_id = ctx.token_id.clone().expect("jti");
+        let mut revoked = HashMap::new();
+        revoked.insert(token_id.clone(), 0usize);
+
+        let state = AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: keys,
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(revoked),
+            token_store: None,
+            node_freshness_secs: 60,
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("header"),
+        );
+
+        let parsed = auth_context_from_request(&state, &headers)
+            .await
+            .expect("expired cache entry should be purged");
+        assert_eq!(parsed.customer_id, customer_id);
+
+        let revoked_after = state.revoked_token_ids.lock().await;
+        assert!(!revoked_after.contains_key(&token_id));
+    }
+
+    #[tokio::test]
+    async fn node_selection_skips_stale_nodes_and_prefers_lowest_load_fresh_node() {
+        let stale_id = Uuid::new_v4();
+        let fresh_busy_id = Uuid::new_v4();
+        let fresh_best_id = Uuid::new_v4();
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            stale_id,
+            NodeRecord {
+                id: stale_id,
+                region: "us-west1".to_string(),
+                provider: "gcp".to_string(),
+                endpoint_host: "stale.example.com".to_string(),
+                endpoint_port: 51820,
+                healthy: true,
+                active_peer_count: 0,
+                updated_at: Utc::now() - Duration::seconds(120),
+            },
+        );
+        nodes.insert(
+            fresh_busy_id,
+            NodeRecord {
+                id: fresh_busy_id,
+                region: "us-west1".to_string(),
+                provider: "gcp".to_string(),
+                endpoint_host: "busy.example.com".to_string(),
+                endpoint_port: 51820,
+                healthy: true,
+                active_peer_count: 5,
+                updated_at: Utc::now(),
+            },
+        );
+        nodes.insert(
+            fresh_best_id,
+            NodeRecord {
+                id: fresh_best_id,
+                region: "us-west1".to_string(),
+                provider: "gcp".to_string(),
+                endpoint_host: "best.example.com".to_string(),
+                endpoint_port: 51820,
+                healthy: true,
+                active_peer_count: 2,
+                updated_at: Utc::now(),
+            },
+        );
+
+        let store = NodeStore::InMemory(Mutex::new(nodes));
+        let selected = store
+            .select_node("us-west1", 60)
+            .await
+            .expect("select node");
+        assert_eq!(selected, Some(fresh_best_id));
     }
 }
