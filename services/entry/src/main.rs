@@ -1,4 +1,5 @@
 mod google_oidc;
+mod node_repo;
 mod oauth_repo;
 mod postgres_session_repo;
 mod session_repo;
@@ -17,6 +18,7 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
+use node_repo::{NodeRepoError, PostgresNodeRepository};
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
 use serde::{Deserialize, Serialize};
@@ -37,23 +39,26 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let core_client = ControlPlaneClient::connect(grpc_target.clone()).await?;
 
-    let (session_store, identity_store) = if let Ok(database_url) = std::env::var("DATABASE_URL") {
-        let pool = PgPoolOptions::new()
-            .max_connections(10)
-            .connect(&database_url)
-            .await?;
-        info!("entry using postgres session and oauth stores");
-        (
-            SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
-            IdentityStore::Postgres(PostgresOAuthRepository::new(pool)),
-        )
-    } else {
-        warn!("DATABASE_URL not set; entry using in-memory session/oauth stores");
-        (
-            SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
-            IdentityStore::InMemory(Mutex::new(HashMap::new())),
-        )
-    };
+    let (session_store, identity_store, node_store) =
+        if let Ok(database_url) = std::env::var("DATABASE_URL") {
+            let pool = PgPoolOptions::new()
+                .max_connections(10)
+                .connect(&database_url)
+                .await?;
+            info!("entry using postgres session/oauth/node stores");
+            (
+                SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
+                IdentityStore::Postgres(PostgresOAuthRepository::new(pool.clone())),
+                NodeStore::Postgres(PostgresNodeRepository::new(pool)),
+            )
+        } else {
+            warn!("DATABASE_URL not set; entry using in-memory session/oauth/node stores");
+            (
+                SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+                IdentityStore::InMemory(Mutex::new(HashMap::new())),
+                NodeStore::InMemory,
+            )
+        };
 
     let state = Arc::new(AppState {
         runtime_sessions_by_customer: RwLock::new(HashMap::new()),
@@ -63,6 +68,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         google_oidc: GoogleOidcConfig::from_env(),
         identity_store,
+        node_store,
     });
 
     let app = Router::new()
@@ -92,6 +98,7 @@ struct AppState {
     http_client: reqwest::Client,
     google_oidc: Option<GoogleOidcConfig>,
     identity_store: IdentityStore,
+    node_store: NodeStore,
 }
 
 #[derive(Clone)]
@@ -109,6 +116,11 @@ enum SessionStore {
 enum IdentityStore {
     InMemory(Mutex<HashMap<(String, String), Uuid>>),
     Postgres(PostgresOAuthRepository),
+}
+
+enum NodeStore {
+    InMemory,
+    Postgres(PostgresNodeRepository),
 }
 
 impl IdentityStore {
@@ -132,6 +144,21 @@ impl IdentityStore {
                 .await
                 .map_err(map_oauth_repo_error),
         }
+    }
+}
+
+impl NodeStore {
+    async fn select_node(&self, region: &str) -> Result<Option<Uuid>, ApiError> {
+        match self {
+            NodeStore::InMemory => Ok(None),
+            NodeStore::Postgres(repo) => {
+                repo.select_node(region).await.map_err(map_node_repo_error)
+            }
+        }
+    }
+
+    fn requires_selection(&self) -> bool {
+        matches!(self, NodeStore::Postgres(_))
     }
 }
 
@@ -361,6 +388,8 @@ async fn start_session(
             }));
         }
         StartSessionOutcome::Reconnected(existing_row) => {
+            let selected_node =
+                resolve_node_hint(&state, existing_row.region.as_str(), payload.node_hint).await?;
             let runtime_sessions = state.runtime_sessions_by_customer.read().await;
             if let Some(existing) = runtime_sessions.get(&customer_id) {
                 return Ok(Json(StartSessionResponse::Active {
@@ -379,7 +408,7 @@ async fn start_session(
                 device_id: device.id.to_string(),
                 device_public_key: device.public_key,
                 region: existing_row.region.clone(),
-                node_hint: maybe_uuid_to_string(payload.node_hint),
+                node_hint: maybe_uuid_to_string(selected_node),
             };
             let connect_response = {
                 let mut client = state.core_client.lock().await;
@@ -410,6 +439,8 @@ async fn start_session(
             }));
         }
         StartSessionOutcome::Created(created_row) => {
+            let selected_node =
+                resolve_node_hint(&state, payload.region.as_str(), payload.node_hint).await?;
             let request = ConnectRequest {
                 request_id: Uuid::new_v4().to_string(),
                 session_key: created_row.session_key.clone(),
@@ -417,7 +448,7 @@ async fn start_session(
                 device_id: device.id.to_string(),
                 device_public_key: device.public_key,
                 region: payload.region.clone(),
-                node_hint: maybe_uuid_to_string(payload.node_hint),
+                node_hint: maybe_uuid_to_string(selected_node),
             };
 
             let connect_response = {
@@ -549,6 +580,23 @@ fn customer_id_from_headers(headers: &HeaderMap) -> Result<Uuid, ApiError> {
     Uuid::parse_str(raw).map_err(|_| ApiError::unauthorized("invalid_customer_id"))
 }
 
+async fn resolve_node_hint(
+    state: &Arc<AppState>,
+    region: &str,
+    requested_hint: Option<Uuid>,
+) -> Result<Option<Uuid>, ApiError> {
+    if let Some(hint) = requested_hint {
+        return Ok(Some(hint));
+    }
+
+    let selected = state.node_store.select_node(region).await?;
+    if selected.is_none() && state.node_store.requires_selection() {
+        return Err(ApiError::bad_request("no_nodes_available_in_region"));
+    }
+
+    Ok(selected)
+}
+
 fn map_repo_error(err: RepoError) -> ApiError {
     match err {
         RepoError::NotFound => ApiError::not_found("no_active_session"),
@@ -578,6 +626,12 @@ fn map_oidc_error(err: OidcError) -> ApiError {
 fn map_oauth_repo_error(err: OAuthRepoError) -> ApiError {
     match err {
         OAuthRepoError::Database(_) => ApiError::service_unavailable("identity_store_failed"),
+    }
+}
+
+fn map_node_repo_error(err: NodeRepoError) -> ApiError {
+    match err {
+        NodeRepoError::Database(_) => ApiError::service_unavailable("node_store_failed"),
     }
 }
 

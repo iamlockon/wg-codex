@@ -19,19 +19,23 @@
   - `services/entry/src/oauth_repo.rs` resolves/creates `customers` + `oauth_identities` in Postgres.
   - `oauth_callback` now uses this repository when `DATABASE_URL` is set.
   - In-memory fallback store is used when Postgres is not configured.
+- Node selection is now wired for `entry` start-session flow:
+  - `services/entry/src/node_repo.rs` selects healthy nodes from `vpn_nodes` by region and load (`active_peer_count`).
+  - `start_session` now auto-selects node in Postgres mode when `node_hint` is not provided.
+  - Returns `no_nodes_available_in_region` if no healthy node exists in requested region.
 
 ## Not Production-Ready Yet
-- No real OAuth token verification against Google OIDC.
-- No persistent repositories (Postgres/sqlx) wired into services.
 - No WireGuard kernel integration yet.
 - No hardened authz/rate limits/audit integrity guarantees yet.
+- No service-to-service mTLS yet.
+- Access token in OAuth callback is still a dev placeholder.
 
 ## Priority Next Steps
-1. Add node selection logic backed by `vpn_nodes` table (region + health + load score).
-2. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
-3. Add mTLS between services and move secrets to GCP Secret Manager.
-4. Add integration tests against real Postgres + migrations for `entry` session and OAuth flows.
-5. Replace dev `access_token` placeholder with signed JWT/session token issuance and key rotation flow.
+1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
+2. Add mTLS between services and move secrets to GCP Secret Manager.
+3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
+4. Replace dev `access_token` placeholder with signed JWT/session token issuance and key rotation flow.
+5. Add `vpn_nodes` lifecycle/admin APIs and health updater to keep selection data fresh.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
