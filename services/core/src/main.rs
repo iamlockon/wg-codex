@@ -2,6 +2,7 @@ mod dataplane;
 mod ip_pool;
 
 use std::collections::HashMap;
+use std::fs;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -18,6 +19,7 @@ use domain::WireGuardClientConfig;
 use ip_pool::Ipv4Pool;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
+use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tonic::{Code, Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -58,11 +60,7 @@ async fn main() -> anyhow::Result<()> {
 
     dataplane.bootstrap().await.map_err(anyhow::Error::msg)?;
 
-    let service = Arc::new(CoreService::new(
-        dataplane,
-        endpoint_template,
-        server_public_key,
-    ));
+    let service = CoreService::new(dataplane, endpoint_template, server_public_key);
 
     tokio::spawn(reconciliation_loop(service.clone()));
     if let Some(cfg) = HealthReporterConfig::from_env() {
@@ -70,7 +68,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     info!(%addr, "core gRPC service started");
-    tonic::transport::Server::builder()
+    let mut server = tonic::transport::Server::builder();
+    if let Some(tls) = server_tls_config_from_env()? {
+        server = server.tls_config(tls)?;
+        info!("core gRPC TLS enabled");
+    }
+    server
         .add_service(ControlPlaneServer::new(service))
         .serve(addr)
         .await?;
@@ -78,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn reconciliation_loop(service: Arc<CoreService>) {
+async fn reconciliation_loop(service: CoreService) {
     loop {
         let peers = service.desired_peers().await;
         if let Err(err) = service.dataplane.reconcile(&peers).await {
@@ -112,7 +115,7 @@ impl HealthReporterConfig {
     }
 }
 
-async fn health_report_loop(service: Arc<CoreService>, cfg: HealthReporterConfig) {
+async fn health_report_loop(service: CoreService, cfg: HealthReporterConfig) {
     let http = reqwest::Client::new();
     loop {
         let active_peer_count = service.active_peer_count().await;
@@ -136,6 +139,26 @@ async fn health_report_loop(service: Arc<CoreService>, cfg: HealthReporterConfig
     }
 }
 
+fn server_tls_config_from_env() -> anyhow::Result<Option<ServerTlsConfig>> {
+    let cert_path = std::env::var("CORE_TLS_CERT_PATH").ok();
+    let key_path = std::env::var("CORE_TLS_KEY_PATH").ok();
+    let (Some(cert_path), Some(key_path)) = (cert_path, key_path) else {
+        return Ok(None);
+    };
+
+    let cert = fs::read(cert_path)?;
+    let key = fs::read(key_path)?;
+    let identity = Identity::from_pem(cert, key);
+    let mut cfg = ServerTlsConfig::new().identity(identity);
+
+    if let Ok(ca_path) = std::env::var("CORE_TLS_CLIENT_CA_CERT_PATH") {
+        let ca = fs::read(ca_path)?;
+        cfg = cfg.client_ca_root(Certificate::from_pem(ca));
+    }
+
+    Ok(Some(cfg))
+}
+
 struct CoreRuntime {
     sessions: HashMap<Uuid, RuntimeSession>,
     ip_pool: Ipv4Pool,
@@ -156,6 +179,7 @@ struct RuntimeSession {
     peer: PeerSpec,
 }
 
+#[derive(Clone)]
 struct CoreService {
     runtime: Arc<RwLock<CoreRuntime>>,
     dataplane: Arc<dyn DataPlane>,
@@ -214,7 +238,7 @@ impl CoreService {
 }
 
 #[tonic::async_trait]
-impl ControlPlane for Arc<CoreService> {
+impl ControlPlane for CoreService {
     async fn connect_device(
         &self,
         request: Request<ConnectRequest>,
@@ -235,7 +259,7 @@ impl ControlPlane for Arc<CoreService> {
                 .ok_or_else(|| Status::new(Code::ResourceExhausted, "ip_pool_exhausted"))?;
 
             let peer = PeerSpec {
-                session_key: req.session_key.clone(),
+                _session_key: req.session_key.clone(),
                 device_public_key: req.device_public_key.clone(),
                 assigned_ip: assigned_ip.clone(),
             };
@@ -355,21 +379,21 @@ mod tests {
         }
     }
 
-    fn test_service() -> Arc<CoreService> {
-        Arc::new(CoreService::new(
+    fn test_service() -> CoreService {
+        CoreService::new(
             Arc::new(NoopDataPlane),
             "{region}.gcp.vpn.example.net:51820".to_string(),
             "server-pub".to_string(),
-        ))
+        )
     }
 
-    fn test_service_with_pool(first_host: u8, last_host: u8) -> Arc<CoreService> {
-        Arc::new(CoreService::new_with_pool(
+    fn test_service_with_pool(first_host: u8, last_host: u8) -> CoreService {
+        CoreService::new_with_pool(
             Arc::new(NoopDataPlane),
             "{region}.gcp.vpn.example.net:51820".to_string(),
             "server-pub".to_string(),
             Ipv4Pool::new([10, 90, 0], 24, first_host, last_host),
-        ))
+        )
     }
 
     struct FailingConnectDataPlane;
@@ -500,11 +524,11 @@ mod tests {
 
     #[tokio::test]
     async fn connect_returns_internal_when_dataplane_fails() {
-        let service = Arc::new(CoreService::new(
+        let service = CoreService::new(
             Arc::new(FailingConnectDataPlane),
             "{region}.gcp.vpn.example.net:51820".to_string(),
             "server-pub".to_string(),
-        ));
+        );
 
         let err = service
             .connect_device(Request::new(connect_request(Uuid::new_v4())))
@@ -516,11 +540,11 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_failure_keeps_session_active() {
-        let service = Arc::new(CoreService::new(
+        let service = CoreService::new(
             Arc::new(FailingDisconnectDataPlane),
             "{region}.gcp.vpn.example.net:51820".to_string(),
             "server-pub".to_string(),
-        ));
+        );
         let customer_id = Uuid::new_v4();
         let _ = service
             .connect_device(Request::new(connect_request(customer_id)))

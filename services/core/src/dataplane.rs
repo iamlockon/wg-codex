@@ -3,7 +3,7 @@ use tonic::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct PeerSpec {
-    pub session_key: String,
+    pub _session_key: String,
     pub device_public_key: String,
     pub assigned_ip: String,
 }

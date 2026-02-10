@@ -28,6 +28,14 @@
   - `POST /v1/admin/nodes` creates/updates node metadata.
   - `POST /v1/internal/nodes/health` updates `healthy` and `active_peer_count`.
   - These endpoints require `x-admin-token` matching `ADMIN_API_TOKEN`.
+- `core` now has dataplane scaffolding with:
+  - pluggable dataplane (`noop` and Linux shell-backed),
+  - IPv4 pool allocation/release,
+  - periodic reconciliation loop.
+- `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
+- TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
+  - optional server TLS in `core`,
+  - optional client TLS and client cert in `entry`.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -37,10 +45,10 @@
 
 ## Priority Next Steps
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
-2. Add mTLS between services and move secrets to GCP Secret Manager.
+2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
 4. Replace dev `access_token` placeholder with signed JWT/session token issuance and key rotation flow.
-5. Add periodic/streamed node heartbeat updates from `core` nodes to `entry` health API.
+5. Replace shell-command dataplane with direct netlink/WireGuard UAPI integration in Rust.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.

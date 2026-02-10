@@ -5,6 +5,7 @@ mod postgres_session_repo;
 mod session_repo;
 
 use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::{Mutex, RwLock};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -37,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
 
     let grpc_target =
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
-    let core_client = ControlPlaneClient::connect(grpc_target.clone()).await?;
+    let core_client = build_core_client(&grpc_target).await?;
 
     let (session_store, identity_store, node_store) =
         if let Ok(database_url) = std::env::var("DATABASE_URL") {
@@ -302,6 +304,41 @@ impl SessionStore {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn build_core_client(grpc_target: &str) -> anyhow::Result<ControlPlaneClient<Channel>> {
+    let mut endpoint = Endpoint::from_shared(grpc_target.to_string())?;
+
+    if let Some(tls) = client_tls_config_from_env()? {
+        endpoint = endpoint.tls_config(tls)?;
+    }
+
+    let channel = endpoint.connect().await?;
+    Ok(ControlPlaneClient::new(channel))
+}
+
+fn client_tls_config_from_env() -> anyhow::Result<Option<ClientTlsConfig>> {
+    let ca_path = std::env::var("CORE_GRPC_TLS_CA_CERT_PATH").ok();
+    let Some(ca_path) = ca_path else {
+        return Ok(None);
+    };
+
+    let domain =
+        std::env::var("CORE_GRPC_TLS_DOMAIN").unwrap_or_else(|_| "core.internal".to_string());
+    let ca = fs::read(ca_path)?;
+    let mut tls = ClientTlsConfig::new()
+        .domain_name(domain)
+        .ca_certificate(Certificate::from_pem(ca));
+
+    let cert_path = std::env::var("CORE_GRPC_TLS_CLIENT_CERT_PATH").ok();
+    let key_path = std::env::var("CORE_GRPC_TLS_CLIENT_KEY_PATH").ok();
+    if let (Some(cert_path), Some(key_path)) = (cert_path, key_path) {
+        let cert = fs::read(cert_path)?;
+        let key = fs::read(key_path)?;
+        tls = tls.identity(Identity::from_pem(cert, key));
+    }
+
+    Ok(Some(tls))
 }
 
 #[derive(Deserialize)]
