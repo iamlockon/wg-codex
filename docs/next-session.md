@@ -56,6 +56,7 @@
   - Postgres-backed revocation checks/writes in `services/entry/src/token_repo.rs`,
   - in-memory revoked cache remains for fast-path checks.
 - Expired revocation cleanup loop added in `entry` when Postgres token store is enabled.
+- Added structured security/audit logs for OAuth login, logout, session start/reconnect/conflict/terminate.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.

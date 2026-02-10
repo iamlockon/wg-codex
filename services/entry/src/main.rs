@@ -493,6 +493,7 @@ async fn oauth_callback(
         .await?;
     let access_token = issue_access_token(customer_id, &state.jwt_keys)
         .map_err(|_| ApiError::service_unavailable("oauth_token_issue_failed"))?;
+    info!(provider=%provider, %customer_id, "oauth login succeeded");
     Ok(Json(OAuthCallbackResponse {
         provider,
         customer_id,
@@ -523,6 +524,7 @@ async fn logout(
             .await
             .map_err(map_token_repo_error)?;
     }
+    info!(customer_id=%ctx.customer_id, token_id=%token_id, "logout revoked access token");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -716,6 +718,7 @@ async fn start_session(
         StartSessionOutcome::Conflict {
             existing_session_key,
         } => {
+            info!(%customer_id, existing_session_key=%existing_session_key, "session start conflict due to active session");
             return Ok(Json(StartSessionResponse::Conflict {
                 existing_session_key,
                 message: "active_session_exists",
@@ -765,6 +768,7 @@ async fn start_session(
                     config: config.clone(),
                 },
             );
+            info!(%customer_id, session_key=%existing_row.session_key, region=%existing_row.region, "session reconnected");
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: existing_row.session_key,
@@ -807,6 +811,7 @@ async fn start_session(
                     config: config.clone(),
                 },
             );
+            info!(%customer_id, session_key=%created_row.session_key, region=%payload.region, "session started");
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: created_row.session_key,
@@ -901,6 +906,7 @@ async fn terminate_session(
         .write()
         .await
         .remove(&customer_id);
+    info!(%customer_id, %session_key, "session terminated");
     Ok(StatusCode::NO_CONTENT)
 }
 
