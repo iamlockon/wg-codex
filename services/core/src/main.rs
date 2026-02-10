@@ -13,7 +13,7 @@ use control_plane::{
     ControlPlane, ControlPlaneServer, config_to_proto, into_rfc3339, parse_optional_uuid,
     parse_uuid,
 };
-use dataplane::{DataPlane, LinuxShellDataPlane, NoopDataPlane, PeerSpec};
+use dataplane::{DataPlane, LinuxDataPlaneConfig, LinuxShellDataPlane, NoopDataPlane, PeerSpec};
 use domain::WireGuardClientConfig;
 use ip_pool::Ipv4Pool;
 use tokio::sync::RwLock;
@@ -30,7 +30,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let addr = "127.0.0.1:50051".parse()?;
-    let iface = std::env::var("WG_INTERFACE").unwrap_or_else(|_| "wg0".to_string());
     let endpoint_template = std::env::var("WG_ENDPOINT_TEMPLATE")
         .unwrap_or_else(|_| "{region}.gcp.vpn.example.net:51820".to_string());
     let server_public_key =
@@ -42,8 +41,22 @@ async fn main() -> anyhow::Result<()> {
     let dataplane: Arc<dyn DataPlane> = if use_noop {
         Arc::new(NoopDataPlane)
     } else {
-        Arc::new(LinuxShellDataPlane::new(iface))
+        let cfg = LinuxDataPlaneConfig {
+            iface: std::env::var("WG_INTERFACE").unwrap_or_else(|_| "wg0".to_string()),
+            interface_cidr: std::env::var("WG_INTERFACE_CIDR")
+                .unwrap_or_else(|_| "10.90.0.1/24".to_string()),
+            private_key_path: std::env::var("WG_PRIVATE_KEY_PATH")
+                .unwrap_or_else(|_| "/etc/wireguard/private.key".to_string()),
+            listen_port: std::env::var("WG_LISTEN_PORT")
+                .ok()
+                .and_then(|v| v.parse::<u16>().ok())
+                .unwrap_or(51820),
+            egress_iface: std::env::var("WG_EGRESS_IFACE").unwrap_or_else(|_| "eth0".to_string()),
+        };
+        Arc::new(LinuxShellDataPlane::new(cfg))
     };
+
+    dataplane.bootstrap().await.map_err(anyhow::Error::msg)?;
 
     let service = Arc::new(CoreService::new(
         dataplane,
