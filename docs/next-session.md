@@ -64,25 +64,30 @@
 - Added focused unit tests:
   - `entry`: stale node heartbeat filtering and expired revocation-cache eviction behavior.
   - `core`: `node_hint` UUID validation/propagation and disconnect behavior when no active session exists.
+- Product direction updated: target is now **Consumer Privacy / Geo-Unblocking VPN** (not Road Warrior).
 
 ## Not Production-Ready Yet
-- No WireGuard kernel integration yet.
-- No hardened authz/rate limits/audit integrity guarantees yet.
-- No service-to-service mTLS yet.
-- Access token in OAuth callback is still a dev placeholder.
+- Plan/subscription/entitlement model is not implemented yet.
+- Session policy is still effectively single-active-session per customer (not plan-driven).
+- Node selection is region/load based only; no country/city/profile pool semantics yet.
+- No service-to-service mTLS enforcement in active runtime path yet.
+- Privacy policy enforcement is incomplete (retention/redaction/minimal logging controls need hardening).
+- Remaining shell-based NAT path still exists (`iptables`/`nft` command execution).
 
 ## Priority Next Steps
-1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
-2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
-3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Move revocation cleanup to DB-native TTL/cron job or dedicated worker (current cleanup runs in-process).
+1. Add subscription + entitlement schema (`plans`, `customer_subscriptions`, concurrency/device limits) and enforce in `entry` session start flow.
+2. Extend node model to consumer geo semantics (country/city/pool profile) and update selection scoring accordingly.
+3. Add integration tests against real Postgres + migrations for session, OAuth identity, node selection, and token revocation flows.
+4. Move TLS materials and secrets to GCP Secret Manager + IAM policies; enforce mTLS by default between `entry` and `core`.
 5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
+6. Add privacy controls: bounded retention jobs, log redaction guarantees, and auditable policy toggles.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
 - Session transitions need idempotency keys across retries and partial failures.
 - WG provisioning and DB state can diverge; reconciliation is mandatory.
 - IPv4-first is selected; keep schema/config dual-stack-compatible for later IPv6 enablement.
+- Consumer geo-unblocking reliability depends on pool quality and destination-specific routing behavior; selection policy must remain explicit and testable.
 
 ## Fast Restart Checklist (first 10 minutes)
 1. Read `docs/architecture-plan.md` and this file.
@@ -91,7 +96,8 @@
    - `crates/control-plane/src/lib.rs`
    - `services/core/src/main.rs`
    - `services/entry/src/main.rs`
-3. Start DB repository wiring in `entry` and replace in-memory maps.
+3. Review consumer-focused architecture targets and convert them to concrete schema/API migrations.
+4. Start implementing subscription/entitlement enforcement in `entry` session start path.
 
 ## Commands to Run Next Session
 ```bash

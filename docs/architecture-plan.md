@@ -1,137 +1,163 @@
-# Road Warrior VPN Architecture and Delivery Plan
+# Consumer Privacy / Geo-Unblocking VPN Architecture and Delivery Plan
 
 ## Scope and Decisions Locked
 - Deployment model: `entry` and `core` are separate deployable services.
 - Data store: Postgres.
 - Customer authentication: OAuth (Google for v1, provider-agnostic model to extend later).
-- Session policy: one active session per customer; new connect attempts return conflict with existing `session_key`.
-- Reconnect policy: `session_key` is reusable for reconnect flows.
-- Topology: multi-region, with explicit node selection.
-- Client compatibility target: mobile and desktop from day 1, including QR payload in API responses.
+- Inter-service protocol: gRPC (`entry` to `core`) for low overhead and strict contracts.
 - Cloud target: GCP.
-- IP strategy: IPv4 egress in v1 for lower operational complexity and broad compatibility, with dual-stack-ready schema/config so IPv6 can be added without contract breaks.
+- Topology: multi-region with node selection.
+- Client compatibility target: mobile and desktop from day 1.
 - Security posture: high-security baseline aligned to 2026 expectations.
+- Product shift: this system targets consumer privacy and geo-unblocking, not enterprise road-warrior remote access.
+
+## Product Goals
+- Privacy-first consumer VPN experience (simple connect, country/city targeting, low trust surface).
+- Geo-targeted exit routing with stable regional pools.
+- Scalable session orchestration across many users and nodes.
+- Minimized and controlled metadata retention.
 
 ## Service Responsibilities
 
 ### `entry` service
-- Public API surface for signup/login via OAuth.
-- Customer/device lifecycle management.
-- Session orchestration API (`start`, `terminate`, `status`).
-- Enforces the customer-level single-active-session invariant.
-- Persists customer/device/session intent and audit trail in Postgres.
+- Public APIs for OAuth login, device management, and session lifecycle.
+- Plan/entitlement enforcement (concurrency limits, allowed regions/features).
+- Node pool selection by user intent (`fastest`, `country`, `city`, `streaming profile`, manual node where allowed).
+- Session orchestration and conflict/reconnect behavior.
+- Privacy-aware storage of customer, device, session, and audit metadata.
 
 ### `core` service
 - WireGuard control of Linux kernel interfaces/peers on VPN nodes.
-- Provision and tear down peer sessions.
-- Maintain node-local network egress setup (routing/NAT/firewall).
-- Reconcile desired state from control-plane requests to actual kernel state.
-- Emit node/session health and metrics.
+- Peer provisioning and teardown for high-concurrency consumer traffic.
+- Node egress management (routing, NAT/firewall, capacity gates).
+- Reconciliation between desired session state and actual kernel state.
+- Health and capacity reporting back to control-plane.
 
-## Inter-service Protocol Choice
-Use **gRPC** between `entry` and `core`.
-- Rationale: lower payload overhead than JSON REST in this service-to-service path, strict schema contracts, and built-in streaming patterns for future state/event channels.
-- Security: mTLS + short-lived service identity certificates.
+## Inter-service Security
+- mTLS between `entry` and `core` with short-lived service identities.
+- Authenticated internal health/reporting endpoints only.
+- Strict admin API token handling now; migrate to workload identity + signed internal auth.
 
 ## High-level Request Flows
 
-### Start Session
-1. Client calls `entry` `POST /sessions/start` with `device_id`, `region`, and optional `node_hint`.
-2. `entry` validates OAuth token and ownership of device.
-3. `entry` checks active session constraint:
-   - If active session exists and reconnect key matches, return active config.
-   - If active session exists and reconnect key does not match, return conflict + existing `session_key`.
-   - Else continue.
-4. `entry` selects a node in requested region (capacity/health-aware).
-5. `entry` calls `core.ConnectDevice` over gRPC.
-6. `core` allocates tunnel IP, configures WG peer in kernel, applies routing/NAT linkage.
-7. `core` returns session material (endpoint, server pubkey, assigned IP, DNS profile, keepalive, QR payload).
-8. `entry` persists session as active and returns config payload to caller.
+### Start Session (consumer)
+1. Client calls `entry` `POST /v1/sessions/start` with `device_id`, selection hint (`region` and optional `node_hint`), and optional reconnect token.
+2. `entry` validates bearer token, plan eligibility, and device ownership.
+3. `entry` applies concurrency policy for the plan:
+   - If at limit, return conflict payload including existing session key(s) according to policy.
+   - If reconnect token matches an active session, reuse session contract.
+4. `entry` selects node from fresh, healthy pool in requested geo bucket.
+5. `entry` calls `core.ConnectDevice` via gRPC.
+6. `core` allocates tunnel IP, programs WireGuard peer via kernel UAPI, and returns connection config.
+7. `entry` persists/updates session state and returns config payload.
 
 ### Terminate Session
-1. Client calls `entry` `POST /sessions/{session_key}/terminate`.
-2. `entry` verifies ownership and active status.
+1. Client calls `POST /v1/sessions/{session_key}/terminate`.
+2. `entry` validates ownership and current state.
 3. `entry` calls `core.DisconnectDevice`.
-4. `core` removes WG peer and frees IP allocation.
-5. `entry` marks session terminated.
+4. `core` removes peer and frees IP allocation.
+5. `entry` marks session terminated and emits audit event.
 
 ## Data Model (Postgres)
-Core tables:
+Current core tables (already present):
 - `customers`
 - `oauth_identities`
 - `devices`
 - `vpn_nodes`
 - `sessions`
 - `audit_events`
+- `revoked_tokens`
 
-Key constraints:
-- Partial unique index enforcing one active session per customer.
-- Unique device public key per customer.
-- Session key globally unique and opaque.
+Needed additions for consumer VPN:
+- `plans` and `customer_subscriptions`
+- `plan_entitlements` (max concurrent sessions/devices, premium features)
+- `node_pools` and `node_pool_membership` (general, low-latency, streaming-optimized)
+- `session_events` (connect/disconnect/reconnect/fail with bounded retention)
+- optional `egress_ips` mapping for managed pool observability
 
 Session states:
 - `requested`, `provisioning`, `active`, `terminating`, `terminated`, `failed`
 
+## Node Selection Model (Consumer)
+- Selection must be user-intent aware:
+  - by `country`/`city`,
+  - by profile (`fastest`, `general`, `streaming`, `privacy-max`),
+  - explicit node only for advanced flows.
+- Candidate filtering:
+  - healthy,
+  - heartbeat fresh,
+  - under capacity and policy thresholds.
+- Scoring:
+  - weighted load score (`active peers`, `cpu`, `bw budget`, optional latency signal),
+  - stickiness option for reconnect quality.
+- No silent cross-country failover; explicit policy-controlled fallback only.
+
 ## WireGuard + Linux Integration (`core`)
-- Configure WG via Linux kernel interfaces (netlink/UAPI).
-- One WG interface per node process (initially), peers per session.
-- Per-session `AllowedIPs` mapping from managed internal CIDR pool.
-- Egress through iptables/nftables NAT (final backend chosen per distro baseline).
-- Enable IPv4 forwarding in v1 and keep interface/addressing abstractions dual-stack ready.
-- Reconciliation loop on startup and periodic interval to recover drift.
+- Configure WireGuard peers through Linux kernel UAPI.
+- Maintain one interface per node process initially, peers per session.
+- Allocate per-session internal IPs from managed pool.
+- NAT backend configurable (`iptables` now, `nft` path maintained).
+- Reconciliation loop removes stale peers and re-applies desired state.
+- Capacity admission guard before provisioning peer.
 
-## Multi-region and Node Selection
-- Regions represented by `vpn_nodes.region`.
-- Initial node selection strategy:
-  - filter healthy nodes in region,
-  - choose lowest load score (active peers, CPU, bandwidth budget),
-  - fallback within region only (no silent cross-region failover unless requested).
-- Return selected node metadata in session response for observability.
+## Privacy and Security Baseline (2026)
+- OIDC-based login with short-lived access tokens and rotation-ready signing keys.
+- Token revocation (`jti`) with in-memory fast path + persistent checks.
+- Principle of least data:
+  - do not log destination domains/IPs,
+  - short retention for session metadata,
+  - redact sensitive identifiers in logs.
+- GCP Secret Manager for secrets and key material.
+- Strict RBAC for admin/internal endpoints.
+- Security telemetry for abuse, auth anomalies, and suspicious session churn.
 
-## Security Baseline (2026-Oriented)
-- mTLS for all service-to-service traffic.
-- OAuth/OIDC with PKCE for public clients.
-- Short-lived access tokens, refresh token rotation, token binding where possible.
-- Secrets from GCP Secret Manager with strict IAM-scoped access.
-- Encrypt sensitive columns at application layer where justified.
-- Strict RBAC for admin/operator APIs.
-- Tamper-evident audit logging for auth/session/admin actions.
-- Rate limiting + abuse detection per customer/device/IP.
-- Defense-in-depth on node hosts:
-  - minimal privileges/capabilities,
-  - locked-down firewall defaults,
-  - hardened kernel/sysctl profile,
-  - regular key rotation and revocation workflows.
-- Observability with security telemetry: auth anomalies, session churn anomalies, geo-policy violations.
-
-## API Contract Sketch
+## API Contract Direction
 Public (`entry`):
 - `POST /v1/auth/oauth/{provider}/callback`
+- `POST /v1/auth/logout`
 - `POST /v1/devices`
 - `GET /v1/devices`
 - `POST /v1/sessions/start`
 - `POST /v1/sessions/{session_key}/terminate`
 - `GET /v1/sessions/current`
 
-Internal (`core`, gRPC target contract):
-- `ConnectDevice(ConnectRequest) returns (ConnectResponse)`
-- `DisconnectDevice(DisconnectRequest) returns (DisconnectResponse)`
-- `GetSession(GetSessionRequest) returns (GetSessionResponse)`
-- `NodeHealth(NodeHealthRequest) returns (NodeHealthResponse)`
+Admin/Internal (`entry`):
+- `GET /v1/admin/nodes`
+- `POST /v1/admin/nodes`
+- `POST /v1/internal/nodes/health`
 
-## Delivery Phases
-1. Workspace restructuring and crate/service skeleton (`entry`, `core`, shared contracts crate).
-2. Postgres schema + migrations + single-session invariant.
-3. `entry` OAuth auth + device/session APIs (Google first, generic provider model).
-4. `core` WG kernel integration + connect/disconnect gRPC.
-5. End-to-end session flow and conflict/reconnect contract (`existing_session_key`).
-6. Multi-region node selection + health/load scoring.
-7. Security hardening pass (mTLS, GCP secret management, rate limits, audit).
-8. Integration/load/failure testing and production readiness checklist.
+Internal gRPC (`core`):
+- `ConnectDevice`
+- `DisconnectDevice`
+- `GetSession`
+
+## Migration From Previous Road-Warrior Framing
+What can stay:
+- Two-service architecture (`entry`, `core`).
+- gRPC control plane.
+- OAuth foundation.
+- Node health and selection primitives.
+- WireGuard kernel/UAPI integration direction.
+
+What must change:
+- Replace hard-coded single-session policy with plan-driven concurrency policy.
+- Introduce geo/pool semantics beyond raw region.
+- Add consumer subscription/entitlement checks in session start flow.
+- Tighten privacy controls and retention defaults as first-class requirements.
+- Add anti-abuse controls (rate limits, fraud signals, noisy-tenant isolation).
+
+## Delivery Phases (Updated)
+1. Product model migration: subscription and entitlement schema + APIs.
+2. Node pool model: region/country/city and profile-based selection.
+3. Session policy migration: configurable concurrent session/device limits.
+4. Privacy hardening: retention, redaction, and audit policy enforcement.
+5. Security hardening: mTLS rollout, secret manager integration, admin auth hardening.
+6. Dataplane maturity: nft-native firewall path and capacity guardrails.
+7. Integration/load/failure testing and production readiness checklist.
 
 ## Testing Strategy
-- Unit tests for state transitions and uniqueness constraints.
-- Integration tests for `entry` to `core` workflows.
-- Linux netns-based tests for WG peer lifecycle and NAT behavior.
-- Chaos/failure tests for `core` restart and reconciliation.
-- Security tests: authz boundaries, token misuse, replay/idempotency.
+- Unit tests for policy enforcement (plan limits, geo eligibility, conflict behavior).
+- Integration tests for `entry` to `core` session lifecycle with Postgres.
+- Linux netns tests for WireGuard peer lifecycle and NAT behavior.
+- Reconciliation/failure tests for `core` restarts and drift repair.
+- Security tests for token revocation, auth boundaries, replay/idempotency.
