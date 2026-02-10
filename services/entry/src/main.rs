@@ -1665,4 +1665,138 @@ mod tests {
             .expect("select node");
         assert_eq!(selected.map(|n| n.id), Some(fresh_best_id));
     }
+
+    #[tokio::test]
+    async fn register_device_rejects_when_plan_device_limit_reached() {
+        let customer_id = Uuid::new_v4();
+        let existing = Device {
+            id: Uuid::new_v4(),
+            customer_id,
+            name: "existing".to_string(),
+            public_key: "pk-existing".to_string(),
+            created_at: Utc::now(),
+        };
+        let mut devices = HashMap::new();
+        devices.insert(customer_id, vec![existing]);
+
+        let mut entitlements = HashMap::new();
+        entitlements.insert(
+            customer_id,
+            Entitlements {
+                max_active_sessions: 1,
+                max_devices: 1,
+                allowed_regions: None,
+            },
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(devices),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(entitlements)),
+            privacy_store: None,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-customer-id",
+            HeaderValue::from_str(&customer_id.to_string()).expect("header"),
+        );
+
+        let err = register_device(
+            State(state),
+            headers,
+            Json(RegisterDeviceRequest {
+                name: "new".to_string(),
+                public_key: "pk-new".to_string(),
+            }),
+        )
+        .await
+        .expect_err("device limit should fail");
+        assert_eq!(err.code, "device_limit_reached");
+    }
+
+    #[tokio::test]
+    async fn start_session_rejects_region_not_allowed_by_plan() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut devices = HashMap::new();
+        devices.insert(
+            customer_id,
+            vec![Device {
+                id: device_id,
+                customer_id,
+                name: "phone".to_string(),
+                public_key: "pk".to_string(),
+                created_at: Utc::now(),
+            }],
+        );
+
+        let mut entitlements = HashMap::new();
+        entitlements.insert(
+            customer_id,
+            Entitlements {
+                max_active_sessions: 1,
+                max_devices: 3,
+                allowed_regions: Some(vec!["us-east1".to_string()]),
+            },
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(devices),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(entitlements)),
+            privacy_store: None,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-customer-id",
+            HeaderValue::from_str(&customer_id.to_string()).expect("header"),
+        );
+
+        let err = start_session(
+            State(state),
+            headers,
+            Json(StartSessionRequest {
+                device_id,
+                region: Some("us-west1".to_string()),
+                country_code: Some("US".to_string()),
+                city_code: None,
+                pool: Some("general".to_string()),
+                reconnect_session_key: None,
+                node_hint: None,
+            }),
+        )
+        .await
+        .expect_err("region policy should reject");
+        assert_eq!(err.code, "region_not_allowed_by_plan");
+    }
 }
