@@ -61,6 +61,9 @@
 - Expired revocation cleanup loop added in `entry` when Postgres token store is enabled.
 - In-memory revoked cache now stores `jti -> exp` and prunes expired entries during auth checks.
 - Added structured security/audit logs for OAuth login, logout, session start/reconnect/conflict/terminate.
+- Added focused unit tests:
+  - `entry`: stale node heartbeat filtering and expired revocation-cache eviction behavior.
+  - `core`: `node_hint` UUID validation/propagation and disconnect behavior when no active session exists.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -95,4 +98,4 @@
 cargo fmt --all
 cargo check --workspace
 ```
-Note: dependency resolution still fails in this environment due blocked DNS/network access to crates.io.
+Note: this environment currently fails Rust compilation with `Invalid cross-device link (os error 18)` while writing `.rmeta` files, so `cargo test/check` may fail despite valid source changes.
