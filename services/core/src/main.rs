@@ -1,5 +1,6 @@
 mod dataplane;
 mod ip_pool;
+mod wg_uapi;
 
 use std::collections::HashMap;
 use std::fs;

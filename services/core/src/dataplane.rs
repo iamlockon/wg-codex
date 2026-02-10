@@ -1,5 +1,8 @@
 use std::process::Command;
+use tokio::task;
 use tonic::async_trait;
+
+use crate::wg_uapi::WireGuardUapiClient;
 
 #[derive(Debug, Clone)]
 pub struct PeerSpec {
@@ -49,11 +52,13 @@ impl DataPlane for NoopDataPlane {
 
 pub struct LinuxShellDataPlane {
     cfg: LinuxDataPlaneConfig,
+    uapi: WireGuardUapiClient,
 }
 
 impl LinuxShellDataPlane {
     pub fn new(cfg: LinuxDataPlaneConfig) -> Self {
-        Self { cfg }
+        let uapi = WireGuardUapiClient::new(&cfg.iface);
+        Self { cfg, uapi }
     }
 
     fn run(args: &[&str]) -> Result<(), String> {
@@ -147,27 +152,20 @@ impl DataPlane for LinuxShellDataPlane {
     }
 
     async fn connect_peer(&self, peer: &PeerSpec) -> Result<(), String> {
-        // Sets desired AllowedIPs for this peer in kernel WireGuard interface.
-        Self::run(&[
-            "wg",
-            "set",
-            &self.cfg.iface,
-            "peer",
-            &peer.device_public_key,
-            "allowed-ips",
-            &peer.assigned_ip,
-        ])
+        let uapi = self.uapi.clone();
+        let public_key = peer.device_public_key.clone();
+        let allowed_ip = peer.assigned_ip.clone();
+        task::spawn_blocking(move || uapi.set_peer(&public_key, Some(&allowed_ip), Some(25), false))
+            .await
+            .map_err(|err| format!("uapi connect join failure: {err}"))?
     }
 
     async fn disconnect_peer(&self, peer: &PeerSpec) -> Result<(), String> {
-        Self::run(&[
-            "wg",
-            "set",
-            &self.cfg.iface,
-            "peer",
-            &peer.device_public_key,
-            "remove",
-        ])
+        let uapi = self.uapi.clone();
+        let public_key = peer.device_public_key.clone();
+        task::spawn_blocking(move || uapi.set_peer(&public_key, None, None, true))
+            .await
+            .map_err(|err| format!("uapi disconnect join failure: {err}"))?
     }
 
     async fn reconcile(&self, _desired_peers: &[PeerSpec]) -> Result<(), String> {
