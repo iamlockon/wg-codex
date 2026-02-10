@@ -3,6 +3,7 @@ mod node_repo;
 mod oauth_repo;
 mod postgres_session_repo;
 mod session_repo;
+mod token_repo;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -29,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
 use subtle::ConstantTimeEq;
+use token_repo::{PostgresTokenRepository, TokenRepoError};
 use tokio::sync::{Mutex, RwLock};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{info, warn};
@@ -45,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let core_client = build_core_client(&grpc_target).await?;
 
-    let (session_store, identity_store, node_store) =
+    let (session_store, identity_store, node_store, token_store) =
         if let Ok(database_url) = std::env::var("DATABASE_URL") {
             let pool = PgPoolOptions::new()
                 .max_connections(10)
@@ -55,7 +57,8 @@ async fn main() -> anyhow::Result<()> {
             (
                 SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
                 IdentityStore::Postgres(PostgresOAuthRepository::new(pool.clone())),
-                NodeStore::Postgres(PostgresNodeRepository::new(pool)),
+                NodeStore::Postgres(PostgresNodeRepository::new(pool.clone())),
+                Some(PostgresTokenRepository::new(pool.clone())),
             )
         } else {
             warn!("DATABASE_URL not set; entry using in-memory session/oauth/node stores");
@@ -63,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
                 SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
                 IdentityStore::InMemory(Mutex::new(HashMap::new())),
                 NodeStore::InMemory(Mutex::new(HashMap::new())),
+                None,
             )
         };
     let jwt_keys = JwtKeyStore::from_env();
@@ -85,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(true),
         revoked_token_ids: Mutex::new(HashSet::new()),
+        token_store,
     });
 
     let app = Router::new()
@@ -122,11 +127,13 @@ struct AppState {
     jwt_keys: JwtKeyStore,
     allow_legacy_customer_header: bool,
     revoked_token_ids: Mutex<HashSet<String>>,
+    token_store: Option<PostgresTokenRepository>,
 }
 
 struct AuthContext {
     customer_id: Uuid,
     token_id: Option<String>,
+    token_exp: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -485,7 +492,21 @@ async fn logout(
     let token_id = ctx
         .token_id
         .ok_or_else(|| ApiError::bad_request("token_missing_jti"))?;
-    state.revoked_token_ids.lock().await.insert(token_id);
+    let token_exp = ctx
+        .token_exp
+        .ok_or_else(|| ApiError::bad_request("token_missing_exp"))?;
+    state
+        .revoked_token_ids
+        .lock()
+        .await
+        .insert(token_id.clone());
+    if let Some(repo) = &state.token_store {
+        let expires_at = chrono::DateTime::<Utc>::from_timestamp(token_exp as i64, 0)
+            .ok_or_else(|| ApiError::bad_request("token_invalid_exp"))?;
+        repo.revoke_token(&token_id, ctx.customer_id, expires_at)
+            .await
+            .map_err(map_token_repo_error)?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -885,6 +906,20 @@ async fn auth_context_from_request(
                 if state.revoked_token_ids.lock().await.contains(token_id) {
                     return Err(ApiError::unauthorized("revoked_access_token"));
                 }
+                if let Some(repo) = &state.token_store {
+                    if repo
+                        .is_revoked(token_id)
+                        .await
+                        .map_err(map_token_repo_error)?
+                    {
+                        state
+                            .revoked_token_ids
+                            .lock()
+                            .await
+                            .insert(token_id.to_string());
+                        return Err(ApiError::unauthorized("revoked_access_token"));
+                    }
+                }
             }
             return Ok(ctx);
         }
@@ -897,6 +932,7 @@ async fn auth_context_from_request(
     Ok(AuthContext {
         customer_id: customer_id_from_headers(headers)?,
         token_id: None,
+        token_exp: None,
     })
 }
 
@@ -924,6 +960,7 @@ fn auth_context_from_bearer(token: &str, keys: &JwtKeyStore) -> Result<AuthConte
         customer_id: Uuid::parse_str(&decoded.claims.sub)
             .map_err(|_| ApiError::unauthorized("invalid_customer_id"))?,
         token_id: decoded.claims.jti,
+        token_exp: Some(decoded.claims.exp),
     })
 }
 
@@ -1036,6 +1073,12 @@ fn map_oidc_error(err: OidcError) -> ApiError {
 fn map_oauth_repo_error(err: OAuthRepoError) -> ApiError {
     match err {
         OAuthRepoError::Database(_) => ApiError::service_unavailable("identity_store_failed"),
+    }
+}
+
+fn map_token_repo_error(err: TokenRepoError) -> ApiError {
+    match err {
+        TokenRepoError::Database(_) => ApiError::service_unavailable("token_store_failed"),
     }
 }
 
@@ -1195,6 +1238,7 @@ mod tests {
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(HashSet::new()),
+            token_store: None,
         };
 
         let headers = HeaderMap::new();
@@ -1229,6 +1273,7 @@ mod tests {
             jwt_keys: keys,
             allow_legacy_customer_header: false,
             revoked_token_ids: Mutex::new(revoked),
+            token_store: None,
         };
 
         let mut headers = HeaderMap::new();

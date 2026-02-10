@@ -51,6 +51,10 @@
   - JWTs now include `jti`,
   - `POST /v1/auth/logout` revokes current bearer token `jti`,
   - bearer-authenticated API access rejects revoked tokens.
+- Revocation persistence added:
+  - `revoked_tokens` migration added,
+  - Postgres-backed revocation checks/writes in `services/entry/src/token_repo.rs`,
+  - in-memory revoked cache remains for fast-path checks.
 
 ## Not Production-Ready Yet
 - No WireGuard kernel integration yet.
@@ -62,7 +66,7 @@
 1. Start `core` WireGuard integration using Linux kernel APIs (peer add/remove + reconciliation loop).
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies (currently env/file based).
 3. Add integration tests against real Postgres + migrations for `entry` session and OAuth/node flows.
-4. Persist token revocation/session binding in Postgres (current revocation store is in-memory).
+4. Add cleanup/TTL job for expired rows in `revoked_tokens`.
 5. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
 
 ## Open Risks / Watch Items
