@@ -683,4 +683,50 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert_eq!(err.message(), "session_key_mismatch");
     }
+
+    #[tokio::test]
+    async fn connect_rejects_invalid_node_hint_uuid() {
+        let service = test_service();
+        let mut req = connect_request(Uuid::new_v4());
+        req.node_hint = "not-a-uuid".to_string();
+
+        let err = service
+            .connect_device(Request::new(req))
+            .await
+            .expect_err("invalid node hint should fail");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert_eq!(err.message(), "node_hint");
+    }
+
+    #[tokio::test]
+    async fn connect_uses_provided_node_hint_as_node_id() {
+        let service = test_service();
+        let customer_id = Uuid::new_v4();
+        let node_id = Uuid::new_v4();
+        let mut req = connect_request(customer_id);
+        req.node_hint = node_id.to_string();
+
+        let response = service
+            .connect_device(Request::new(req))
+            .await
+            .expect("connect should succeed")
+            .into_inner();
+        assert_eq!(response.node_id, node_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn disconnect_missing_session_returns_removed_false() {
+        let service = test_service();
+        let response = service
+            .disconnect_device(Request::new(DisconnectRequest {
+                request_id: Uuid::new_v4().to_string(),
+                session_key: "sess_unknown".to_string(),
+                customer_id: Uuid::new_v4().to_string(),
+            }))
+            .await
+            .expect("missing session disconnect should succeed")
+            .into_inner();
+
+        assert!(!response.removed);
+    }
 }
