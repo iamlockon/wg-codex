@@ -74,6 +74,11 @@
   - session start requires active/trialing subscription status.
 - Admin subscription endpoint added:
   - `POST /v1/admin/subscriptions` updates customer plan/status.
+- Subscription status transition logic in Postgres is now transactional:
+  - previous active/trialing rows are closed before inserting the new status row.
+- Added repository-level integration tests in `subscription_repo.rs` (gated by `TEST_DATABASE_URL`) for:
+  - entitlement retrieval after plan assignment,
+  - eligibility drop after cancellation.
 - `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring.
 - Privacy metadata cleanup worker added in `entry` for terminated sessions and audit events (retention env-configurable).
 - TLS enforcement toggles added:

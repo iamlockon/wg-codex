@@ -1,3 +1,4 @@
+use chrono::Utc;
 use sqlx::PgPool;
 use thiserror::Error;
 use uuid::Uuid;
@@ -99,23 +100,39 @@ impl PostgresSubscriptionRepository {
             .await?
             .ok_or(SubscriptionRepoError::PlanNotFound)?;
 
+        let mut tx = self.pool.begin().await?;
         let status_text = status.as_str();
         sqlx::query(
-            "INSERT INTO customer_subscriptions (customer_id, plan_id, status, starts_at, created_at, updated_at)
-             VALUES ($1, $2, $3, now(), now(), now())
-             ON CONFLICT (customer_id) WHERE status IN ('active', 'trialing')
-             DO UPDATE SET
-                 plan_id = EXCLUDED.plan_id,
-                 status = EXCLUDED.status,
-                 starts_at = now(),
-                 ends_at = NULL,
-                 updated_at = now()",
+            "UPDATE customer_subscriptions
+             SET status = 'canceled',
+                 ends_at = COALESCE(ends_at, now()),
+                 updated_at = now()
+             WHERE customer_id = $1
+               AND status IN ('active', 'trialing')",
+        )
+        .bind(customer_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        let ends_at = if matches!(
+            status,
+            SubscriptionStatus::Active | SubscriptionStatus::Trialing
+        ) {
+            None
+        } else {
+            Some(Utc::now())
+        };
+        sqlx::query(
+            "INSERT INTO customer_subscriptions (customer_id, plan_id, status, starts_at, ends_at, created_at, updated_at)
+             VALUES ($1, $2, $3, now(), $4, now(), now())",
         )
         .bind(customer_id)
         .bind(plan_id)
         .bind(status_text)
-        .execute(&self.pool)
+        .bind(ends_at)
+        .execute(tx.as_mut())
         .await?;
+        tx.commit().await?;
 
         Ok(())
     }
@@ -156,5 +173,106 @@ impl From<EntitlementsDbRow> for Entitlements {
             max_devices: value.max_devices,
             allowed_regions: value.allowed_regions,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn setup_repo() -> Option<PostgresSubscriptionRepository> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()?;
+        let schema = format!("test_sub_{}", Uuid::new_v4().simple());
+        let set_path = format!("SET search_path TO {schema}");
+        let create_schema = format!("CREATE SCHEMA {schema}");
+
+        sqlx::query(&create_schema).execute(&pool).await.ok()?;
+        sqlx::query(&set_path).execute(&pool).await.ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602090001_initial_schema.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602100002_revoked_tokens.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602100003_consumer_model.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+
+        Some(PostgresSubscriptionRepository::new(pool))
+    }
+
+    #[tokio::test]
+    async fn upsert_customer_subscription_sets_eligibility_and_entitlements() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let customer_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO customers (id) VALUES ($1)")
+            .bind(customer_id)
+            .execute(&repo.pool)
+            .await
+            .expect("insert customer");
+
+        repo.upsert_customer_subscription(customer_id, "plus", SubscriptionStatus::Active)
+            .await
+            .expect("upsert active plus");
+        assert!(
+            repo.is_customer_session_eligible(customer_id)
+                .await
+                .expect("eligibility")
+        );
+        let entitlements = repo
+            .entitlements_for_customer(customer_id)
+            .await
+            .expect("entitlements");
+        assert_eq!(entitlements.max_active_sessions, 1);
+        assert_eq!(entitlements.max_devices, 7);
+    }
+
+    #[tokio::test]
+    async fn canceling_subscription_disables_session_eligibility() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let customer_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO customers (id) VALUES ($1)")
+            .bind(customer_id)
+            .execute(&repo.pool)
+            .await
+            .expect("insert customer");
+
+        repo.upsert_customer_subscription(customer_id, "free", SubscriptionStatus::Active)
+            .await
+            .expect("activate");
+        assert!(
+            repo.is_customer_session_eligible(customer_id)
+                .await
+                .expect("eligible")
+        );
+
+        repo.upsert_customer_subscription(customer_id, "free", SubscriptionStatus::Canceled)
+            .await
+            .expect("cancel");
+        assert!(
+            !repo
+                .is_customer_session_eligible(customer_id)
+                .await
+                .expect("ineligible")
+        );
     }
 }
