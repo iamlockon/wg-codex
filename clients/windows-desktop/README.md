@@ -21,6 +21,20 @@ This directory contains the Windows desktop client MVP core for integration with
   - reconnect after app restart from persisted state.
 - Storage non-plaintext assertion is in `src-tauri/src/storage.rs`.
 
+## Runtime Adapters
+- On Windows (`cfg(windows)`):
+  - uses `DpapiFileSecureStorage` (`src-tauri/src/storage_windows.rs`) for token-at-rest protection.
+  - uses `WireGuardWindowsController` (`src-tauri/src/wireguard.rs`) to run `wireguard.exe` install/uninstall tunnel-service commands.
+- On non-Windows:
+  - uses obfuscated file storage + noop tunnel controller for local development.
+
+Config env vars:
+- `ENTRY_API_BASE_URL`
+- `WG_WINDOWS_CLIENT_STATE_FILE` (optional explicit state path)
+- `WG_WINDOWS_WIREGUARD_EXE` (optional, defaults to `wireguard.exe`)
+- `WG_WINDOWS_CONFIG_DIR` (optional config file directory)
+- `WG_WINDOWS_TUNNEL_NAME` (optional tunnel service name)
+
 ## Notes
 
 - This is not wired into CI yet.

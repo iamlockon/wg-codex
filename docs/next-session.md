@@ -171,6 +171,9 @@
 - Windows desktop client MVP scaffolding added:
   - `clients/windows-desktop/ui` contains typed backend contracts, API client, and initial session state model.
   - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.
+  - Windows adapter layer now includes:
+    - DPAPI-backed secure storage (`src-tauri/src/storage_windows.rs`) for auth-token persistence,
+    - WireGuard-for-Windows command controller (`src-tauri/src/wireguard.rs`) for tunnel service install/uninstall.
   - desktop-core integration tests now cover login/device/connect/disconnect, logout revocation behavior, and reconnect-after-restart behavior against a mock `entry` API.
 
 ## Not Production-Ready Yet
@@ -191,7 +194,7 @@
 2. Run production canary validation for `WG_NAT_DRIVER=native` with `deploy/k8s/canary-validate.sh` in-cluster and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
-5. Implement Windows UI shell and production Windows adapters (DPAPI-backed secret storage + WireGuard for Windows command integration) on top of the desktop-core in `clients/windows-desktop/src-tauri`.
+5. Implement Windows UI shell and run end-to-end Windows host validation (real WireGuard for Windows + DPAPI behavior) on top of the desktop-core in `clients/windows-desktop/src-tauri`.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
