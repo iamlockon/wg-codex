@@ -138,5 +138,6 @@ Notes:
 
 ## 6. Post-deploy smoke check
 ```bash
-deploy/k8s/smoke-check.sh https://<entry-host> <admin-token>
+deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> cli
+deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> native  # for native canary
 ```

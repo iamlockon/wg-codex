@@ -53,7 +53,8 @@
 
 ## Smoke checks
 Preferred:
-- `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token>`
+- `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> cli`
+- Native canary: `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> native`
 
 Manual fallback:
 1. `kubectl -n wg-vpn get pods`
