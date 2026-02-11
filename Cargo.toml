@@ -4,6 +4,7 @@ members = [
   "services/core",
   "crates/domain",
   "crates/control-plane",
+  "clients/windows-desktop/src-tauri",
 ]
 resolver = "2"
 

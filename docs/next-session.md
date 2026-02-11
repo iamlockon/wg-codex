@@ -168,6 +168,10 @@
 - Native NAT canary validation automation added:
   - `deploy/k8s/canary-validate.sh` runs preflight, applies canary overlay, waits for rollout, runs smoke checks expecting `nat_driver=native`, and auto-rolls back on failure by default.
   - supports `prod-native-canary` and `prod-gcp-sm-native-canary` overlays plus configurable rollback target via `ROLLBACK_OVERLAY`.
+- Windows desktop client MVP scaffolding added:
+  - `clients/windows-desktop/ui` contains typed backend contracts, API client, and initial session state model.
+  - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.
+  - desktop-core integration tests now cover login/device/connect/disconnect, logout revocation behavior, and reconnect-after-restart behavior against a mock `entry` API.
 
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
@@ -187,6 +191,7 @@
 2. Run production canary validation for `WG_NAT_DRIVER=native` with `deploy/k8s/canary-validate.sh` in-cluster and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
+5. Implement Windows UI shell and production Windows adapters (DPAPI-backed secret storage + WireGuard for Windows command integration) on top of the desktop-core in `clients/windows-desktop/src-tauri`.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.

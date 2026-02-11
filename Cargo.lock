@@ -3094,6 +3094,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wg-windows-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "whoami"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
