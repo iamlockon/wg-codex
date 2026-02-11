@@ -88,7 +88,7 @@
   - `postgres_session_repo`: conflict and terminate-key invariants,
   - `node_repo`: geo/pool/capacity-aware selection behavior,
   - `token_repo`: revocation expiry and purge behavior,
-  - `oauth_repo`: identity idempotency, provider scoping, and email update behavior.
+  - `oauth_repo`: identity idempotency, provider scoping, email update behavior, and race-safe parallel identity resolution.
 - `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring.
 - Privacy metadata cleanup worker added in `entry` for terminated sessions and audit events (retention env-configurable).
 - TLS enforcement toggles added:

@@ -224,4 +224,40 @@ mod tests {
         assert_eq!(customer_count, 2);
         assert_eq!(identity_count, 2);
     }
+
+    #[tokio::test]
+    async fn resolve_or_create_customer_is_race_safe_for_same_identity() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        let mut handles = Vec::new();
+        for _ in 0..12 {
+            let repo = repo.clone();
+            handles.push(tokio::spawn(async move {
+                repo.resolve_or_create_customer("google", "race-subject", Some("race@example.com"))
+                    .await
+                    .expect("resolve/create")
+            }));
+        }
+
+        let mut ids = Vec::new();
+        for handle in handles {
+            ids.push(handle.await.expect("join"));
+        }
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 1);
+
+        let customer_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM customers")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("customer count");
+        let identity_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM oauth_identities")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("identity count");
+        assert_eq!(customer_count, 1);
+        assert_eq!(identity_count, 1);
+    }
 }
