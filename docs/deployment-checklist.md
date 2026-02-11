@@ -37,6 +37,10 @@
 4. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
 5. Native canary + GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary`
 6. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
+7. Prefer automated canary gate for native rollout:
+   - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary`
+   - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-gcp-sm-native-canary`
+   - For GCP Secret Manager environments, set `ROLLBACK_OVERLAY=prod-gcp-sm` so rollback keeps CSI wiring.
 
 ## Required production env policy
 - `APP_ENV=production`
@@ -65,6 +69,8 @@
 Preferred:
 - `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> cli`
 - Native canary: `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> native`
+- Automated canary gate with rollback:
+  - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary`
 
 Manual fallback:
 1. `kubectl -n wg-vpn get pods`

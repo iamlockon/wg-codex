@@ -161,6 +161,9 @@
   - `core` health reporter now supports `CORE_NODE_ID_FILE`, and k8s wiring uses file-backed `CORE_NODE_ID_FILE`.
   - GCP SecretProviderClass templates now include entries for node id, core TLS, WireGuard private key, and entry client mTLS files.
   - preflight now fails `prod-gcp-sm*` if direct secret volumes remain for sensitive service mounts.
+- Native NAT canary validation automation added:
+  - `deploy/k8s/canary-validate.sh` runs preflight, applies canary overlay, waits for rollout, runs smoke checks expecting `nat_driver=native`, and auto-rolls back on failure by default.
+  - supports `prod-native-canary` and `prod-gcp-sm-native-canary` overlays plus configurable rollback target via `ROLLBACK_OVERLAY`.
 
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
@@ -177,7 +180,7 @@
 
 ## Priority Next Steps
 1. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) with the expanded CSI-only service secret mounts.
-2. Run production canary validation for `WG_NAT_DRIVER=native` and, once stable, switch production default from `cli` to `native`.
+2. Run production canary validation for `WG_NAT_DRIVER=native` with `deploy/k8s/canary-validate.sh` in-cluster and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
 5. Add API-level end-to-end integration coverage (beyond repository-level DB tests), including auth, subscription gating, and readiness/privacy admin flows.

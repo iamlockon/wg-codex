@@ -61,6 +61,18 @@ Production native canary with GCP Secret Manager CSI:
 kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary
 ```
 
+Automated canary validation (recommended):
+```bash
+deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary
+deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-gcp-sm-native-canary
+```
+This runs preflight, applies the canary overlay, waits for rollout, and runs smoke checks
+expecting `nat_driver=native`. By default it auto-rolls back to `prod` if validation fails.
+Useful env overrides:
+- `ROLLBACK_OVERLAY=prod-gcp-sm` for GCP Secret Manager environments.
+- `AUTO_ROLLBACK=0` to disable automatic rollback.
+- `ROLLOUT_TIMEOUT=600s` to allow longer rollout windows.
+
 Prerequisites for `prod-gcp-sm`:
 - GKE Workload Identity enabled for the cluster/node pool.
 - Secrets Store CSI driver + GCP provider installed.
