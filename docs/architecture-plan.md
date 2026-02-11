@@ -127,6 +127,7 @@ Public (`entry`):
 Admin/Internal (`entry`):
 - `GET /v1/admin/nodes`
 - `GET /v1/admin/privacy/policy`
+- `GET /v1/admin/privacy/audit-events`
 - `GET /v1/admin/core/status`
 - `GET /v1/admin/readiness`
 - `POST /v1/admin/nodes`

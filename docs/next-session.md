@@ -22,6 +22,8 @@
 - Privacy retention policy hardening:
   - production startup now fails if configured retention exceeds policy caps (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`).
   - privacy policy and readiness endpoints report against configured policy caps rather than hardcoded thresholds.
+- Audit event persistence wiring added:
+  - OAuth login success and logout now persist `audit_events` records in Postgres when privacy store is configured.
 - OAuth identity persistence is now wired:
   - `services/entry/src/oauth_repo.rs` resolves/creates `customers` + `oauth_identities` in Postgres.
   - `oauth_callback` now uses this repository when `DATABASE_URL` is set.
@@ -109,6 +111,8 @@
   - `APP_LOG_REDACTION_MODE` supports `off|partial|strict` and production requires `strict`.
 - Privacy policy admin endpoint added:
   - `GET /v1/admin/privacy/policy` returns effective retention/redaction config and compliance hints.
+- Privacy audit export endpoint added:
+  - `GET /v1/admin/privacy/audit-events` returns paginated audit events with optional `event_type` and `customer_id` filters.
 - Core status admin endpoint added:
   - `GET /v1/admin/core/status` proxies `GetNodeStatus` for control-plane observability checks.
 - Readiness admin endpoint added:
@@ -146,7 +150,7 @@
 - Subscription reporting is now present; pagination/filter semantics are basic and may need expansion for large-scale ops.
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
-- Privacy policy enforcement is improved with runtime visibility; formal conformance checks and audit exports are still pending.
+- Privacy policy enforcement is improved with runtime visibility and audit export API; richer conformance automation and external export sinks are still pending.
 - Native NAT milestone hook added:
   - `WG_NAT_DRIVER=native` selects a feature-gated path backed by `native-nft`,
   - current native hook is intentionally fail-fast until netlink nftables programming is fully wired.

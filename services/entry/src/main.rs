@@ -31,7 +31,7 @@ use node_repo::{
 };
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
-use privacy_repo::PostgresPrivacyRepository;
+use privacy_repo::{AuditEventRecord, PostgresPrivacyRepository};
 use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
@@ -160,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sessions/current", get(current_session))
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
         .route("/v1/admin/privacy/policy", get(get_privacy_policy))
+        .route("/v1/admin/privacy/audit-events", get(list_audit_events))
         .route("/v1/admin/core/status", get(get_core_status))
         .route("/v1/admin/readiness", get(get_readiness))
         .route(
@@ -1012,6 +1013,17 @@ async fn oauth_callback(
         customer=redact_uuid(state.log_redaction_mode, customer_id),
         "oauth login succeeded"
     );
+    persist_audit_event(
+        &state,
+        Some(customer_id),
+        "customer",
+        &customer_id.to_string(),
+        "oauth_login_succeeded",
+        serde_json::json!({
+            "provider": provider.as_str(),
+        }),
+    )
+    .await;
     Ok(Json(OAuthCallbackResponse {
         provider: provider.as_str().to_string(),
         customer_id,
@@ -1047,6 +1059,17 @@ async fn logout(
         token = redact_value(state.log_redaction_mode, &token_id),
         "logout revoked access token"
     );
+    persist_audit_event(
+        &state,
+        Some(ctx.customer_id),
+        "customer",
+        &ctx.customer_id.to_string(),
+        "logout",
+        serde_json::json!({
+            "revoked": true,
+        }),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1154,6 +1177,14 @@ struct ListSubscriptionsQuery {
 }
 
 #[derive(Deserialize)]
+struct ListAuditEventsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    event_type: Option<String>,
+    customer_id: Option<Uuid>,
+}
+
+#[derive(Deserialize)]
 struct SubscriptionHistoryQuery {
     limit: Option<i64>,
 }
@@ -1161,6 +1192,24 @@ struct SubscriptionHistoryQuery {
 #[derive(Serialize)]
 struct ListSubscriptionsResponse {
     items: Vec<SubscriptionResponse>,
+    limit: i64,
+    offset: i64,
+}
+
+#[derive(Serialize)]
+struct AuditEventResponse {
+    id: Uuid,
+    customer_id: Option<Uuid>,
+    actor_type: String,
+    actor_id: String,
+    event_type: String,
+    payload: serde_json::Value,
+    created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct ListAuditEventsResponse {
+    items: Vec<AuditEventResponse>,
     limit: i64,
     offset: i64,
 }
@@ -1209,6 +1258,20 @@ impl From<SubscriptionRecord> for SubscriptionResponse {
             status: value.status,
             starts_at: value.starts_at,
             ends_at: value.ends_at,
+        }
+    }
+}
+
+impl From<AuditEventRecord> for AuditEventResponse {
+    fn from(value: AuditEventRecord) -> Self {
+        Self {
+            id: value.id,
+            customer_id: value.customer_id,
+            actor_type: value.actor_type,
+            actor_id: value.actor_id,
+            event_type: value.event_type,
+            payload: value.payload,
+            created_at: value.created_at,
         }
     }
 }
@@ -1295,6 +1358,35 @@ async fn get_privacy_policy(
         max_audit_retention_days: max_audit_days,
         compliant,
         notes,
+    }))
+}
+
+async fn list_audit_events(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListAuditEventsQuery>,
+) -> Result<Json<ListAuditEventsResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let repo = state
+        .privacy_store
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("privacy_store_not_configured"))?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let records = repo
+        .list_audit_events(
+            limit,
+            offset,
+            query.event_type.as_deref(),
+            query.customer_id,
+        )
+        .await
+        .map_err(|_| ApiError::service_unavailable("audit_events_query_failed"))?;
+
+    Ok(Json(ListAuditEventsResponse {
+        items: records.into_iter().map(AuditEventResponse::from).collect(),
+        limit,
+        offset,
     }))
 }
 
@@ -2122,6 +2214,24 @@ fn map_subscription_repo_error(err: SubscriptionRepoError) -> ApiError {
     }
 }
 
+async fn persist_audit_event(
+    state: &AppState,
+    customer_id: Option<Uuid>,
+    actor_type: &str,
+    actor_id: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+) {
+    if let Some(repo) = &state.privacy_store {
+        if let Err(err) = repo
+            .insert_audit_event(customer_id, actor_type, actor_id, event_type, payload)
+            .await
+        {
+            warn!(%err, event_type, "failed to persist audit event");
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
@@ -2491,6 +2601,51 @@ mod tests {
             .expect_err("unreachable core should fail");
         assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(err.code, "core_status_failed");
+    }
+
+    #[tokio::test]
+    async fn list_audit_events_requires_privacy_store() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: Some("admin-secret".to_string()),
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-admin-token", HeaderValue::from_static("admin-secret"));
+        let err = list_audit_events(
+            State(state),
+            headers,
+            Query(ListAuditEventsQuery {
+                limit: None,
+                offset: None,
+                event_type: None,
+                customer_id: None,
+            }),
+        )
+        .await
+        .expect_err("missing privacy store should fail");
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.code, "privacy_store_not_configured");
     }
 
     #[test]
