@@ -132,6 +132,7 @@
   - `docs/deployment-checklist.md`
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
+  - includes explicit `cargo check -p core --features native-nft` gate.
   - preflight validation for `dev`, `prod`, and `prod-native-canary` overlays via `deploy/k8s/preflight.sh`
 - Deployment preflight script added:
   - `deploy/k8s/preflight.sh <overlay>` renders kustomize output and validates required secret mounts/env wiring.
