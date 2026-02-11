@@ -101,6 +101,8 @@
   - `APP_LOG_REDACTION_MODE` supports `off|partial|strict` and production requires `strict`.
 - Privacy policy admin endpoint added:
   - `GET /v1/admin/privacy/policy` returns effective retention/redaction config and compliance hints.
+- Core status admin endpoint added:
+  - `GET /v1/admin/core/status` proxies `GetNodeStatus` for control-plane observability checks.
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`

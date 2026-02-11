@@ -160,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sessions/current", get(current_session))
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
         .route("/v1/admin/privacy/policy", get(get_privacy_policy))
+        .route("/v1/admin/core/status", get(get_core_status))
         .route(
             "/v1/admin/subscriptions",
             post(upsert_subscription).get(list_subscriptions),
@@ -1080,6 +1081,15 @@ struct PrivacyPolicyResponse {
     notes: Vec<&'static str>,
 }
 
+#[derive(Serialize)]
+struct CoreStatusResponse {
+    healthy: bool,
+    active_peer_count: i64,
+    nat_driver: String,
+    dataplane_mode: String,
+    native_nft_supported: bool,
+}
+
 impl From<SubscriptionRecord> for SubscriptionResponse {
     fn from(value: SubscriptionRecord) -> Self {
         Self {
@@ -1166,6 +1176,31 @@ async fn get_privacy_policy(
         audit_retention_days: state.audit_retention_days,
         compliant,
         notes,
+    }))
+}
+
+async fn get_core_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<CoreStatusResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let response = {
+        let mut client = state.core_client.lock().await;
+        client
+            .get_node_status(control_plane::proto::GetNodeStatusRequest {
+                request_id: Uuid::new_v4().to_string(),
+            })
+            .await
+            .map_err(|_| ApiError::service_unavailable("core_status_failed"))?
+            .into_inner()
+    };
+
+    Ok(Json(CoreStatusResponse {
+        healthy: response.healthy,
+        active_peer_count: response.active_peer_count,
+        nat_driver: response.nat_driver,
+        dataplane_mode: response.dataplane_mode,
+        native_nft_supported: response.native_nft_supported,
     }))
 }
 
@@ -2006,6 +2041,77 @@ mod tests {
         assert!(redacted.starts_with("sess"));
         assert!(redacted.ends_with("7890"));
         assert!(redacted.contains("..."));
+    }
+
+    #[tokio::test]
+    async fn get_core_status_requires_admin_token_header() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: Some("admin-secret".to_string()),
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let err = get_core_status(State(state), HeaderMap::new())
+            .await
+            .expect_err("missing admin token should fail");
+        assert_eq!(err.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(err.code, "missing_x_admin_token");
+    }
+
+    #[tokio::test]
+    async fn get_core_status_returns_service_unavailable_when_core_unreachable() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: Some("admin-secret".to_string()),
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-admin-token", HeaderValue::from_static("admin-secret"));
+
+        let err = get_core_status(State(state), headers)
+            .await
+            .expect_err("unreachable core should fail");
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.code, "core_status_failed");
     }
 
     #[test]

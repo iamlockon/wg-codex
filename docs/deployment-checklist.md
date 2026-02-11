@@ -44,6 +44,7 @@
 5. Verify admin API:
    - `POST /v1/admin/nodes`
    - `GET /v1/admin/privacy/policy`
+   - `GET /v1/admin/core/status`
    - `POST /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions/{customer_id}`
