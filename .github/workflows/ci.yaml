@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Build check
+        run: cargo check --workspace
+
+      - name: Unit tests
+        run: cargo test --workspace --lib
+
+  deploy-spec:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate smoke-check script
+        run: bash -n deploy/k8s/smoke-check.sh
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.30.0
+
+      - name: Render dev manifests
+        run: kubectl kustomize deploy/k8s/overlays/dev > /tmp/dev.yaml
+
+      - name: Render prod manifests
+        run: kubectl kustomize deploy/k8s/overlays/prod > /tmp/prod.yaml
+
+      - name: Render prod native canary manifests
+        run: kubectl kustomize deploy/k8s/overlays/prod-native-canary > /tmp/prod-native-canary.yaml

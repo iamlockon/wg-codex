@@ -116,6 +116,9 @@
   - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
   - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
   - `docs/deployment-checklist.md`
+- CI workflow added (`.github/workflows/ci.yaml`):
+  - Rust format/check/test on push/PR
+  - kustomize render validation for `dev`, `prod`, and `prod-native-canary` overlays
 - Kubernetes manifests now mount sensitive materials from secrets:
   - `entry` reads admin/JWT/OIDC via `*_FILE` paths and mounts `core-grpc-client-tls`.
   - `core` mounts `core-tls` and `wireguard-keys`, and reads admin/WG public key via `*_FILE`.
