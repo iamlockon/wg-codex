@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: core
+  namespace: wg-vpn
+spec:
+  template:
+    spec:
+      serviceAccountName: core-wi
+      volumes:
+        - name: core-sensitive
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: core-gcp-secrets

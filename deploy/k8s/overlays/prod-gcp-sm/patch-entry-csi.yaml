@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: entry
+  namespace: wg-vpn
+spec:
+  template:
+    spec:
+      serviceAccountName: entry-wi
+      volumes:
+        - name: entry-sensitive
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: entry-gcp-secrets

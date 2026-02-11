@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: wg-vpn
+
+resources:
+  - ../prod
+  - ../../gcp/serviceaccounts.yaml
+  - ../../gcp/entry-secretproviderclass.yaml
+  - ../../gcp/core-secretproviderclass.yaml
+
+patchesStrategicMerge:
+  - patch-entry-csi.yaml
+  - patch-core-csi.yaml

@@ -128,6 +128,7 @@
   - `deploy/k8s/*` manifests (namespace, configmaps, secrets examples, entry deployment, core daemonset, migration job)
   - `deploy/k8s/base` + `deploy/k8s/overlays/{dev,prod}` kustomize structure for one-command deploy per env
   - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
+  - optional GCP Secret Manager CSI overlay (`deploy/k8s/overlays/prod-gcp-sm`) with Workload Identity service accounts and SecretProviderClass manifests
   - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
     - supports optional NAT driver assertion (`cli` or `native`) for rollout validation.
   - `docs/deployment-checklist.md`
@@ -163,7 +164,7 @@
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
-2. Wire GCP Secret Manager sync/CSI mounting in manifests so `*_FILE` paths are used by default; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
+2. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) and retire direct secret volumes for entry/core sensitive values.
 3. Run production canary validation for `WG_NAT_DRIVER=native` and, once stable, switch production default from `cli` to `native`.
 4. Add auditable privacy policy toggles and retention/redaction conformance checks.
 5. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.

@@ -25,6 +25,7 @@ Run preflight validation before apply:
 ```bash
 deploy/k8s/preflight.sh dev
 deploy/k8s/preflight.sh prod
+deploy/k8s/preflight.sh prod-gcp-sm
 ```
 The preflight gate enforces NAT rollout safety:
 - `prod` must render `WG_NAT_DRIVER=cli`
@@ -43,10 +44,23 @@ Production:
 kubectl apply -k deploy/k8s/overlays/prod
 ```
 
+Production (GCP Secret Manager CSI + Workload Identity):
+```bash
+kubectl apply -k deploy/k8s/overlays/prod-gcp-sm
+```
+
 Production native canary:
 ```bash
 kubectl apply -k deploy/k8s/overlays/prod-native-canary
 ```
+
+Prerequisites for `prod-gcp-sm`:
+- GKE Workload Identity enabled for the cluster/node pool.
+- Secrets Store CSI driver + GCP provider installed.
+- Replace placeholders in:
+  - `deploy/k8s/gcp/serviceaccounts.yaml`
+  - `deploy/k8s/gcp/entry-secretproviderclass.yaml`
+  - `deploy/k8s/gcp/core-secretproviderclass.yaml`
 
 ## 3. SealedSecret flow for production
 Prereq: Sealed Secrets controller and `kubeseal` installed.
