@@ -416,8 +416,10 @@ mod tests {
         assert!(client.auth_state().is_none());
         assert!(client.runtime_state().selected_device_id.is_none());
 
-        let revoked = state_guard.revoked.lock().expect("lock");
-        assert!(revoked.contains(&token));
+        {
+            let revoked = state_guard.revoked.lock().expect("lock");
+            assert!(revoked.contains(&token));
+        }
 
         let err = api
             .list_devices(&token)

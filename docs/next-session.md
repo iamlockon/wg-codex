@@ -180,6 +180,10 @@
   - Tauri-native bundling config added:
     - `clients/windows-desktop/src-tauri/tauri.conf.json` includes `../wg-tools/**` in bundle resources for MSI/NSIS outputs.
     - runtime lookup now supports Tauri resource layout (`<app dir>/resources/wg-tools/wireguard.exe`) in addition to direct app-relative path.
+  - Full Tauri desktop UI flow implemented:
+    - frontend app (`clients/windows-desktop/ui/index.html`, `clients/windows-desktop/ui/src/main.ts`, `clients/windows-desktop/ui/src/styles.css`) now drives login/device/session/logout flows,
+    - Rust Tauri command layer in `clients/windows-desktop/src-tauri/src/main.rs` exposes end-to-end operations for UI invoke calls.
+  - WireGuard config handling now prefers backend full config from `qr_payload` when it contains full `[Interface]`/`[Peer]` content.
   - desktop-core integration tests now cover login/device/connect/disconnect, logout revocation behavior, and reconnect-after-restart behavior against a mock `entry` API.
 
 ## Not Production-Ready Yet

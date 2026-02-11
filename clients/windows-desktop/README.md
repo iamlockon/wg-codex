@@ -1,4 +1,4 @@
-# Windows Desktop Client (MVP Scaffold)
+# Windows Desktop Client (MVP)
 
 This directory contains the Windows desktop client MVP core for integration with the `entry` backend.
 
@@ -13,6 +13,7 @@ This directory contains the Windows desktop client MVP core for integration with
 - Device registration/list.
 - Session start/current/terminate.
 - Logout with token revocation behavior.
+- Tauri desktop UI flow for all above actions.
 
 ## Validation
 - Desktop-core integration tests are in `src-tauri/src/session.rs` and cover:
@@ -20,6 +21,7 @@ This directory contains the Windows desktop client MVP core for integration with
   - logout revocation handling and local state clearing,
   - reconnect after app restart from persisted state.
 - Storage non-plaintext assertion is in `src-tauri/src/storage.rs`.
+- Tauri UI invokes Rust commands in `src-tauri/src/main.rs` for auth/device/session lifecycle.
 
 ## Runtime Adapters
 - On Windows (`cfg(windows)`):
@@ -72,6 +74,25 @@ Notes:
 - Runtime lookup in code supports both:
   - `<app dir>/wg-tools/wireguard.exe`
   - `<app dir>/resources/wg-tools/wireguard.exe` (Tauri bundle resource layout)
+
+## Local UI Development
+1. Install desktop and UI dependencies:
+```bash
+cd clients/windows-desktop
+npm install
+npm --prefix ui install
+```
+
+2. Start Tauri desktop app in dev mode:
+```bash
+npm run tauri:dev
+```
+
+3. Use the in-app flow:
+- paste OAuth callback code and click `Login`,
+- register/select device,
+- connect/disconnect,
+- logout or restore+reconnect.
 
 ## Notes
 

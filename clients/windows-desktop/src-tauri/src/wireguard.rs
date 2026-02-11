@@ -57,6 +57,10 @@ impl WireGuardWindowsController {
     }
 
     fn render_config(&self, config: &WireGuardClientConfig) -> String {
+        // Prefer backend-provided full client config when available.
+        if config.qr_payload.contains("[Interface]") && config.qr_payload.contains("[Peer]") {
+            return config.qr_payload.clone();
+        }
         let mut lines = Vec::new();
         lines.push("[Interface]".to_string());
         lines.push(format!("Address = {}", config.assigned_ip));
@@ -220,6 +224,21 @@ mod tests {
 
         let selected = resolve_wireguard_exe_from_app_dir(&app_dir);
         assert!(selected.ends_with("resources/wg-tools/wireguard.exe"));
+    }
+
+    #[test]
+    fn render_config_uses_qr_payload_when_full_config_present() {
+        let controller = WireGuardWindowsController::new("wg-test".to_string(), None, None);
+        let cfg = WireGuardClientConfig {
+            endpoint: "node.example:51820".to_string(),
+            server_public_key: "server-key".to_string(),
+            preshared_key: None,
+            assigned_ip: "10.8.0.2/24".to_string(),
+            dns_servers: vec!["1.1.1.1".to_string()],
+            persistent_keepalive_secs: 25,
+            qr_payload: "[Interface]\nPrivateKey = abc\n[Peer]\nPublicKey = xyz".to_string(),
+        };
+        assert_eq!(controller.render_config(&cfg), cfg.qr_payload);
     }
 
     fn unique_tmp_dir(prefix: &str) -> PathBuf {
