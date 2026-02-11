@@ -102,3 +102,8 @@ kubectl -n wg-vpn logs -f job/db-migrate
   - `CORE_DATAPLANE_NOOP=false`
   - `CORE_REQUIRE_TLS=true`
   - `WG_SERVER_PUBLIC_KEY` required
+
+## 6. Post-deploy smoke check
+```bash
+deploy/k8s/smoke-check.sh https://<entry-host> <admin-token>
+```

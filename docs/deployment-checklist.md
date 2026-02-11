@@ -40,6 +40,10 @@
   - If using file-backed secrets: `WG_SERVER_PUBLIC_KEY_FILE` and `ADMIN_API_TOKEN_FILE` mounted and readable
 
 ## Smoke checks
+Preferred:
+- `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token>`
+
+Manual fallback:
 1. `kubectl -n wg-vpn get pods`
 2. `kubectl -n wg-vpn logs deploy/entry --tail=100`
 3. `kubectl -n wg-vpn logs ds/core --tail=100`

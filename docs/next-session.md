@@ -114,6 +114,7 @@
   - `deploy/k8s/*` manifests (namespace, configmaps, secrets examples, entry deployment, core daemonset, migration job)
   - `deploy/k8s/base` + `deploy/k8s/overlays/{dev,prod}` kustomize structure for one-command deploy per env
   - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
+  - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
   - `docs/deployment-checklist.md`
 
 ## Not Production-Ready Yet
