@@ -153,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
-        .route("/v1/auth/oauth/:provider/callback", post(oauth_callback))
+        .route("/v1/auth/oauth/{provider}/callback", post(oauth_callback))
         .route("/v1/auth/logout", post(logout))
         .route("/v1/devices", post(register_device).get(list_devices))
         .route("/v1/sessions/start", post(start_session))
@@ -168,16 +168,16 @@ async fn main() -> anyhow::Result<()> {
             post(upsert_subscription).get(list_subscriptions),
         )
         .route(
-            "/v1/admin/subscriptions/:customer_id",
+            "/v1/admin/subscriptions/{customer_id}",
             get(get_subscription),
         )
         .route(
-            "/v1/admin/subscriptions/:customer_id/history",
+            "/v1/admin/subscriptions/{customer_id}/history",
             get(get_subscription_history),
         )
         .route("/v1/internal/nodes/health", post(update_node_health))
         .route(
-            "/v1/sessions/:session_key/terminate",
+            "/v1/sessions/{session_key}/terminate",
             post(terminate_session),
         )
         .with_state(state);
@@ -2533,8 +2533,8 @@ mod tests {
         assert!(redacted.contains("..."));
     }
 
-    #[test]
-    fn production_readiness_checks_reflect_state_backed_policies() {
+    #[tokio::test]
+    async fn production_readiness_checks_reflect_state_backed_policies() {
         let state = AppState {
             runtime_sessions_by_customer: RwLock::new(HashMap::new()),
             devices_by_customer: RwLock::new(HashMap::new()),
@@ -3371,9 +3371,21 @@ mod tests {
         Router::new()
             .route("/v1/sessions/start", post(start_session))
             .route(
-                "/v1/sessions/:session_key/terminate",
+                "/v1/sessions/{session_key}/terminate",
                 post(terminate_session),
             )
+            .with_state(state)
+    }
+
+    fn api_integration_routes(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/v1/auth/logout", post(logout))
+            .route("/v1/devices", get(list_devices))
+            .route("/v1/sessions/start", post(start_session))
+            .route("/v1/admin/readiness", get(get_readiness))
+            .route("/v1/admin/privacy/policy", get(get_privacy_policy))
+            .route("/v1/admin/privacy/audit-events", get(list_audit_events))
+            .route("/v1/admin/subscriptions", post(upsert_subscription))
             .with_state(state)
     }
 
@@ -3505,5 +3517,254 @@ mod tests {
             .expect("body");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["error"], "session_key_mismatch");
+    }
+
+    #[tokio::test]
+    async fn logout_http_revokes_bearer_token_for_follow_up_requests() {
+        let customer_id = Uuid::new_v4();
+        let keys = test_keys();
+        let token = issue_access_token(customer_id, &keys).expect("token");
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: keys,
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+        let app = api_integration_routes(state);
+
+        let list_request = Request::builder()
+            .method("GET")
+            .uri("/v1/devices")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request");
+        let list_response = app.clone().oneshot(list_request).await.expect("response");
+        assert_eq!(list_response.status(), StatusCode::OK);
+
+        let logout_request = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/logout")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request");
+        let logout_response = app.clone().oneshot(logout_request).await.expect("response");
+        assert_eq!(logout_response.status(), StatusCode::NO_CONTENT);
+
+        let revoked_request = Request::builder()
+            .method("GET")
+            .uri("/v1/devices")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request");
+        let revoked_response = app.oneshot(revoked_request).await.expect("response");
+        assert_eq!(revoked_response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(revoked_response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "revoked_access_token");
+    }
+
+    #[tokio::test]
+    async fn subscription_admin_http_flow_gates_session_start() {
+        let customer_id = Uuid::new_v4();
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: Some("admin-secret".to_string()),
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+        let app = api_integration_routes(state);
+
+        let upsert_request = Request::builder()
+            .method("POST")
+            .uri("/v1/admin/subscriptions")
+            .header("content-type", "application/json")
+            .header("x-admin-token", "admin-secret")
+            .body(Body::from(
+                serde_json::json!({
+                    "customer_id": customer_id,
+                    "plan_code": "Free",
+                    "status": "canceled"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let upsert_response = app.clone().oneshot(upsert_request).await.expect("response");
+        assert_eq!(upsert_response.status(), StatusCode::OK);
+        let body = to_bytes(upsert_response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["plan_code"], "free");
+        assert_eq!(json["status"], "canceled");
+
+        let session_request = Request::builder()
+            .method("POST")
+            .uri("/v1/sessions/start")
+            .header("content-type", "application/json")
+            .header("x-customer-id", customer_id.to_string())
+            .body(Body::from(
+                serde_json::json!({
+                    "device_id": Uuid::new_v4(),
+                    "region": "us-west1"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+        let session_response = app.oneshot(session_request).await.expect("response");
+        assert_eq!(session_response.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(session_response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "subscription_inactive");
+    }
+
+    #[tokio::test]
+    async fn readiness_and_privacy_admin_http_routes_enforce_auth_and_return_expected_payloads() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: Some("admin-secret".to_string()),
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Partial,
+            terminated_session_retention_days: max_terminated_session_retention_days() + 1,
+            audit_retention_days: max_audit_retention_days() + 1,
+            node_freshness_secs: 60,
+        });
+        let app = api_integration_routes(state);
+
+        let readiness_unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/admin/readiness")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(readiness_unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let body = to_bytes(readiness_unauthorized.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "missing_x_admin_token");
+
+        let readiness_authorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/admin/readiness")
+                    .header("x-admin-token", "admin-secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(readiness_authorized.status(), StatusCode::OK);
+        let body = to_bytes(readiness_authorized.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["mode"], "development");
+        assert!(
+            json["checks"]
+                .as_array()
+                .expect("checks array")
+                .iter()
+                .any(|check| check["key"] == "core_status_reachable")
+        );
+
+        let privacy_policy = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/admin/privacy/policy")
+                    .header("x-admin-token", "admin-secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(privacy_policy.status(), StatusCode::OK);
+        let body = to_bytes(privacy_policy.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["compliant"], false);
+        assert_eq!(json["mode"], "development");
+
+        let audit_events = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/admin/privacy/audit-events")
+                    .header("x-admin-token", "admin-secret")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(audit_events.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(audit_events.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "privacy_store_not_configured");
     }
 }

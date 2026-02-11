@@ -100,6 +100,10 @@
   - `token_repo`: revocation expiry and purge behavior,
   - `oauth_repo`: identity idempotency, provider scoping, email update behavior, and race-safe parallel identity resolution,
   - `privacy_repo`: audit-event insert/list filters and retention purge behavior.
+- Added API-level end-to-end integration coverage in `services/entry/src/main.rs` for:
+  - bearer-authenticated logout + token revocation enforcement on follow-up API requests,
+  - admin subscription updates driving session-start gating (`subscription_inactive`),
+  - admin readiness/privacy endpoints (auth enforcement, policy payload, and privacy-store availability behavior).
 - DB-backed integration suite runner is now green end-to-end via `scripts/run-db-integration-tests.sh` (all repository suites pass with current migrations).
 - Recent stability fixes landed while validating integration tests:
   - `entry` test-build fixes for async test annotation and `Debug` derivations used by `expect_err`.
@@ -183,7 +187,6 @@
 2. Run production canary validation for `WG_NAT_DRIVER=native` with `deploy/k8s/canary-validate.sh` in-cluster and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
-5. Add API-level end-to-end integration coverage (beyond repository-level DB tests), including auth, subscription gating, and readiness/privacy admin flows.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
