@@ -347,4 +347,89 @@ mod tests {
             .expect_err("mismatch should fail");
         assert!(matches!(err, PostgresRepoError::SessionKeyMismatch));
     }
+
+    #[tokio::test]
+    async fn start_session_reuses_active_session_when_reconnect_key_matches() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let (customer_id, device_id) = insert_customer_with_device(&repo)
+            .await
+            .expect("seed customer/device");
+
+        let first = repo
+            .start_session(
+                customer_id,
+                device_id,
+                "us-west1".to_string(),
+                "sess_one".to_string(),
+                None,
+            )
+            .await
+            .expect("first start");
+        let first = match first {
+            StartSessionOutcome::Created(row) => row,
+            other => panic!("unexpected first start outcome: {other:?}"),
+        };
+
+        let second = repo
+            .start_session(
+                customer_id,
+                device_id,
+                "us-west1".to_string(),
+                "sess_two".to_string(),
+                Some(&first.session_key),
+            )
+            .await
+            .expect("second start");
+        assert_eq!(second, StartSessionOutcome::Reconnected(first.clone()));
+
+        let active_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*)
+             FROM sessions
+             WHERE customer_id = $1
+               AND state = 'active'",
+        )
+        .bind(customer_id)
+        .fetch_one(&repo.pool)
+        .await
+        .expect("count active");
+        assert_eq!(active_count, 1);
+    }
+
+    #[tokio::test]
+    async fn terminate_session_allows_new_active_session_afterwards() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let (customer_id, device_id) = insert_customer_with_device(&repo)
+            .await
+            .expect("seed customer/device");
+
+        repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_one".to_string(),
+            None,
+        )
+        .await
+        .expect("start");
+
+        repo.terminate_session(customer_id, "sess_one")
+            .await
+            .expect("terminate");
+
+        let restarted = repo
+            .start_session(
+                customer_id,
+                device_id,
+                "us-west1".to_string(),
+                "sess_two".to_string(),
+                None,
+            )
+            .await
+            .expect("restart");
+        assert!(matches!(restarted, StartSessionOutcome::Created(_)));
+    }
 }

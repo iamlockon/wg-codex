@@ -290,4 +290,67 @@ mod tests {
 
         assert_eq!(selected.id, target_b);
     }
+
+    #[tokio::test]
+    async fn select_node_ignores_stale_heartbeats() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let stale_id = Uuid::new_v4();
+        let fresh_id = Uuid::new_v4();
+
+        repo.upsert_node(UpsertNodeInput {
+            id: stale_id,
+            region: "us-west1".to_string(),
+            country_code: "US".to_string(),
+            city_code: Some("SFO".to_string()),
+            pool: "general".to_string(),
+            provider: "gcp".to_string(),
+            endpoint_host: format!("{stale_id}.example.net"),
+            endpoint_port: 51820,
+            healthy: true,
+            active_peer_count: 5,
+            capacity_peers: 100,
+        })
+        .await
+        .expect("insert stale candidate");
+
+        sqlx::query("UPDATE vpn_nodes SET updated_at = now() - interval '5 minutes' WHERE id = $1")
+            .bind(stale_id)
+            .execute(&repo.pool)
+            .await
+            .expect("age stale node");
+
+        repo.upsert_node(UpsertNodeInput {
+            id: fresh_id,
+            region: "us-west1".to_string(),
+            country_code: "US".to_string(),
+            city_code: Some("SFO".to_string()),
+            pool: "general".to_string(),
+            provider: "gcp".to_string(),
+            endpoint_host: format!("{fresh_id}.example.net"),
+            endpoint_port: 51820,
+            healthy: true,
+            active_peer_count: 40,
+            capacity_peers: 100,
+        })
+        .await
+        .expect("insert fresh candidate");
+
+        let selected = repo
+            .select_node(
+                &NodeSelectionCriteria {
+                    region: Some("us-west1".to_string()),
+                    country_code: Some("US".to_string()),
+                    city_code: Some("SFO".to_string()),
+                    pool: Some("general".to_string()),
+                },
+                60,
+            )
+            .await
+            .expect("select")
+            .expect("node");
+
+        assert_eq!(selected.id, fresh_id);
+    }
 }
