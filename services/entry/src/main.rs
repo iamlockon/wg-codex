@@ -120,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
         google_oidc: GoogleOidcConfig::from_env(),
         identity_store,
         node_store,
-        admin_api_token: std::env::var("ADMIN_API_TOKEN").ok(),
+        admin_api_token: read_env_or_file("ADMIN_API_TOKEN"),
         jwt_keys,
         allow_legacy_customer_header: std::env::var("APP_ALLOW_LEGACY_CUSTOMER_HEADER")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -228,7 +228,7 @@ struct JwtKeyStore {
 
 impl JwtKeyStore {
     fn from_env() -> Self {
-        if let Ok(raw) = std::env::var("APP_JWT_SIGNING_KEYS") {
+        if let Some(raw) = read_env_or_file("APP_JWT_SIGNING_KEYS") {
             let mut keys = HashMap::new();
             for part in raw.split(',') {
                 let mut chunks = part.splitn(2, ':');
@@ -257,8 +257,8 @@ impl JwtKeyStore {
             }
         }
 
-        let key = std::env::var("APP_JWT_SIGNING_KEY")
-            .unwrap_or_else(|_| "dev-insecure-signing-key-change-me".to_string());
+        let key = read_env_or_file("APP_JWT_SIGNING_KEY")
+            .unwrap_or_else(|| "dev-insecure-signing-key-change-me".to_string());
         let mut keys = HashMap::new();
         keys.insert("v1".to_string(), key.clone());
         Self {
@@ -785,6 +785,28 @@ fn env_flag(name: &str, default: bool) -> bool {
     std::env::var(name)
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(default)
+}
+
+fn read_env_or_file(name: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(name) {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+
+    let file_var = format!("{name}_FILE");
+    let path = std::env::var(&file_var).ok()?;
+    match fs::read_to_string(path.trim()) {
+        Ok(contents) => {
+            let value = contents.trim().to_string();
+            if value.is_empty() { None } else { Some(value) }
+        }
+        Err(err) => {
+            warn!(%err, %file_var, "failed to read secret from file");
+            None
+        }
+    }
 }
 
 fn log_redaction_mode(mode: RuntimeMode) -> LogRedactionMode {

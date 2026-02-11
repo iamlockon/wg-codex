@@ -105,6 +105,9 @@
   - `GET /v1/admin/core/status` proxies `GetNodeStatus` for control-plane observability checks.
 - Readiness admin endpoint added:
   - `GET /v1/admin/readiness` aggregates production guardrails and live core status into a single deployment gate signal.
+- File-backed secret loading added for sensitive runtime config:
+  - `entry`: `ADMIN_API_TOKEN`, `APP_JWT_SIGNING_KEYS`/`APP_JWT_SIGNING_KEY`, and Google OIDC credentials now support `*_FILE`.
+  - `core`: `WG_SERVER_PUBLIC_KEY` and health-reporter `ADMIN_API_TOKEN` now support `*_FILE`.
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`
@@ -128,7 +131,7 @@
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
-2. Move TLS materials and secrets to GCP Secret Manager + IAM policies; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
+2. Wire GCP Secret Manager sync/CSI mounting in manifests so `*_FILE` paths are used by default; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
 3. Complete `native-nft` implementation (netlink nftables programming) and switch production from `WG_NAT_DRIVER=cli` to `native` after validation.
 4. Add auditable privacy policy toggles and retention/redaction conformance checks.
 5. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.

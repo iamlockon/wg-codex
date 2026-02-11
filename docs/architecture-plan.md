@@ -110,6 +110,7 @@ Session states:
   - short retention for session metadata,
   - redact sensitive identifiers in logs.
 - GCP Secret Manager for secrets and key material.
+- Runtime supports `*_FILE` secret loading for key/token/OIDC values to align with mounted secret workflows.
 - Strict RBAC for admin/internal endpoints.
 - Security telemetry for abuse, auth anomalies, and suspicious session churn.
 

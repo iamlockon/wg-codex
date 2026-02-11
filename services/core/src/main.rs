@@ -26,7 +26,7 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, sleep};
 use tonic::transport::{Certificate, Identity, ServerTlsConfig};
 use tonic::{Code, Request, Response, Status};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,8 +48,8 @@ async fn main() -> anyhow::Result<()> {
         .parse()?;
     let endpoint_template = std::env::var("WG_ENDPOINT_TEMPLATE")
         .unwrap_or_else(|_| "{region}.gcp.vpn.example.net:51820".to_string());
-    let server_public_key =
-        std::env::var("WG_SERVER_PUBLIC_KEY").unwrap_or_else(|_| "<server_public_key>".to_string());
+    let server_public_key = read_env_or_file("WG_SERVER_PUBLIC_KEY")
+        .unwrap_or_else(|| "<server_public_key>".to_string());
 
     let use_noop = std::env::var("CORE_DATAPLANE_NOOP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -139,6 +139,26 @@ fn env_flag(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn read_env_or_file(name: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(name) {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    let file_var = format!("{name}_FILE");
+    let path = std::env::var(&file_var).ok()?;
+    let contents = match fs::read_to_string(path.trim()) {
+        Ok(contents) => contents,
+        Err(err) => {
+            warn!(%err, %file_var, "failed to read config from file");
+            return None;
+        }
+    };
+    let value = contents.trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
 fn validate_runtime_configuration(
     mode: RuntimeMode,
     use_noop: bool,
@@ -202,7 +222,7 @@ impl HealthReporterConfig {
         let node_id = std::env::var("CORE_NODE_ID")
             .ok()
             .and_then(|v| Uuid::parse_str(&v).ok())?;
-        let admin_api_token = std::env::var("ADMIN_API_TOKEN").ok()?;
+        let admin_api_token = read_env_or_file("ADMIN_API_TOKEN")?;
         let entry_health_url = std::env::var("CORE_ENTRY_HEALTH_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8080/v1/internal/nodes/health".to_string());
 

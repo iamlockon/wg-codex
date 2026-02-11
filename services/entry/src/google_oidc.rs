@@ -2,6 +2,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use reqwest::Client;
 use serde::Deserialize;
 use thiserror::Error;
+use tracing::warn;
 
 const DEFAULT_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const DEFAULT_JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
@@ -19,9 +20,9 @@ pub struct GoogleOidcConfig {
 
 impl GoogleOidcConfig {
     pub fn from_env() -> Option<Self> {
-        let client_id = std::env::var("GOOGLE_OIDC_CLIENT_ID").ok()?;
-        let client_secret = std::env::var("GOOGLE_OIDC_CLIENT_SECRET").ok()?;
-        let redirect_uri = std::env::var("GOOGLE_OIDC_REDIRECT_URI").ok()?;
+        let client_id = read_env_or_file("GOOGLE_OIDC_CLIENT_ID")?;
+        let client_secret = read_env_or_file("GOOGLE_OIDC_CLIENT_SECRET")?;
+        let redirect_uri = read_env_or_file("GOOGLE_OIDC_REDIRECT_URI")?;
         let token_url = std::env::var("GOOGLE_OIDC_TOKEN_URL")
             .unwrap_or_else(|_| DEFAULT_TOKEN_URL.to_string());
         let jwks_url =
@@ -34,6 +35,28 @@ impl GoogleOidcConfig {
             token_url,
             jwks_url,
         })
+    }
+}
+
+fn read_env_or_file(name: &str) -> Option<String> {
+    if let Ok(value) = std::env::var(name) {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+
+    let file_var = format!("{name}_FILE");
+    let path = std::env::var(&file_var).ok()?;
+    match std::fs::read_to_string(path.trim()) {
+        Ok(contents) => {
+            let value = contents.trim().to_string();
+            if value.is_empty() { None } else { Some(value) }
+        }
+        Err(err) => {
+            warn!(%err, %file_var, "failed to read OIDC config from file");
+            None
+        }
     }
 }
 

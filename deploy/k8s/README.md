@@ -64,6 +64,9 @@ kubectl -n wg-vpn create secret generic core-secrets \
 ```
 
 Keep `ADMIN_API_TOKEN` identical between entry and core.
+Sensitive values can also be supplied via `*_FILE` environment variables
+(`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, `GOOGLE_OIDC_CLIENT_SECRET_FILE`,
+`WG_SERVER_PUBLIC_KEY_FILE`) when mounted from secret volumes.
 
 ## 3.1 Canary rollback
 If canary shows errors, immediately roll back:
