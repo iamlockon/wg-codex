@@ -48,6 +48,8 @@
    - `GET /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions/{customer_id}`
    - `GET /v1/admin/subscriptions/{customer_id}/history`
+6. Verify core gRPC status:
+   - `GetNodeStatus` returns expected `nat_driver`, `dataplane_mode`, and health metadata.
 
 ## Known non-blocking follow-ups
 - Implement netlink-native nftables programming under `native-nft` feature and switch `WG_NAT_DRIVER=native` after validation.

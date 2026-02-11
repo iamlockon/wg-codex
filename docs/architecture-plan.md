@@ -137,6 +137,7 @@ Internal gRPC (`core`):
 - `ConnectDevice`
 - `DisconnectDevice`
 - `GetSession`
+- `GetNodeStatus`
 
 ## Migration From Previous Road-Warrior Framing
 What can stay:

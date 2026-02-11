@@ -39,6 +39,8 @@
 - Reconciliation now inspects live peers via WireGuard UAPI and removes stale peers while re-applying desired peer state.
 - Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
 - NAT bootstrap in `core` now uses nft-based rule management path (legacy iptables branch removed), with `WG_NAT_DRIVER=cli|native` runtime selector.
+- Core gRPC now includes node runtime status API:
+  - `GetNodeStatus` reports health, active peers, nat driver mode, dataplane mode, and native feature support.
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,

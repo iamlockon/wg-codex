@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::Utc;
 use control_plane::proto::{
-    ConnectRequest, ConnectResponse, DisconnectRequest, DisconnectResponse, GetSessionRequest,
-    GetSessionResponse, SessionSnapshot,
+    ConnectRequest, ConnectResponse, DisconnectRequest, DisconnectResponse, GetNodeStatusRequest,
+    GetNodeStatusResponse, GetSessionRequest, GetSessionResponse, SessionSnapshot,
 };
 use control_plane::{
     ControlPlane, ControlPlaneServer, config_to_proto, into_rfc3339, parse_optional_uuid,
@@ -65,6 +65,7 @@ async fn main() -> anyhow::Result<()> {
         })
         .unwrap_or(NatDriver::CliNft);
     validate_runtime_configuration(mode, use_noop, &server_public_key, nat_driver)?;
+    let native_nft_supported = native_nft_supported();
     let dataplane: Arc<dyn DataPlane> = if use_noop {
         Arc::new(NoopDataPlane)
     } else {
@@ -86,7 +87,14 @@ async fn main() -> anyhow::Result<()> {
 
     dataplane.bootstrap().await.map_err(anyhow::Error::msg)?;
 
-    let service = CoreService::new(dataplane, endpoint_template, server_public_key);
+    let service = CoreService::new_with_runtime_config(
+        dataplane,
+        endpoint_template,
+        server_public_key,
+        nat_driver,
+        use_noop,
+        native_nft_supported,
+    );
 
     tokio::spawn(reconciliation_loop(service.clone()));
     if let Some(cfg) = HealthReporterConfig::from_env() {
@@ -283,6 +291,9 @@ struct CoreService {
     dataplane: Arc<dyn DataPlane>,
     endpoint_template: String,
     server_public_key: String,
+    nat_driver: NatDriver,
+    dataplane_noop: bool,
+    native_nft_supported: bool,
     healthy: Arc<AtomicBool>,
 }
 
@@ -292,19 +303,43 @@ impl CoreService {
         endpoint_template: String,
         server_public_key: String,
     ) -> Self {
-        Self::new_with_pool(
+        Self::new_with_runtime_config(
+            dataplane,
+            endpoint_template,
+            server_public_key,
+            NatDriver::CliNft,
+            true,
+            native_nft_supported(),
+        )
+    }
+
+    fn new_with_runtime_config(
+        dataplane: Arc<dyn DataPlane>,
+        endpoint_template: String,
+        server_public_key: String,
+        nat_driver: NatDriver,
+        dataplane_noop: bool,
+        native_nft_supported: bool,
+    ) -> Self {
+        Self::new_with_pool_and_runtime_config(
             dataplane,
             endpoint_template,
             server_public_key,
             Ipv4Pool::new([10, 90, 0], 24, 2, 254),
+            nat_driver,
+            dataplane_noop,
+            native_nft_supported,
         )
     }
 
-    fn new_with_pool(
+    fn new_with_pool_and_runtime_config(
         dataplane: Arc<dyn DataPlane>,
         endpoint_template: String,
         server_public_key: String,
         ip_pool: Ipv4Pool,
+        nat_driver: NatDriver,
+        dataplane_noop: bool,
+        native_nft_supported: bool,
     ) -> Self {
         Self {
             runtime: Arc::new(RwLock::new(CoreRuntime {
@@ -314,6 +349,9 @@ impl CoreService {
             dataplane,
             endpoint_template,
             server_public_key,
+            nat_driver,
+            dataplane_noop,
+            native_nft_supported,
             healthy: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -342,6 +380,17 @@ impl CoreService {
 
     fn endpoint_for_region(&self, region: &str) -> String {
         self.endpoint_template.replace("{region}", region)
+    }
+
+    fn nat_driver_label(&self) -> &'static str {
+        match self.nat_driver {
+            NatDriver::CliNft => "cli",
+            NatDriver::NativeNft => "native",
+        }
+    }
+
+    fn dataplane_mode_label(&self) -> &'static str {
+        if self.dataplane_noop { "noop" } else { "linux" }
     }
 }
 
@@ -475,6 +524,19 @@ impl ControlPlane for CoreService {
             session,
         }))
     }
+
+    async fn get_node_status(
+        &self,
+        _request: Request<GetNodeStatusRequest>,
+    ) -> Result<Response<GetNodeStatusResponse>, Status> {
+        Ok(Response::new(GetNodeStatusResponse {
+            healthy: self.is_healthy(),
+            active_peer_count: self.active_peer_count().await,
+            nat_driver: self.nat_driver_label().to_string(),
+            dataplane_mode: self.dataplane_mode_label().to_string(),
+            native_nft_supported: self.native_nft_supported,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -503,11 +565,14 @@ mod tests {
     }
 
     fn test_service_with_pool(first_host: u8, last_host: u8) -> CoreService {
-        CoreService::new_with_pool(
+        CoreService::new_with_pool_and_runtime_config(
             Arc::new(NoopDataPlane),
             "{region}.gcp.vpn.example.net:51820".to_string(),
             "server-pub".to_string(),
             Ipv4Pool::new([10, 90, 0], 24, first_host, last_host),
+            NatDriver::CliNft,
+            true,
+            native_nft_supported(),
         )
     }
 
@@ -802,6 +867,21 @@ mod tests {
             .into_inner();
 
         assert!(!response.removed);
+    }
+
+    #[tokio::test]
+    async fn get_node_status_reports_runtime_fields() {
+        let service = test_service();
+        let status = service
+            .get_node_status(Request::new(GetNodeStatusRequest {
+                request_id: Uuid::new_v4().to_string(),
+            }))
+            .await
+            .expect("status")
+            .into_inner();
+
+        assert_eq!(status.nat_driver, "cli");
+        assert_eq!(status.dataplane_mode, "noop");
     }
 
     #[test]

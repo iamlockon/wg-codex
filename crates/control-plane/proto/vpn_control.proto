@@ -6,6 +6,7 @@ service ControlPlane {
   rpc ConnectDevice(ConnectRequest) returns (ConnectResponse);
   rpc DisconnectDevice(DisconnectRequest) returns (DisconnectResponse);
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+  rpc GetNodeStatus(GetNodeStatusRequest) returns (GetNodeStatusResponse);
 }
 
 message WireGuardClientConfig {
@@ -58,4 +59,16 @@ message SessionSnapshot {
 message GetSessionResponse {
   bool active = 1;
   SessionSnapshot session = 2;
+}
+
+message GetNodeStatusRequest {
+  string request_id = 1;
+}
+
+message GetNodeStatusResponse {
+  bool healthy = 1;
+  int64 active_peer_count = 2;
+  string nat_driver = 3;
+  string dataplane_mode = 4;
+  bool native_nft_supported = 5;
 }
