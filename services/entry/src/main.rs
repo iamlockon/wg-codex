@@ -9,6 +9,7 @@ mod token_repo;
 
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -50,6 +51,13 @@ use uuid::Uuid;
 enum RuntimeMode {
     Development,
     Production,
+}
+
+#[derive(Clone, Copy)]
+enum LogRedactionMode {
+    Off,
+    Partial,
+    Strict,
 }
 
 #[tokio::main]
@@ -113,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         token_store,
         subscription_store,
         privacy_store,
+        log_redaction_mode: log_redaction_mode(mode),
         node_freshness_secs: std::env::var("APP_NODE_FRESHNESS_SECS")
             .ok()
             .and_then(|v| v.parse::<i64>().ok())
@@ -182,6 +191,7 @@ struct AppState {
     token_store: Option<PostgresTokenRepository>,
     subscription_store: SubscriptionStore,
     privacy_store: Option<PostgresPrivacyRepository>,
+    log_redaction_mode: LogRedactionMode,
     node_freshness_secs: i64,
 }
 
@@ -678,6 +688,42 @@ fn env_flag(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn log_redaction_mode(mode: RuntimeMode) -> LogRedactionMode {
+    if let Ok(raw) = std::env::var("APP_LOG_REDACTION_MODE") {
+        return match raw.to_lowercase().as_str() {
+            "off" => LogRedactionMode::Off,
+            "partial" => LogRedactionMode::Partial,
+            _ => LogRedactionMode::Strict,
+        };
+    }
+    match mode {
+        RuntimeMode::Production => LogRedactionMode::Strict,
+        RuntimeMode::Development => LogRedactionMode::Partial,
+    }
+}
+
+fn redact_value(mode: LogRedactionMode, value: &str) -> String {
+    match mode {
+        LogRedactionMode::Off => value.to_string(),
+        LogRedactionMode::Partial => {
+            if value.len() <= 8 {
+                "***".to_string()
+            } else {
+                format!("{}...{}", &value[..4], &value[value.len() - 4..])
+            }
+        }
+        LogRedactionMode::Strict => {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hasher);
+            format!("h:{:016x}", hasher.finish())
+        }
+    }
+}
+
+fn redact_uuid(mode: LogRedactionMode, id: Uuid) -> String {
+    redact_value(mode, &id.to_string())
+}
+
 fn validate_runtime_configuration(mode: RuntimeMode, state: &AppState) -> anyhow::Result<()> {
     if mode != RuntimeMode::Production {
         return Ok(());
@@ -697,6 +743,9 @@ fn validate_runtime_configuration(mode: RuntimeMode, state: &AppState) -> anyhow
     }
     if !env_flag("APP_REQUIRE_CORE_TLS", false) {
         anyhow::bail!("APP_REQUIRE_CORE_TLS must be true in production");
+    }
+    if !matches!(state.log_redaction_mode, LogRedactionMode::Strict) {
+        anyhow::bail!("APP_LOG_REDACTION_MODE must be strict in production");
     }
     if state.google_oidc.is_none() {
         anyhow::bail!("Google OIDC configuration is required in production");
@@ -751,7 +800,11 @@ async fn oauth_callback(
         .await?;
     let access_token = issue_access_token(customer_id, &state.jwt_keys)
         .map_err(|_| ApiError::service_unavailable("oauth_token_issue_failed"))?;
-    info!(provider=%provider, %customer_id, "oauth login succeeded");
+    info!(
+        provider=%provider,
+        customer=redact_uuid(state.log_redaction_mode, customer_id),
+        "oauth login succeeded"
+    );
     Ok(Json(OAuthCallbackResponse {
         provider,
         customer_id,
@@ -782,7 +835,11 @@ async fn logout(
             .await
             .map_err(map_token_repo_error)?;
     }
-    info!(customer_id=%ctx.customer_id, token_id=%token_id, "logout revoked access token");
+    info!(
+        customer = redact_uuid(state.log_redaction_mode, ctx.customer_id),
+        token = redact_value(state.log_redaction_mode, &token_id),
+        "logout revoked access token"
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1000,7 +1057,7 @@ async fn upsert_subscription(
         .upsert_customer_subscription(payload.customer_id, &normalized_plan, status)
         .await?;
     info!(
-        customer_id=%payload.customer_id,
+        customer=redact_uuid(state.log_redaction_mode, payload.customer_id),
         plan_code=%payload.plan_code,
         status=%payload.status,
         "subscription updated"
@@ -1111,7 +1168,11 @@ async fn start_session(
         StartSessionOutcome::Conflict {
             existing_session_key,
         } => {
-            info!(%customer_id, existing_session_key=%existing_session_key, "session start conflict due to active session");
+            info!(
+                customer = redact_uuid(state.log_redaction_mode, customer_id),
+                existing_session = redact_value(state.log_redaction_mode, &existing_session_key),
+                "session start conflict due to active session"
+            );
             return Ok(Json(StartSessionResponse::Conflict {
                 existing_session_key,
                 message: "active_session_exists",
@@ -1162,7 +1223,12 @@ async fn start_session(
                     config: config.clone(),
                 },
             );
-            info!(%customer_id, session_key=%existing_row.session_key, region=%existing_row.region, "session reconnected");
+            info!(
+                customer=redact_uuid(state.log_redaction_mode, customer_id),
+                session=redact_value(state.log_redaction_mode, &existing_row.session_key),
+                region=%existing_row.region,
+                "session reconnected"
+            );
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: existing_row.session_key,
@@ -1210,7 +1276,12 @@ async fn start_session(
                     config: config.clone(),
                 },
             );
-            info!(%customer_id, session_key=%created_row.session_key, region=%effective_region, "session started");
+            info!(
+                customer=redact_uuid(state.log_redaction_mode, customer_id),
+                session=redact_value(state.log_redaction_mode, &created_row.session_key),
+                region=%effective_region,
+                "session started"
+            );
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: created_row.session_key,
@@ -1305,7 +1376,11 @@ async fn terminate_session(
         .write()
         .await
         .remove(&customer_id);
-    info!(%customer_id, %session_key, "session terminated");
+    info!(
+        customer = redact_uuid(state.log_redaction_mode, customer_id),
+        session = redact_value(state.log_redaction_mode, &session_key),
+        "session terminated"
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1695,6 +1770,23 @@ mod tests {
     }
 
     #[test]
+    fn redact_value_strict_is_stable_but_not_plaintext() {
+        let input = "sess_1234567890";
+        let redacted = redact_value(LogRedactionMode::Strict, input);
+        assert_ne!(redacted, input);
+        assert!(redacted.starts_with("h:"));
+    }
+
+    #[test]
+    fn redact_value_partial_masks_middle() {
+        let input = "sess_1234567890";
+        let redacted = redact_value(LogRedactionMode::Partial, input);
+        assert!(redacted.starts_with("sess"));
+        assert!(redacted.ends_with("7890"));
+        assert!(redacted.contains("..."));
+    }
+
+    #[test]
     #[tokio::test]
     async fn customer_id_from_request_requires_bearer_when_legacy_disabled() {
         let state = AppState {
@@ -1715,6 +1807,7 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
             privacy_store: None,
+            log_redaction_mode: LogRedactionMode::Off,
             node_freshness_secs: 60,
         };
 
@@ -1753,6 +1846,7 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
             privacy_store: None,
+            log_redaction_mode: LogRedactionMode::Off,
             node_freshness_secs: 60,
         };
 
@@ -1797,6 +1891,7 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
             privacy_store: None,
+            log_redaction_mode: LogRedactionMode::Off,
             node_freshness_secs: 60,
         };
 
@@ -1933,6 +2028,7 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
+            log_redaction_mode: LogRedactionMode::Off,
             node_freshness_secs: 60,
         });
 
@@ -2002,6 +2098,7 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
+            log_redaction_mode: LogRedactionMode::Off,
             node_freshness_secs: 60,
         });
 
@@ -2072,6 +2169,7 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
+            log_redaction_mode: LogRedactionMode::Off,
             node_freshness_secs: 60,
         });
 

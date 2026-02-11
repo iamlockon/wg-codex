@@ -96,7 +96,7 @@ Session states:
 - Configure WireGuard peers through Linux kernel UAPI.
 - Maintain one interface per node process initially, peers per session.
 - Allocate per-session internal IPs from managed pool.
-- NAT backend configurable (`iptables` now, `nft` path maintained).
+- NAT setup currently uses nft-based rule management.
 - Reconciliation loop removes stale peers and re-applies desired state.
 - Capacity admission guard before provisioning peer.
 

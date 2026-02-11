@@ -21,13 +21,6 @@ pub struct LinuxDataPlaneConfig {
     pub private_key_path: String,
     pub listen_port: u16,
     pub egress_iface: String,
-    pub nat_backend: NatBackend,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum NatBackend {
-    Iptables,
-    Nft,
 }
 
 #[async_trait]
@@ -145,41 +138,6 @@ impl LinuxShellDataPlane {
     }
 
     fn ensure_nat_rule(&self) -> Result<(), String> {
-        match self.cfg.nat_backend {
-            NatBackend::Iptables => self.ensure_nat_rule_iptables(),
-            NatBackend::Nft => self.ensure_nat_rule_nft(),
-        }
-    }
-
-    fn ensure_nat_rule_iptables(&self) -> Result<(), String> {
-        let check = Self::run(&[
-            "iptables",
-            "-t",
-            "nat",
-            "-C",
-            "POSTROUTING",
-            "-o",
-            &self.cfg.egress_iface,
-            "-j",
-            "MASQUERADE",
-        ]);
-        if check.is_ok() {
-            return Ok(());
-        }
-        Self::run(&[
-            "iptables",
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-o",
-            &self.cfg.egress_iface,
-            "-j",
-            "MASQUERADE",
-        ])
-    }
-
-    fn ensure_nat_rule_nft(&self) -> Result<(), String> {
         // Ensure table and chain exist (idempotent by allowing failure).
         Self::run_allow_failure(&["nft", "add", "table", "ip", "nat"]);
         Self::run_allow_failure(&[

@@ -7,4 +7,5 @@ data:
   APP_ENV: "development"
   APP_REQUIRE_CORE_TLS: "false"
   APP_ALLOW_LEGACY_CUSTOMER_HEADER: "true"
+  APP_LOG_REDACTION_MODE: "partial"
   CORE_GRPC_URL: "http://core.wg-vpn.svc.cluster.local:50051"

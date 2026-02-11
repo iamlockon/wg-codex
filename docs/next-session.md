@@ -38,7 +38,7 @@
 - WireGuard device bootstrap (`private_key`, `listen_port`) is now also applied via Rust UAPI, removing `wg set` shell dependency.
 - Reconciliation now inspects live peers via WireGuard UAPI and removes stale peers while re-applying desired peer state.
 - Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
-- NAT backend is now configurable in `core` via `WG_NAT_BACKEND` (`iptables` default, `nft` optional).
+- NAT bootstrap in `core` now uses nft-based rule management path (legacy iptables branch removed).
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,
@@ -92,6 +92,9 @@
 - Production startup guardrails added:
   - `entry` fails fast in `APP_ENV=production` if DB/JWT/admin token/TLS/OIDC requirements are not satisfied.
   - `core` fails fast in `APP_ENV=production` if noop dataplane is enabled, TLS is not required, or server key is unset.
+- Log redaction controls added in `entry`:
+  - sensitive audit fields (customer/session/token identifiers) are redacted in logs,
+  - `APP_LOG_REDACTION_MODE` supports `off|partial|strict` and production requires `strict`.
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`
@@ -105,14 +108,14 @@
 - Subscription history/listing APIs are still minimal (latest snapshot lookup only).
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
-- Privacy policy enforcement is incomplete (retention/redaction/minimal logging controls still need hardening).
-- Remaining shell-based NAT path still exists (`iptables`/`nft` command execution).
+- Privacy policy enforcement is improved but still incomplete (retention exists; policy tuning/audit guarantees still need hardening).
+- Remaining NAT setup still uses `nft` shell commands; full Rust-native nftables/netlink integration is pending.
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
-3. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
-4. Add privacy controls: log redaction guarantees and auditable policy toggles on top of retention cleanup.
+3. Replace remaining `nft` shell rule management with Rust-native firewall handling (nftables/netlink integration).
+4. Add auditable privacy policy toggles and retention/redaction conformance checks.
 5. Expand subscription admin/reporting APIs for operational visibility (history and list endpoints).
 
 ## Open Risks / Watch Items

@@ -27,6 +27,7 @@
   - `DATABASE_URL` present
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
+  - `APP_LOG_REDACTION_MODE=strict` (or omitted; production defaults to strict)
   - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)
   - `ADMIN_API_TOKEN` set
 - `core`:
@@ -45,5 +46,5 @@
    - `GET /v1/admin/subscriptions/{customer_id}`
 
 ## Known non-blocking follow-ups
-- Replace shell-backed NAT operations with Rust-native nftables/netlink path.
-- Enable stricter audit log redaction policy tuning.
+- Replace remaining shell-backed `nft` command usage with fully Rust-native nftables/netlink path.
+- Tune redaction policy by environment (`APP_LOG_REDACTION_MODE`) once production observability needs are finalized.
