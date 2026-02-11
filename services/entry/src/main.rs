@@ -896,6 +896,27 @@ struct OAuthCallbackRequest {
     nonce: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum OAuthProvider {
+    Google,
+}
+
+impl OAuthProvider {
+    fn parse(raw: &str) -> Option<Self> {
+        if raw.eq_ignore_ascii_case("google") {
+            Some(Self::Google)
+        } else {
+            None
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct OAuthCallbackResponse {
     provider: String,
@@ -905,44 +926,48 @@ struct OAuthCallbackResponse {
 
 async fn oauth_callback(
     State(state): State<Arc<AppState>>,
-    Path(provider): Path<String>,
+    Path(provider_raw): Path<String>,
     Json(payload): Json<OAuthCallbackRequest>,
 ) -> Result<Json<OAuthCallbackResponse>, ApiError> {
-    if provider != "google" {
-        return Err(ApiError::bad_request("unsupported_provider"));
-    }
+    let provider = OAuthProvider::parse(&provider_raw)
+        .ok_or_else(|| ApiError::bad_request("unsupported_provider"))?;
 
     if payload.code.trim().is_empty() {
         return Err(ApiError::bad_request("missing_oauth_code"));
     }
 
-    let google_oidc = state
-        .google_oidc
-        .as_ref()
-        .ok_or_else(|| ApiError::service_unavailable("google_oidc_not_configured"))?;
-    let identity = authenticate_google(
-        &state.http_client,
-        google_oidc,
-        &payload.code,
-        payload.code_verifier.as_deref(),
-        payload.nonce.as_deref(),
-    )
-    .await
-    .map_err(map_oidc_error)?;
+    let (subject, email) = match provider {
+        OAuthProvider::Google => {
+            let google_oidc = state
+                .google_oidc
+                .as_ref()
+                .ok_or_else(|| ApiError::service_unavailable("google_oidc_not_configured"))?;
+            let identity = authenticate_google(
+                &state.http_client,
+                google_oidc,
+                &payload.code,
+                payload.code_verifier.as_deref(),
+                payload.nonce.as_deref(),
+            )
+            .await
+            .map_err(map_oidc_error)?;
+            (identity.sub, identity.email)
+        }
+    };
 
     let customer_id = state
         .identity_store
-        .resolve_or_create_customer("google", &identity.sub, identity.email.as_deref())
+        .resolve_or_create_customer(provider.as_str(), &subject, email.as_deref())
         .await?;
     let access_token = issue_access_token(customer_id, &state.jwt_keys)
         .map_err(|_| ApiError::service_unavailable("oauth_token_issue_failed"))?;
     info!(
-        provider=%provider,
+        provider=%provider.as_str(),
         customer=redact_uuid(state.log_redaction_mode, customer_id),
         "oauth login succeeded"
     );
     Ok(Json(OAuthCallbackResponse {
-        provider,
+        provider: provider.as_str().to_string(),
         customer_id,
         access_token,
     }))
@@ -2128,6 +2153,23 @@ mod tests {
         let err = map_oidc_error(OidcError::Jwt(jwt_err));
         assert_eq!(err.status, StatusCode::UNAUTHORIZED);
         assert_eq!(err.code, "oauth_invalid_identity");
+    }
+
+    #[test]
+    fn oauth_provider_parse_accepts_google_case_insensitively() {
+        assert!(matches!(
+            OAuthProvider::parse("google"),
+            Some(OAuthProvider::Google)
+        ));
+        assert!(matches!(
+            OAuthProvider::parse("GoOgLe"),
+            Some(OAuthProvider::Google)
+        ));
+    }
+
+    #[test]
+    fn oauth_provider_parse_rejects_unknown_provider() {
+        assert!(OAuthProvider::parse("apple").is_none());
     }
 
     #[test]
