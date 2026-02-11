@@ -1,12 +1,17 @@
 FROM rust:1.85-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+ARG CORE_CARGO_FEATURES=""
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY services ./services
 
-RUN cargo build --release -p core --locked
+RUN if [ -n "$CORE_CARGO_FEATURES" ]; then \
+      cargo build --release -p core --locked --features "$CORE_CARGO_FEATURES"; \
+    else \
+      cargo build --release -p core --locked; \
+    fi
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates iptables nftables iproute2 && rm -rf /var/lib/apt/lists/*

@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
             }
         })
         .unwrap_or(NatDriver::CliNft);
-    validate_runtime_configuration(mode, use_noop, &server_public_key)?;
+    validate_runtime_configuration(mode, use_noop, &server_public_key, nat_driver)?;
     let dataplane: Arc<dyn DataPlane> = if use_noop {
         Arc::new(NoopDataPlane)
     } else {
@@ -135,7 +135,14 @@ fn validate_runtime_configuration(
     mode: RuntimeMode,
     use_noop: bool,
     server_public_key: &str,
+    nat_driver: NatDriver,
 ) -> anyhow::Result<()> {
+    if nat_driver == NatDriver::NativeNft && !native_nft_supported() {
+        anyhow::bail!(
+            "WG_NAT_DRIVER=native requested, but this binary was built without feature `native-nft`"
+        );
+    }
+
     if mode != RuntimeMode::Production {
         return Ok(());
     }
@@ -150,6 +157,16 @@ fn validate_runtime_configuration(
         anyhow::bail!("WG_SERVER_PUBLIC_KEY must be configured in production");
     }
     Ok(())
+}
+
+#[cfg(feature = "native-nft")]
+fn native_nft_supported() -> bool {
+    true
+}
+
+#[cfg(not(feature = "native-nft"))]
+fn native_nft_supported() -> bool {
+    false
 }
 
 async fn reconciliation_loop(service: CoreService) {
@@ -785,5 +802,21 @@ mod tests {
             .into_inner();
 
         assert!(!response.removed);
+    }
+
+    #[test]
+    fn validate_runtime_rejects_native_driver_when_feature_missing() {
+        let result = validate_runtime_configuration(
+            RuntimeMode::Development,
+            false,
+            "server-pub",
+            NatDriver::NativeNft,
+        );
+
+        if cfg!(feature = "native-nft") {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
     }
 }

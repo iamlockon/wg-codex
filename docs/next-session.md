@@ -114,6 +114,9 @@
 - Native NAT milestone hook added:
   - `WG_NAT_DRIVER=native` selects a feature-gated path backed by `native-nft`,
   - current native hook is intentionally fail-fast until netlink nftables programming is fully wired.
+- Canary rollout assets added for native NAT:
+  - `deploy/k8s/overlays/prod-native-canary` switches `WG_NAT_DRIVER=native` and canary image tag,
+  - rollback path is `kubectl apply -k deploy/k8s/overlays/prod`.
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.

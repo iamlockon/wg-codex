@@ -19,7 +19,8 @@
 ## Cluster apply order
 1. Dev: `kubectl apply -k deploy/k8s/overlays/dev`
 2. Prod: `kubectl apply -k deploy/k8s/overlays/prod`
-3. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
+3. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
+4. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
 
 ## Required production env policy
 - `APP_ENV=production`

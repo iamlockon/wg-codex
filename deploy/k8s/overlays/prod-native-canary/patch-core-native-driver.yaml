@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: core-config
+  namespace: wg-vpn
+data:
+  WG_NAT_DRIVER: "native"

@@ -8,6 +8,14 @@ docker push ghcr.io/<org>/wg-entry:<tag>
 docker push ghcr.io/<org>/wg-core:<tag>
 ```
 
+Native NAT canary core image (feature-enabled):
+```bash
+docker build -f services/core/Dockerfile \
+  --build-arg CORE_CARGO_FEATURES=native-nft \
+  -t ghcr.io/<org>/wg-core:stable-native-canary .
+docker push ghcr.io/<org>/wg-core:stable-native-canary
+```
+
 Update image tags in overlays:
 - `deploy/k8s/overlays/dev/kustomization.yaml`
 - `deploy/k8s/overlays/prod/kustomization.yaml`
@@ -21,6 +29,11 @@ kubectl apply -k deploy/k8s/overlays/dev
 Production:
 ```bash
 kubectl apply -k deploy/k8s/overlays/prod
+```
+
+Production native canary:
+```bash
+kubectl apply -k deploy/k8s/overlays/prod-native-canary
 ```
 
 ## 3. SealedSecret flow for production
@@ -51,6 +64,13 @@ kubectl -n wg-vpn create secret generic core-secrets \
 ```
 
 Keep `ADMIN_API_TOKEN` identical between entry and core.
+
+## 3.1 Canary rollback
+If canary shows errors, immediately roll back:
+```bash
+kubectl apply -k deploy/k8s/overlays/prod
+```
+This resets `WG_NAT_DRIVER=cli` and stable core image tag.
 
 ## 4. Run DB migrations (one-time per environment)
 Create a migration ConfigMap from SQL files:
