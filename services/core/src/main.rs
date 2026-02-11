@@ -219,9 +219,7 @@ struct HealthReporterConfig {
 
 impl HealthReporterConfig {
     fn from_env() -> Option<Self> {
-        let node_id = std::env::var("CORE_NODE_ID")
-            .ok()
-            .and_then(|v| Uuid::parse_str(&v).ok())?;
+        let node_id = read_env_or_file("CORE_NODE_ID").and_then(|v| Uuid::parse_str(&v).ok())?;
         let admin_api_token = read_env_or_file("ADMIN_API_TOKEN")?;
         let entry_health_url = std::env::var("CORE_ENTRY_HEALTH_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8080/v1/internal/nodes/health".to_string());

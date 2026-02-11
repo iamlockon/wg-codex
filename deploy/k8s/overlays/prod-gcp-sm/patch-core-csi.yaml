@@ -14,3 +14,15 @@ spec:
             readOnly: true
             volumeAttributes:
               secretProviderClass: core-gcp-secrets
+        - name: core-tls
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: core-gcp-secrets
+        - name: wireguard-keys
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: core-gcp-secrets

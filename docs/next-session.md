@@ -155,6 +155,12 @@
   - `entry` reads admin/JWT/OIDC via `*_FILE` paths and mounts `core-grpc-client-tls`.
   - `core` mounts `core-tls` and `wireguard-keys`, and reads admin/WG public key via `*_FILE`.
   - prod overlay now includes sealed-secret placeholders for `core-tls`, `core-grpc-client-tls`, and `wireguard-keys`.
+- `prod-gcp-sm` secret wiring has been expanded toward Secret Manager-only runtime mounts:
+  - `entry` now mounts both `entry-sensitive` and `core-grpc-client-tls` via CSI (`entry-gcp-secrets`).
+  - `core` now mounts `core-sensitive`, `core-tls`, and `wireguard-keys` via CSI (`core-gcp-secrets`).
+  - `core` health reporter now supports `CORE_NODE_ID_FILE`, and k8s wiring uses file-backed `CORE_NODE_ID_FILE`.
+  - GCP SecretProviderClass templates now include entries for node id, core TLS, WireGuard private key, and entry client mTLS files.
+  - preflight now fails `prod-gcp-sm*` if direct secret volumes remain for sensitive service mounts.
 
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
@@ -170,7 +176,7 @@
   - rollback path is `kubectl apply -k deploy/k8s/overlays/prod`.
 
 ## Priority Next Steps
-1. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) and retire direct secret volumes for entry/core sensitive values.
+1. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) with the expanded CSI-only service secret mounts.
 2. Run production canary validation for `WG_NAT_DRIVER=native` and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.

@@ -44,7 +44,9 @@ require_pattern '^kind: DaemonSet$' "core daemonset"
 if [[ "$overlay" != "prod-gcp-sm" && "$overlay" != "prod-gcp-sm-native-canary" ]]; then
   require_pattern 'name: entry-secrets' "entry-secrets reference"
 fi
-require_pattern 'name: core-secrets' "core-secrets reference"
+if [[ "$overlay" != "prod-gcp-sm" && "$overlay" != "prod-gcp-sm-native-canary" ]]; then
+  require_pattern 'name: core-secrets' "core-secrets reference"
+fi
 require_pattern 'name: core-tls' "core-tls reference"
 require_pattern 'name: core-grpc-client-tls' "core-grpc-client-tls reference"
 require_pattern 'name: wireguard-keys' "wireguard-keys reference"
@@ -52,6 +54,26 @@ if [[ "$overlay" == "prod-gcp-sm" || "$overlay" == "prod-gcp-sm-native-canary" ]
   require_pattern '^kind: SecretProviderClass$' "secretproviderclass resources"
   require_pattern 'secretProviderClass: entry-gcp-secrets' "entry secret provider class mount"
   require_pattern 'secretProviderClass: core-gcp-secrets' "core secret provider class mount"
+  if grep -q 'secretName: entry-secrets' "$tmp"; then
+    echo "preflight failed: found direct entry-secrets volume in GCP Secret Manager overlay" >&2
+    exit 4
+  fi
+  if grep -q 'secretName: core-secrets' "$tmp"; then
+    echo "preflight failed: found direct core-secrets volume in GCP Secret Manager overlay" >&2
+    exit 4
+  fi
+  if grep -q 'secretName: core-tls' "$tmp"; then
+    echo "preflight failed: found direct core-tls volume in GCP Secret Manager overlay" >&2
+    exit 4
+  fi
+  if grep -q 'secretName: core-grpc-client-tls' "$tmp"; then
+    echo "preflight failed: found direct core-grpc-client-tls volume in GCP Secret Manager overlay" >&2
+    exit 4
+  fi
+  if grep -q 'secretName: wireguard-keys' "$tmp"; then
+    echo "preflight failed: found direct wireguard-keys volume in GCP Secret Manager overlay" >&2
+    exit 4
+  fi
   if grep -q 'PROJECT_NUMBER' "$tmp"; then
     echo "preflight failed: found PROJECT_NUMBER placeholder in GCP Secret Manager resources" >&2
     exit 4
@@ -65,6 +87,7 @@ fi
 require_pattern 'DATABASE_URL_FILE' "DATABASE_URL_FILE env wiring"
 require_pattern 'APP_JWT_SIGNING_KEYS_FILE' "APP_JWT_SIGNING_KEYS_FILE env wiring"
 require_pattern 'GOOGLE_OIDC_CLIENT_SECRET_FILE' "GOOGLE_OIDC_CLIENT_SECRET_FILE env wiring"
+require_pattern 'CORE_NODE_ID_FILE' "CORE_NODE_ID_FILE env wiring"
 require_pattern 'WG_SERVER_PUBLIC_KEY_FILE' "WG_SERVER_PUBLIC_KEY_FILE env wiring"
 require_pattern 'seccompProfile:' "pod seccomp profile configuration"
 require_pattern 'allowPrivilegeEscalation: false' "container privilege-escalation hardening"

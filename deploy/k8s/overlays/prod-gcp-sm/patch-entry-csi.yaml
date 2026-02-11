@@ -14,3 +14,9 @@ spec:
             readOnly: true
             volumeAttributes:
               secretProviderClass: entry-gcp-secrets
+        - name: core-grpc-client-tls
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: entry-gcp-secrets

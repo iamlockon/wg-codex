@@ -31,11 +31,8 @@ spec:
             - configMapRef:
                 name: core-config
           env:
-            - name: CORE_NODE_ID
-              valueFrom:
-                secretKeyRef:
-                  name: core-secrets
-                  key: CORE_NODE_ID
+            - name: CORE_NODE_ID_FILE
+              value: /var/run/secrets/core-sensitive/CORE_NODE_ID
             - name: ADMIN_API_TOKEN_FILE
               value: /var/run/secrets/core-sensitive/ADMIN_API_TOKEN
             - name: WG_SERVER_PUBLIC_KEY_FILE
@@ -80,6 +77,8 @@ spec:
             items:
               - key: ADMIN_API_TOKEN
                 path: ADMIN_API_TOKEN
+              - key: CORE_NODE_ID
+                path: CORE_NODE_ID
               - key: WG_SERVER_PUBLIC_KEY
                 path: WG_SERVER_PUBLIC_KEY
         - name: core-tls

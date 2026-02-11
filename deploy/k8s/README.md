@@ -68,7 +68,15 @@ Prerequisites for `prod-gcp-sm`:
   - `deploy/k8s/gcp/serviceaccounts.yaml`
   - `deploy/k8s/gcp/entry-secretproviderclass.yaml`
   - `deploy/k8s/gcp/core-secretproviderclass.yaml`
+- Provision Secret Manager secrets referenced by those classes, including:
+  - entry runtime secrets (`DATABASE_URL`, admin token, JWT keys, Google OIDC client id/secret)
+  - entry mTLS client material for core (`ca.pem`, `client.crt`, `client.key`)
+  - core runtime secrets (`CORE_NODE_ID`, admin token, WG server public key)
+  - core TLS material (`server.crt`, `server.key`, `ca.pem`)
+  - WireGuard private key (`private.key`)
 - Preflight now fails if `PROJECT_NUMBER` or `replace-me` placeholders are still present.
+  For `prod-gcp-sm*`, it also fails if direct Kubernetes secret volumes are still used for
+  `entry-secrets`, `core-secrets`, `core-tls`, `core-grpc-client-tls`, or `wireguard-keys`.
 
 ## 3. SealedSecret flow for production
 Prereq: Sealed Secrets controller and `kubeseal` installed.
@@ -121,7 +129,8 @@ kubectl -n wg-vpn create secret generic wireguard-keys \
 Keep `ADMIN_API_TOKEN` identical between entry and core.
 The manifests now use file-backed sensitive settings by default:
 `DATABASE_URL_FILE`, `ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`,
-`GOOGLE_OIDC_CLIENT_ID_FILE`, `GOOGLE_OIDC_CLIENT_SECRET_FILE`, and `WG_SERVER_PUBLIC_KEY_FILE`.
+`GOOGLE_OIDC_CLIENT_ID_FILE`, `GOOGLE_OIDC_CLIENT_SECRET_FILE`, `CORE_NODE_ID_FILE`,
+and `WG_SERVER_PUBLIC_KEY_FILE`.
 
 ## 3.1 Canary rollback
 If canary shows errors, immediately roll back:
