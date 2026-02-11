@@ -46,7 +46,7 @@ impl WireGuardWindowsController {
     ) -> Self {
         Self {
             tunnel_name,
-            wireguard_exe: wireguard_exe.unwrap_or_else(|| PathBuf::from("wireguard.exe")),
+            wireguard_exe: wireguard_exe.unwrap_or_else(default_wireguard_exe_path),
             config_dir: config_dir
                 .unwrap_or_else(|| std::env::temp_dir().join("wg-windows-client/config")),
         }
@@ -102,6 +102,19 @@ impl WireGuardWindowsController {
             stderr.trim()
         );
     }
+}
+
+fn default_wireguard_exe_path() -> PathBuf {
+    // Standalone-default path: bundled executable in app-relative tools directory.
+    // Expected package layout:
+    //   <app dir>/wg-tools/wireguard.exe
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(app_dir) = current_exe.parent()
+    {
+        return app_dir.join("wg-tools").join("wireguard.exe");
+    }
+    // Fallback for environments where current executable path cannot be resolved.
+    PathBuf::from("wireguard.exe")
 }
 
 impl TunnelController for WireGuardWindowsController {

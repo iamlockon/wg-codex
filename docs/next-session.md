@@ -173,7 +173,7 @@
   - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.
   - Windows adapter layer now includes:
     - DPAPI-backed secure storage (`src-tauri/src/storage_windows.rs`) for auth-token persistence,
-    - WireGuard-for-Windows command controller (`src-tauri/src/wireguard.rs`) for tunnel service install/uninstall.
+    - WireGuard-for-Windows command controller (`src-tauri/src/wireguard.rs`) for tunnel service install/uninstall, defaulting to bundled binary path (`<app dir>/wg-tools/wireguard.exe`) instead of host-installed WireGuard.
   - desktop-core integration tests now cover login/device/connect/disconnect, logout revocation behavior, and reconnect-after-restart behavior against a mock `entry` API.
 
 ## Not Production-Ready Yet
