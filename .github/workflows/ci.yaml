@@ -58,5 +58,11 @@ jobs:
       - name: Preflight prod overlay
         run: deploy/k8s/preflight.sh prod
 
+      - name: Preflight prod gcp secret-manager overlay
+        run: deploy/k8s/preflight.sh prod-gcp-sm
+
       - name: Preflight prod native canary overlay
         run: deploy/k8s/preflight.sh prod-native-canary
+
+      - name: Preflight prod gcp secret-manager native canary overlay
+        run: deploy/k8s/preflight.sh prod-gcp-sm-native-canary

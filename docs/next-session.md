@@ -129,6 +129,7 @@
   - `deploy/k8s/base` + `deploy/k8s/overlays/{dev,prod}` kustomize structure for one-command deploy per env
   - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
   - optional GCP Secret Manager CSI overlay (`deploy/k8s/overlays/prod-gcp-sm`) with Workload Identity service accounts and SecretProviderClass manifests
+  - optional combined GCP Secret Manager CSI + native NAT canary overlay (`deploy/k8s/overlays/prod-gcp-sm-native-canary`)
   - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
     - supports optional NAT driver assertion (`cli` or `native`) for rollout validation.
   - `docs/deployment-checklist.md`

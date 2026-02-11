@@ -26,10 +26,12 @@ Run preflight validation before apply:
 deploy/k8s/preflight.sh dev
 deploy/k8s/preflight.sh prod
 deploy/k8s/preflight.sh prod-gcp-sm
+deploy/k8s/preflight.sh prod-gcp-sm-native-canary
 ```
 The preflight gate enforces NAT rollout safety:
 - `prod` must render `WG_NAT_DRIVER=cli`
 - `prod-native-canary` must render `WG_NAT_DRIVER=native`
+- `prod-gcp-sm-native-canary` must render `WG_NAT_DRIVER=native`
 It also enforces production security config (`APP_REQUIRE_CORE_TLS=true`,
 `CORE_REQUIRE_TLS=true`, legacy header disabled, strict log redaction, OAuth nonce/PKCE required,
 and retention cap policy variables).
@@ -52,6 +54,11 @@ kubectl apply -k deploy/k8s/overlays/prod-gcp-sm
 Production native canary:
 ```bash
 kubectl apply -k deploy/k8s/overlays/prod-native-canary
+```
+
+Production native canary with GCP Secret Manager CSI:
+```bash
+kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary
 ```
 
 Prerequisites for `prod-gcp-sm`:

@@ -2,13 +2,13 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "usage: $0 <dev|prod|prod-native-canary|prod-gcp-sm>" >&2
+  echo "usage: $0 <dev|prod|prod-native-canary|prod-gcp-sm|prod-gcp-sm-native-canary>" >&2
   exit 1
 fi
 
 overlay="$1"
 case "$overlay" in
-  dev|prod|prod-native-canary|prod-gcp-sm) ;;
+  dev|prod|prod-native-canary|prod-gcp-sm|prod-gcp-sm-native-canary) ;;
   *)
     echo "invalid overlay: $overlay" >&2
     exit 1
@@ -41,14 +41,14 @@ require_pattern() {
 
 require_pattern '^kind: Deployment$' "entry deployment"
 require_pattern '^kind: DaemonSet$' "core daemonset"
-if [[ "$overlay" != "prod-gcp-sm" ]]; then
+if [[ "$overlay" != "prod-gcp-sm" && "$overlay" != "prod-gcp-sm-native-canary" ]]; then
   require_pattern 'name: entry-secrets' "entry-secrets reference"
 fi
 require_pattern 'name: core-secrets' "core-secrets reference"
 require_pattern 'name: core-tls' "core-tls reference"
 require_pattern 'name: core-grpc-client-tls' "core-grpc-client-tls reference"
 require_pattern 'name: wireguard-keys' "wireguard-keys reference"
-if [[ "$overlay" == "prod-gcp-sm" ]]; then
+if [[ "$overlay" == "prod-gcp-sm" || "$overlay" == "prod-gcp-sm-native-canary" ]]; then
   require_pattern '^kind: SecretProviderClass$' "secretproviderclass resources"
   require_pattern 'secretProviderClass: entry-gcp-secrets' "entry secret provider class mount"
   require_pattern 'secretProviderClass: core-gcp-secrets' "core secret provider class mount"
@@ -72,7 +72,7 @@ if [[ "$overlay" == "prod" || "$overlay" == "prod-gcp-sm" ]]; then
   require_pattern 'WG_NAT_DRIVER: "cli"' "prod NAT driver pin to cli"
 fi
 
-if [[ "$overlay" == "prod-native-canary" ]]; then
+if [[ "$overlay" == "prod-native-canary" || "$overlay" == "prod-gcp-sm-native-canary" ]]; then
   require_pattern 'WG_NAT_DRIVER: "native"' "canary NAT driver set to native"
 fi
 

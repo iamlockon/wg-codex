@@ -29,11 +29,13 @@
    - `deploy/k8s/preflight.sh dev`
    - `deploy/k8s/preflight.sh prod`
    - `deploy/k8s/preflight.sh prod-gcp-sm`
+   - `deploy/k8s/preflight.sh prod-gcp-sm-native-canary`
 1. Dev: `kubectl apply -k deploy/k8s/overlays/dev`
 2. Prod: `kubectl apply -k deploy/k8s/overlays/prod`
 3. Prod with GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm`
 4. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
-5. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
+5. Native canary + GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary`
+6. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
 
 ## Required production env policy
 - `APP_ENV=production`
