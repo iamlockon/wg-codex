@@ -61,4 +61,12 @@ if [[ "$overlay" != "dev" ]]; then
   fi
 fi
 
+if [[ "$overlay" == "prod" ]]; then
+  require_pattern 'WG_NAT_DRIVER: "cli"' "prod NAT driver pin to cli"
+fi
+
+if [[ "$overlay" == "prod-native-canary" ]]; then
+  require_pattern 'WG_NAT_DRIVER: "native"' "canary NAT driver set to native"
+fi
+
 echo "preflight ok: overlay=${overlay}"

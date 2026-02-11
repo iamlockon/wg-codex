@@ -26,6 +26,9 @@ Run preflight validation before apply:
 deploy/k8s/preflight.sh dev
 deploy/k8s/preflight.sh prod
 ```
+The preflight gate enforces NAT rollout safety:
+- `prod` must render `WG_NAT_DRIVER=cli`
+- `prod-native-canary` must render `WG_NAT_DRIVER=native`
 
 Development:
 ```bash

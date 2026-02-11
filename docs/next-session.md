@@ -122,6 +122,7 @@
 - Deployment preflight script added:
   - `deploy/k8s/preflight.sh <overlay>` renders kustomize output and validates required secret mounts/env wiring.
   - For non-dev overlays, it fails if SealedSecret placeholders (`AgReplaceMe`) remain.
+  - It also enforces NAT rollout policy (`prod=cli`, `prod-native-canary=native`).
 - Kubernetes security context hardening added:
   - `entry` and `core` pods use `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`.
   - migration job now has bounded retries and TTL cleanup.
