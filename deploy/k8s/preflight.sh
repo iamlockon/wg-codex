@@ -52,6 +52,14 @@ if [[ "$overlay" == "prod-gcp-sm" || "$overlay" == "prod-gcp-sm-native-canary" ]
   require_pattern '^kind: SecretProviderClass$' "secretproviderclass resources"
   require_pattern 'secretProviderClass: entry-gcp-secrets' "entry secret provider class mount"
   require_pattern 'secretProviderClass: core-gcp-secrets' "core secret provider class mount"
+  if grep -q 'PROJECT_NUMBER' "$tmp"; then
+    echo "preflight failed: found PROJECT_NUMBER placeholder in GCP Secret Manager resources" >&2
+    exit 4
+  fi
+  if grep -q '@replace-me\.iam\.gserviceaccount\.com' "$tmp"; then
+    echo "preflight failed: found replace-me GCP service account placeholder" >&2
+    exit 4
+  fi
 fi
 
 require_pattern 'DATABASE_URL_FILE' "DATABASE_URL_FILE env wiring"

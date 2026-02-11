@@ -13,6 +13,7 @@
   - `wireguard-keys`
 - Optional alternative for `entry-secrets` and `core-secrets`:
   - GCP Secret Manager CSI via `deploy/k8s/overlays/prod-gcp-sm` (requires Workload Identity and CSI driver).
+  - Preflight for GCP overlays fails if placeholders (`PROJECT_NUMBER`, `replace-me`) are not replaced.
 - Environment templates available:
   - `deploy/env/entry.env.example`
   - `deploy/env/core.env.example`

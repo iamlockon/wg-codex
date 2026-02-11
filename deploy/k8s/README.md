@@ -68,6 +68,7 @@ Prerequisites for `prod-gcp-sm`:
   - `deploy/k8s/gcp/serviceaccounts.yaml`
   - `deploy/k8s/gcp/entry-secretproviderclass.yaml`
   - `deploy/k8s/gcp/core-secretproviderclass.yaml`
+- Preflight now fails if `PROJECT_NUMBER` or `replace-me` placeholders are still present.
 
 ## 3. SealedSecret flow for production
 Prereq: Sealed Secrets controller and `kubeseal` installed.
