@@ -3122,4 +3122,245 @@ mod tests {
         .expect_err("inactive subscription should reject");
         assert_eq!(err.code, "subscription_inactive");
     }
+
+    #[tokio::test]
+    async fn start_session_returns_conflict_with_existing_session_key() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut devices = HashMap::new();
+        devices.insert(
+            customer_id,
+            vec![Device {
+                id: device_id,
+                customer_id,
+                name: "phone".to_string(),
+                public_key: "pk".to_string(),
+                created_at: Utc::now(),
+            }],
+        );
+        let mut repo = InMemorySessionRepository::default();
+        let _ = repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_existing".to_string(),
+            None,
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(devices),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(repo)),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-customer-id",
+            HeaderValue::from_str(&customer_id.to_string()).expect("header"),
+        );
+
+        let response = start_session(
+            State(state),
+            headers,
+            Json(StartSessionRequest {
+                device_id,
+                region: Some("us-west1".to_string()),
+                country_code: None,
+                city_code: None,
+                pool: None,
+                reconnect_session_key: None,
+                node_hint: None,
+            }),
+        )
+        .await
+        .expect("conflict response");
+
+        match response.0 {
+            StartSessionResponse::Conflict {
+                existing_session_key,
+                message,
+            } => {
+                assert_eq!(existing_session_key, "sess_existing");
+                assert_eq!(message, "active_session_exists");
+            }
+            _ => panic!("expected conflict response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_session_reconnect_returns_runtime_config_without_core_call() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut devices = HashMap::new();
+        devices.insert(
+            customer_id,
+            vec![Device {
+                id: device_id,
+                customer_id,
+                name: "phone".to_string(),
+                public_key: "pk".to_string(),
+                created_at: Utc::now(),
+            }],
+        );
+        let mut repo = InMemorySessionRepository::default();
+        let existing = match repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_existing".to_string(),
+            None,
+        ) {
+            StartSessionOutcome::Created(row) => row,
+            _ => panic!("expected created"),
+        };
+        let existing_cfg = WireGuardClientConfig {
+            endpoint: "node.example.net:51820".to_string(),
+            server_public_key: "server-pub".to_string(),
+            preshared_key: None,
+            assigned_ip: "10.90.0.2/24".to_string(),
+            dns_servers: vec!["1.1.1.1".to_string()],
+            persistent_keepalive_secs: 25,
+            qr_payload: "qr".to_string(),
+        };
+
+        let mut runtime = HashMap::new();
+        runtime.insert(
+            customer_id,
+            ActiveSession {
+                session_key: existing.session_key.clone(),
+                region: existing.region.clone(),
+                config: existing_cfg.clone(),
+            },
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(runtime),
+            devices_by_customer: RwLock::new(devices),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(repo)),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-customer-id",
+            HeaderValue::from_str(&customer_id.to_string()).expect("header"),
+        );
+
+        let response = start_session(
+            State(state),
+            headers,
+            Json(StartSessionRequest {
+                device_id,
+                region: Some("us-west1".to_string()),
+                country_code: None,
+                city_code: None,
+                pool: None,
+                reconnect_session_key: Some("sess_existing".to_string()),
+                node_hint: None,
+            }),
+        )
+        .await
+        .expect("reconnect response");
+
+        match response.0 {
+            StartSessionResponse::Active {
+                session_key,
+                region,
+                config,
+            } => {
+                assert_eq!(session_key, "sess_existing");
+                assert_eq!(region, "us-west1");
+                assert_eq!(config.endpoint, existing_cfg.endpoint);
+                assert_eq!(config.assigned_ip, existing_cfg.assigned_ip);
+            }
+            _ => panic!("expected active response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn terminate_session_rejects_mismatched_session_key() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut repo = InMemorySessionRepository::default();
+        let _ = repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_existing".to_string(),
+            None,
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(repo)),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-customer-id",
+            HeaderValue::from_str(&customer_id.to_string()).expect("header"),
+        );
+
+        let err = terminate_session(State(state), headers, Path("sess_wrong".to_string()))
+            .await
+            .expect_err("mismatch should fail");
+        assert_eq!(err.code, "session_key_mismatch");
+    }
 }
