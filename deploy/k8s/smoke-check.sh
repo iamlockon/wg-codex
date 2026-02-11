@@ -29,6 +29,11 @@ curl -fsS \
   -H "x-admin-token: ${ADMIN_TOKEN}" \
   "${ENTRY_BASE_URL}/v1/admin/privacy/policy" | jq .
 
+echo "==> admin privacy audit events"
+curl -fsS \
+  -H "x-admin-token: ${ADMIN_TOKEN}" \
+  "${ENTRY_BASE_URL}/v1/admin/privacy/audit-events?limit=10&offset=0" | jq .
+
 echo "==> admin core status"
 curl -fsS \
   -H "x-admin-token: ${ADMIN_TOKEN}" \
