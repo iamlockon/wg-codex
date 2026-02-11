@@ -1751,6 +1751,17 @@ async fn start_session(
                 existing_session = redact_value(state.log_redaction_mode, &existing_session_key),
                 "session start conflict due to active session"
             );
+            persist_audit_event(
+                &state,
+                Some(customer_id),
+                "customer",
+                &customer_id.to_string(),
+                "session_start_conflict",
+                serde_json::json!({
+                    "existing_session_key": existing_session_key.clone(),
+                }),
+            )
+            .await;
             return Ok(Json(StartSessionResponse::Conflict {
                 existing_session_key,
                 message: "active_session_exists",
@@ -1807,6 +1818,18 @@ async fn start_session(
                 region=%existing_row.region,
                 "session reconnected"
             );
+            persist_audit_event(
+                &state,
+                Some(customer_id),
+                "customer",
+                &customer_id.to_string(),
+                "session_reconnected",
+                serde_json::json!({
+                    "session_key": existing_row.session_key.clone(),
+                    "region": existing_row.region.clone(),
+                }),
+            )
+            .await;
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: existing_row.session_key,
@@ -1860,6 +1883,18 @@ async fn start_session(
                 region=%effective_region,
                 "session started"
             );
+            persist_audit_event(
+                &state,
+                Some(customer_id),
+                "customer",
+                &customer_id.to_string(),
+                "session_started",
+                serde_json::json!({
+                    "session_key": created_row.session_key.clone(),
+                    "region": effective_region.clone(),
+                }),
+            )
+            .await;
 
             return Ok(Json(StartSessionResponse::Active {
                 session_key: created_row.session_key,
@@ -1959,6 +1994,17 @@ async fn terminate_session(
         session = redact_value(state.log_redaction_mode, &session_key),
         "session terminated"
     );
+    persist_audit_event(
+        &state,
+        Some(customer_id),
+        "customer",
+        &customer_id.to_string(),
+        "session_terminated",
+        serde_json::json!({
+            "session_key": session_key,
+        }),
+    )
+    .await;
     Ok(StatusCode::NO_CONTENT)
 }
 

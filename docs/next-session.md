@@ -23,7 +23,7 @@
   - production startup now fails if configured retention exceeds policy caps (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`).
   - privacy policy and readiness endpoints report against configured policy caps rather than hardcoded thresholds.
 - Audit event persistence wiring added:
-  - OAuth login success and logout now persist `audit_events` records in Postgres when privacy store is configured.
+  - OAuth login success/logout and session lifecycle events (start/reconnect/conflict/terminate) now persist `audit_events` records in Postgres when privacy store is configured.
 - OAuth identity persistence is now wired:
   - `services/entry/src/oauth_repo.rs` resolves/creates `customers` + `oauth_identities` in Postgres.
   - `oauth_callback` now uses this repository when `DATABASE_URL` is set.
