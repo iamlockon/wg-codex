@@ -1,100 +1,113 @@
 #[cfg(feature = "native-nft")]
-use std::process::Command;
+use nftnl::{Batch, Chain, ChainHook, Hook, MsgType, Policy, ProtoFamily, Rule, Table};
+#[cfg(feature = "native-nft")]
+use std::ffi::CString;
+#[cfg(feature = "native-nft")]
+use std::fs;
+
+#[cfg(feature = "native-nft")]
+const TABLE_NAME: &str = "wg_core_nat";
+#[cfg(feature = "native-nft")]
+const CHAIN_NAME: &str = "wg_core_postrouting";
 
 #[cfg(feature = "native-nft")]
 pub fn ensure_masquerade(egress_iface: &str) -> Result<(), String> {
-    if egress_iface.trim().is_empty() {
+    let iface = egress_iface.trim();
+    if iface.is_empty() {
         return Err("native nft: empty egress interface".to_string());
     }
 
-    run_allow_failure(&["nft", "add", "table", "ip", "nat"]);
-    run_allow_failure(&[
-        "nft",
-        "add",
-        "chain",
-        "ip",
-        "nat",
-        "postrouting",
-        "{",
-        "type",
-        "nat",
-        "hook",
-        "postrouting",
-        "priority",
-        "100",
-        ";",
-        "}",
-    ]);
+    let iface_index = read_iface_index(iface)?;
+    ensure_table()?;
+    reset_chain()?;
+    ensure_rule(iface_index)
+}
 
-    let chain_text = list_postrouting_chain()?;
-    if has_masquerade_rule(&chain_text, egress_iface) {
-        return Ok(());
+#[cfg(feature = "native-nft")]
+fn ensure_table() -> Result<(), String> {
+    let table_name = cstring(TABLE_NAME)?;
+    let mut batch = Batch::new();
+    let mut table = Table::new(&table_name, ProtoFamily::Ipv4);
+    table.add(&mut batch, MsgType::Add);
+
+    send_batch(batch).or_else(ignore_errno(libc::EEXIST))
+}
+
+#[cfg(feature = "native-nft")]
+fn reset_chain() -> Result<(), String> {
+    let table_name = cstring(TABLE_NAME)?;
+    let chain_name = cstring(CHAIN_NAME)?;
+
+    let table = Table::new(&table_name, ProtoFamily::Ipv4);
+
+    // Recreate chain to keep rule set deterministic across restarts.
+    let mut delete_batch = Batch::new();
+    let mut delete_chain = Chain::new(&chain_name, &table);
+    delete_chain.delete(&mut delete_batch, MsgType::Del);
+    let _ = send_batch(delete_batch).or_else(ignore_errno(libc::ENOENT));
+
+    let mut add_batch = Batch::new();
+    let mut chain = Chain::new(&chain_name, &table);
+    chain.set_type(&cstring("nat")?);
+    chain.set_hook(ChainHook {
+        hook: Hook::PostRouting,
+        prio: 100,
+    });
+    chain.set_policy(Policy::Accept);
+    chain.add(&mut add_batch, MsgType::Add);
+    send_batch(add_batch)
+}
+
+#[cfg(feature = "native-nft")]
+fn ensure_rule(iface_index: u32) -> Result<(), String> {
+    let table_name = cstring(TABLE_NAME)?;
+    let chain_name = cstring(CHAIN_NAME)?;
+
+    let table = Table::new(&table_name, ProtoFamily::Ipv4);
+    let chain = Chain::new(&chain_name, &table);
+
+    let mut batch = Batch::new();
+    let mut rule = Rule::new(&chain);
+    rule.add_expr(&nftnl::nft_expr!(meta oif));
+    rule.add_expr(&nftnl::nft_expr!(cmp == iface_index));
+    rule.add_expr(&nftnl::nft_expr!(masquerade));
+    rule.add(&mut batch, MsgType::Add);
+
+    send_batch(batch)
+}
+
+#[cfg(feature = "native-nft")]
+fn read_iface_index(iface: &str) -> Result<u32, String> {
+    let path = format!("/sys/class/net/{iface}/ifindex");
+    let text = fs::read_to_string(&path)
+        .map_err(|err| format!("native nft: failed to read {path}: {err}"))?;
+    text.trim()
+        .parse::<u32>()
+        .map_err(|err| format!("native nft: invalid ifindex in {path}: {err}"))
+}
+
+#[cfg(feature = "native-nft")]
+fn cstring(value: &str) -> Result<CString, String> {
+    CString::new(value).map_err(|_| format!("native nft: value contains NUL: {value}"))
+}
+
+#[cfg(feature = "native-nft")]
+fn send_batch(batch: Batch) -> Result<(), String> {
+    batch
+        .finalize()
+        .send_nlmsg()
+        .map_err(|err| format!("native nft netlink apply failed: {err}"))
+}
+
+#[cfg(feature = "native-nft")]
+fn ignore_errno(errno: i32) -> impl FnOnce(String) -> Result<(), String> {
+    move |err| {
+        if err.contains(&format!("os error {errno}")) {
+            Ok(())
+        } else {
+            Err(err)
+        }
     }
-
-    run(&[
-        "nft",
-        "add",
-        "rule",
-        "ip",
-        "nat",
-        "postrouting",
-        "oifname",
-        egress_iface,
-        "masquerade",
-    ])
-}
-
-#[cfg(feature = "native-nft")]
-fn run(args: &[&str]) -> Result<(), String> {
-    let (program, rest) = args
-        .split_first()
-        .ok_or_else(|| "native nft: empty command".to_string())?;
-    let output = Command::new(program)
-        .args(rest)
-        .output()
-        .map_err(|err| format!("native nft: {} exec failed: {err}", program))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "native nft: {} failed with status {}: {}",
-            program,
-            output.status,
-            stderr.trim()
-        ))
-    }
-}
-
-#[cfg(feature = "native-nft")]
-fn run_allow_failure(args: &[&str]) {
-    let _ = run(args);
-}
-
-#[cfg(feature = "native-nft")]
-fn list_postrouting_chain() -> Result<String, String> {
-    let output = Command::new("nft")
-        .args(["list", "chain", "ip", "nat", "postrouting"])
-        .output()
-        .map_err(|err| format!("native nft: list chain exec failed: {err}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(format!(
-            "native nft: list chain failed with status {}: {}",
-            output.status,
-            stderr.trim()
-        ))
-    }
-}
-
-#[cfg(feature = "native-nft")]
-fn has_masquerade_rule(chain_text: &str, egress_iface: &str) -> bool {
-    let iface_quoted = format!("oifname \"{egress_iface}\"");
-    let iface_unquoted = format!("oifname {egress_iface}");
-    chain_text.contains(&iface_quoted) && chain_text.contains("masquerade")
-        || chain_text.contains(&iface_unquoted) && chain_text.contains("masquerade")
 }
 
 #[cfg(not(feature = "native-nft"))]
@@ -107,33 +120,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn has_masquerade_rule_matches_quoted_iface() {
-        let text = r#"
-chain postrouting {
-    type nat hook postrouting priority srcnat; policy accept;
-    oifname "eth0" masquerade
-}
-"#;
-        assert!(has_masquerade_rule(text, "eth0"));
+    fn cstring_rejects_nul() {
+        let err = cstring("eth0\0bad").expect_err("nul rejected");
+        assert!(err.contains("contains NUL"));
     }
 
     #[test]
-    fn has_masquerade_rule_matches_unquoted_iface() {
-        let text = r#"
-chain postrouting {
-    oifname ens5 masquerade
-}
-"#;
-        assert!(has_masquerade_rule(text, "ens5"));
-    }
-
-    #[test]
-    fn has_masquerade_rule_rejects_different_iface() {
-        let text = r#"
-chain postrouting {
-    oifname "eth0" masquerade
-}
-"#;
-        assert!(!has_masquerade_rule(text, "eth1"));
+    fn iface_index_parse_rejects_missing_iface() {
+        let err = read_iface_index("this-iface-should-not-exist").expect_err("missing iface");
+        assert!(err.contains("failed to read"));
     }
 }

@@ -1,6 +1,7 @@
 FROM rust:1.85-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libmnl-dev libnftnl-dev && rm -rf /var/lib/apt/lists/*
 ARG CORE_CARGO_FEATURES=""
 
 COPY Cargo.toml Cargo.lock ./

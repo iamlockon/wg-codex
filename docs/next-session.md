@@ -43,11 +43,12 @@
   - pluggable dataplane (`noop` and Linux shell-backed),
   - IPv4 pool allocation/release,
   - periodic reconciliation loop.
-- Linux dataplane now uses Rust-native WireGuard UAPI socket operations for peer add/remove (host bootstrap/NAT still shell-based).
+- Linux dataplane now uses Rust-native WireGuard UAPI socket operations for peer add/remove.
 - WireGuard device bootstrap (`private_key`, `listen_port`) is now also applied via Rust UAPI, removing `wg set` shell dependency.
 - Reconciliation now inspects live peers via WireGuard UAPI and removes stale peers while re-applying desired peer state.
 - Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
 - NAT bootstrap in `core` now uses nft-based rule management path (legacy iptables branch removed), with `WG_NAT_DRIVER=cli|native` runtime selector.
+- `native-nft` now programs nftables directly over netlink (`nftnl`) instead of shelling out to the `nft` binary.
 - Core gRPC now includes node runtime status API:
   - `GetNodeStatus` reports health, active peers, nat driver mode, dataplane mode, and native feature support.
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
@@ -153,9 +154,9 @@
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
 - Privacy policy enforcement is improved with runtime visibility and audit export API; richer conformance automation and external export sinks are still pending.
-- Native NAT milestone hook added:
+- Native NAT milestone completed:
   - `WG_NAT_DRIVER=native` selects a feature-gated path backed by `native-nft`,
-  - current native path ensures nft table/chain/masquerade rule idempotently under the feature gate.
+  - native path ensures nft table/chain/masquerade rule setup via netlink under the feature gate.
 - Canary rollout assets added for native NAT:
   - `deploy/k8s/overlays/prod-native-canary` switches `WG_NAT_DRIVER=native` and canary image tag,
   - rollback path is `kubectl apply -k deploy/k8s/overlays/prod`.
@@ -163,7 +164,7 @@
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
 2. Wire GCP Secret Manager sync/CSI mounting in manifests so `*_FILE` paths are used by default; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
-3. Migrate `native-nft` from nft-binary orchestration to direct netlink nftables programming and switch production from `WG_NAT_DRIVER=cli` to `native` after validation.
+3. Run production canary validation for `WG_NAT_DRIVER=native` and, once stable, switch production default from `cli` to `native`.
 4. Add auditable privacy policy toggles and retention/redaction conformance checks.
 5. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
 
