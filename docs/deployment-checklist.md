@@ -23,6 +23,9 @@
 3. Update image tags in Kubernetes manifests.
 
 ## Cluster apply order
+0. Validate manifests:
+   - `deploy/k8s/preflight.sh dev`
+   - `deploy/k8s/preflight.sh prod`
 1. Dev: `kubectl apply -k deploy/k8s/overlays/dev`
 2. Prod: `kubectl apply -k deploy/k8s/overlays/prod`
 3. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`

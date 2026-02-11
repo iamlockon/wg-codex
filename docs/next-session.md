@@ -118,7 +118,10 @@
   - `docs/deployment-checklist.md`
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
-  - kustomize render validation for `dev`, `prod`, and `prod-native-canary` overlays
+  - preflight validation for `dev`, `prod`, and `prod-native-canary` overlays via `deploy/k8s/preflight.sh`
+- Deployment preflight script added:
+  - `deploy/k8s/preflight.sh <overlay>` renders kustomize output and validates required secret mounts/env wiring.
+  - For non-dev overlays, it fails if SealedSecret placeholders (`AgReplaceMe`) remain.
 - Kubernetes manifests now mount sensitive materials from secrets:
   - `entry` reads admin/JWT/OIDC via `*_FILE` paths and mounts `core-grpc-client-tls`.
   - `core` mounts `core-tls` and `wireguard-keys`, and reads admin/WG public key via `*_FILE`.

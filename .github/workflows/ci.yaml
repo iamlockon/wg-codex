@@ -36,16 +36,19 @@ jobs:
       - name: Validate smoke-check script
         run: bash -n deploy/k8s/smoke-check.sh
 
+      - name: Validate preflight script
+        run: bash -n deploy/k8s/preflight.sh
+
       - name: Install kubectl
         uses: azure/setup-kubectl@v4
         with:
           version: v1.30.0
 
-      - name: Render dev manifests
-        run: kubectl kustomize deploy/k8s/overlays/dev > /tmp/dev.yaml
+      - name: Preflight dev overlay
+        run: deploy/k8s/preflight.sh dev
 
-      - name: Render prod manifests
-        run: kubectl kustomize deploy/k8s/overlays/prod > /tmp/prod.yaml
+      - name: Preflight prod overlay
+        run: deploy/k8s/preflight.sh prod
 
-      - name: Render prod native canary manifests
-        run: kubectl kustomize deploy/k8s/overlays/prod-native-canary > /tmp/prod-native-canary.yaml
+      - name: Preflight prod native canary overlay
+        run: deploy/k8s/preflight.sh prod-native-canary

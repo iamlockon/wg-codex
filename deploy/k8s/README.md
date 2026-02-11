@@ -21,6 +21,12 @@ Update image tags in overlays:
 - `deploy/k8s/overlays/prod/kustomization.yaml`
 
 ## 2. One-command deploy per environment
+Run preflight validation before apply:
+```bash
+deploy/k8s/preflight.sh dev
+deploy/k8s/preflight.sh prod
+```
+
 Development:
 ```bash
 kubectl apply -k deploy/k8s/overlays/dev
