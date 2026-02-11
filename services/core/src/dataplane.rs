@@ -5,6 +5,7 @@ use std::process::Command;
 use tokio::task;
 use tonic::async_trait;
 
+use crate::nat_native;
 use crate::wg_uapi::WireGuardUapiClient;
 
 #[derive(Debug, Clone)]
@@ -21,6 +22,13 @@ pub struct LinuxDataPlaneConfig {
     pub private_key_path: String,
     pub listen_port: u16,
     pub egress_iface: String,
+    pub nat_driver: NatDriver,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NatDriver {
+    CliNft,
+    NativeNft,
 }
 
 #[async_trait]
@@ -138,6 +146,10 @@ impl LinuxShellDataPlane {
     }
 
     fn ensure_nat_rule(&self) -> Result<(), String> {
+        if self.cfg.nat_driver == NatDriver::NativeNft {
+            return nat_native::ensure_masquerade(&self.cfg.egress_iface);
+        }
+
         // Ensure table and chain exist (idempotent by allowing failure).
         Self::run_allow_failure(&["nft", "add", "table", "ip", "nat"]);
         Self::run_allow_failure(&[

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+native-nft = []
+
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true

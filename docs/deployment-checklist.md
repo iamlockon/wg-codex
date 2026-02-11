@@ -46,5 +46,5 @@
    - `GET /v1/admin/subscriptions/{customer_id}`
 
 ## Known non-blocking follow-ups
-- Replace remaining shell-backed `nft` command usage with fully Rust-native nftables/netlink path.
+- Implement netlink-native nftables programming under `native-nft` feature and switch `WG_NAT_DRIVER=native` after validation.
 - Tune redaction policy by environment (`APP_LOG_REDACTION_MODE`) once production observability needs are finalized.

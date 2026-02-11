@@ -1,5 +1,6 @@
 mod dataplane;
 mod ip_pool;
+mod nat_native;
 mod wg_uapi;
 
 use std::collections::HashMap;
@@ -16,7 +17,9 @@ use control_plane::{
     ControlPlane, ControlPlaneServer, config_to_proto, into_rfc3339, parse_optional_uuid,
     parse_uuid,
 };
-use dataplane::{DataPlane, LinuxDataPlaneConfig, LinuxShellDataPlane, NoopDataPlane, PeerSpec};
+use dataplane::{
+    DataPlane, LinuxDataPlaneConfig, LinuxShellDataPlane, NatDriver, NoopDataPlane, PeerSpec,
+};
 use domain::WireGuardClientConfig;
 use ip_pool::Ipv4Pool;
 use tokio::sync::RwLock;
@@ -51,6 +54,16 @@ async fn main() -> anyhow::Result<()> {
     let use_noop = std::env::var("CORE_DATAPLANE_NOOP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
+    let nat_driver = std::env::var("WG_NAT_DRIVER")
+        .ok()
+        .map(|v| {
+            if v.eq_ignore_ascii_case("native") {
+                NatDriver::NativeNft
+            } else {
+                NatDriver::CliNft
+            }
+        })
+        .unwrap_or(NatDriver::CliNft);
     validate_runtime_configuration(mode, use_noop, &server_public_key)?;
     let dataplane: Arc<dyn DataPlane> = if use_noop {
         Arc::new(NoopDataPlane)
@@ -66,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|v| v.parse::<u16>().ok())
                 .unwrap_or(51820),
             egress_iface: std::env::var("WG_EGRESS_IFACE").unwrap_or_else(|_| "eth0".to_string()),
+            nat_driver,
         };
         Arc::new(LinuxShellDataPlane::new(cfg))
     };

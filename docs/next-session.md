@@ -38,7 +38,7 @@
 - WireGuard device bootstrap (`private_key`, `listen_port`) is now also applied via Rust UAPI, removing `wg set` shell dependency.
 - Reconciliation now inspects live peers via WireGuard UAPI and removes stale peers while re-applying desired peer state.
 - Linux dataplane bootstrap now uses netlink for interface address/up and direct `/proc` write for IPv4 forwarding.
-- NAT bootstrap in `core` now uses nft-based rule management path (legacy iptables branch removed).
+- NAT bootstrap in `core` now uses nft-based rule management path (legacy iptables branch removed), with `WG_NAT_DRIVER=cli|native` runtime selector.
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,
@@ -109,12 +109,14 @@
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
 - Privacy policy enforcement is improved but still incomplete (retention exists; policy tuning/audit guarantees still need hardening).
-- Remaining NAT setup still uses `nft` shell commands; full Rust-native nftables/netlink integration is pending.
+- Native NAT milestone hook added:
+  - `WG_NAT_DRIVER=native` selects a feature-gated path backed by `native-nft`,
+  - current native hook is intentionally fail-fast until netlink nftables programming is fully wired.
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
-3. Replace remaining `nft` shell rule management with Rust-native firewall handling (nftables/netlink integration).
+3. Complete `native-nft` implementation (netlink nftables programming) and switch production from `WG_NAT_DRIVER=cli` to `native` after validation.
 4. Add auditable privacy policy toggles and retention/redaction conformance checks.
 5. Expand subscription admin/reporting APIs for operational visibility (history and list endpoints).
 

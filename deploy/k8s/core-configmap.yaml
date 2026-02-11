@@ -13,4 +13,5 @@ data:
   WG_INTERFACE_CIDR: "10.90.0.1/24"
   WG_LISTEN_PORT: "51820"
   WG_EGRESS_IFACE: "eth0"
+  WG_NAT_DRIVER: "cli"
   CORE_ENTRY_HEALTH_URL: "http://entry.wg-vpn.svc.cluster.local:8080/v1/internal/nodes/health"

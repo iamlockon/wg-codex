@@ -96,7 +96,9 @@ Session states:
 - Configure WireGuard peers through Linux kernel UAPI.
 - Maintain one interface per node process initially, peers per session.
 - Allocate per-session internal IPs from managed pool.
-- NAT setup currently uses nft-based rule management.
+- NAT setup currently supports `WG_NAT_DRIVER=cli|native`:
+  - `cli`: nft CLI rule management (current stable path),
+  - `native`: feature-gated Rust-native milestone hook (`native-nft`) for phased rollout.
 - Reconciliation loop removes stale peers and re-applies desired state.
 - Capacity admission guard before provisioning peer.
 
