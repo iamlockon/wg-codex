@@ -161,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
         .route("/v1/admin/privacy/policy", get(get_privacy_policy))
         .route("/v1/admin/core/status", get(get_core_status))
+        .route("/v1/admin/readiness", get(get_readiness))
         .route(
             "/v1/admin/subscriptions",
             post(upsert_subscription).get(list_subscriptions),
@@ -1081,13 +1082,28 @@ struct PrivacyPolicyResponse {
     notes: Vec<&'static str>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct CoreStatusResponse {
     healthy: bool,
     active_peer_count: i64,
     nat_driver: String,
     dataplane_mode: String,
     native_nft_supported: bool,
+}
+
+#[derive(Serialize)]
+struct ReadinessCheck {
+    key: &'static str,
+    ok: bool,
+    detail: String,
+}
+
+#[derive(Serialize)]
+struct ReadinessResponse {
+    mode: String,
+    production_ready: bool,
+    checks: Vec<ReadinessCheck>,
+    core_status: Option<CoreStatusResponse>,
 }
 
 impl From<SubscriptionRecord> for SubscriptionResponse {
@@ -1201,6 +1217,104 @@ async fn get_core_status(
         nat_driver: response.nat_driver,
         dataplane_mode: response.dataplane_mode,
         native_nft_supported: response.native_nft_supported,
+    }))
+}
+
+fn production_readiness_checks(state: &AppState) -> Vec<ReadinessCheck> {
+    vec![
+        ReadinessCheck {
+            key: "database_url_configured",
+            ok: std::env::var("DATABASE_URL").is_ok(),
+            detail: "DATABASE_URL is set".to_string(),
+        },
+        ReadinessCheck {
+            key: "jwt_signing_key_secure",
+            ok: !state.jwt_keys.using_insecure_default,
+            detail: "APP_JWT_SIGNING_KEYS/APP_JWT_SIGNING_KEY is non-default".to_string(),
+        },
+        ReadinessCheck {
+            key: "legacy_header_disabled",
+            ok: !state.allow_legacy_customer_header,
+            detail: "APP_ALLOW_LEGACY_CUSTOMER_HEADER is false".to_string(),
+        },
+        ReadinessCheck {
+            key: "admin_token_configured",
+            ok: state.admin_api_token.is_some(),
+            detail: "ADMIN_API_TOKEN is configured".to_string(),
+        },
+        ReadinessCheck {
+            key: "core_tls_required",
+            ok: env_flag("APP_REQUIRE_CORE_TLS", false),
+            detail: "APP_REQUIRE_CORE_TLS is true".to_string(),
+        },
+        ReadinessCheck {
+            key: "strict_log_redaction",
+            ok: matches!(state.log_redaction_mode, LogRedactionMode::Strict),
+            detail: "APP_LOG_REDACTION_MODE resolves to strict".to_string(),
+        },
+        ReadinessCheck {
+            key: "google_oidc_configured",
+            ok: state.google_oidc.is_some(),
+            detail: "Google OIDC client settings are configured".to_string(),
+        },
+        ReadinessCheck {
+            key: "terminated_session_retention_policy",
+            ok: state.terminated_session_retention_days <= 30,
+            detail: "terminated session retention is <= 30 days".to_string(),
+        },
+        ReadinessCheck {
+            key: "audit_retention_policy",
+            ok: state.audit_retention_days <= 90,
+            detail: "audit retention is <= 90 days".to_string(),
+        },
+    ]
+}
+
+async fn get_readiness(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<ReadinessResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let mut checks = production_readiness_checks(&state);
+    let mut core_status = None;
+
+    let core_check = {
+        let mut client = state.core_client.lock().await;
+        match client
+            .get_node_status(control_plane::proto::GetNodeStatusRequest {
+                request_id: Uuid::new_v4().to_string(),
+            })
+            .await
+        {
+            Ok(response) => {
+                let response = response.into_inner();
+                core_status = Some(CoreStatusResponse {
+                    healthy: response.healthy,
+                    active_peer_count: response.active_peer_count,
+                    nat_driver: response.nat_driver,
+                    dataplane_mode: response.dataplane_mode,
+                    native_nft_supported: response.native_nft_supported,
+                });
+                ReadinessCheck {
+                    key: "core_status_reachable",
+                    ok: true,
+                    detail: "GetNodeStatus call succeeded".to_string(),
+                }
+            }
+            Err(_) => ReadinessCheck {
+                key: "core_status_reachable",
+                ok: false,
+                detail: "GetNodeStatus call failed".to_string(),
+            },
+        }
+    };
+    checks.push(core_check);
+
+    Ok(Json(ReadinessResponse {
+        mode: runtime_mode_label(state.runtime_mode).to_string(),
+        production_ready: checks.iter().all(|c| c.ok),
+        checks,
+        core_status,
     }))
 }
 
@@ -2041,6 +2155,55 @@ mod tests {
         assert!(redacted.starts_with("sess"));
         assert!(redacted.ends_with("7890"));
         assert!(redacted.contains("..."));
+    }
+
+    #[test]
+    fn production_readiness_checks_reflect_state_backed_policies() {
+        let state = AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: JwtKeyStore {
+                active_kid: "v1".to_string(),
+                keys: HashMap::from([("v1".to_string(), "dev".to_string())]),
+                using_insecure_default: true,
+            },
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Partial,
+            terminated_session_retention_days: 45,
+            audit_retention_days: 120,
+            node_freshness_secs: 60,
+        };
+
+        let checks = production_readiness_checks(&state);
+        let by_key = checks
+            .into_iter()
+            .map(|c| (c.key, c.ok))
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(by_key.get("jwt_signing_key_secure"), Some(&false));
+        assert_eq!(by_key.get("legacy_header_disabled"), Some(&false));
+        assert_eq!(by_key.get("admin_token_configured"), Some(&false));
+        assert_eq!(by_key.get("strict_log_redaction"), Some(&false));
+        assert_eq!(by_key.get("google_oidc_configured"), Some(&false));
+        assert_eq!(
+            by_key.get("terminated_session_retention_policy"),
+            Some(&false)
+        );
+        assert_eq!(by_key.get("audit_retention_policy"), Some(&false));
     }
 
     #[tokio::test]

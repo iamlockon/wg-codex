@@ -103,6 +103,8 @@
   - `GET /v1/admin/privacy/policy` returns effective retention/redaction config and compliance hints.
 - Core status admin endpoint added:
   - `GET /v1/admin/core/status` proxies `GetNodeStatus` for control-plane observability checks.
+- Readiness admin endpoint added:
+  - `GET /v1/admin/readiness` aggregates production guardrails and live core status into a single deployment gate signal.
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`

@@ -45,6 +45,7 @@
    - `POST /v1/admin/nodes`
    - `GET /v1/admin/privacy/policy`
    - `GET /v1/admin/core/status`
+   - `GET /v1/admin/readiness` should report `production_ready=true`
    - `POST /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions/{customer_id}`
