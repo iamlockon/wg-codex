@@ -98,7 +98,7 @@ Session states:
 - Allocate per-session internal IPs from managed pool.
 - NAT setup currently supports `WG_NAT_DRIVER=cli|native`:
   - `cli`: nft CLI rule management (current stable path),
-  - `native`: feature-gated Rust-native milestone hook (`native-nft`) for phased rollout.
+  - `native`: feature-gated module with dedicated nft rule orchestration path (`native-nft`) for phased rollout.
 - Reconciliation loop removes stale peers and re-applies desired state.
 - Capacity admission guard before provisioning peer.
 

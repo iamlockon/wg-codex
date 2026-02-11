@@ -78,5 +78,5 @@ Manual fallback:
    - `GetNodeStatus` returns expected `nat_driver`, `dataplane_mode`, and health metadata.
 
 ## Known non-blocking follow-ups
-- Implement netlink-native nftables programming under `native-nft` feature and switch `WG_NAT_DRIVER=native` after validation.
+- Migrate `native-nft` from nft-binary orchestration to direct netlink nftables programming and switch `WG_NAT_DRIVER=native` after validation.
 - Tune redaction policy by environment (`APP_LOG_REDACTION_MODE`) once production observability needs are finalized.
