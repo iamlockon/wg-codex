@@ -1,9 +1,13 @@
 #[cfg(feature = "native-nft")]
-use nftnl::{Batch, Chain, ChainHook, Hook, MsgType, Policy, ProtoFamily, Rule, Table};
+use nftnl::{
+    Batch, Chain, ChainType, FinalizedBatch, Hook, MsgType, Policy, ProtoFamily, Rule, Table,
+};
 #[cfg(feature = "native-nft")]
 use std::ffi::CString;
 #[cfg(feature = "native-nft")]
 use std::fs;
+#[cfg(feature = "native-nft")]
+use std::io;
 
 #[cfg(feature = "native-nft")]
 const TABLE_NAME: &str = "wg_core_nat";
@@ -27,8 +31,8 @@ pub fn ensure_masquerade(egress_iface: &str) -> Result<(), String> {
 fn ensure_table() -> Result<(), String> {
     let table_name = cstring(TABLE_NAME)?;
     let mut batch = Batch::new();
-    let mut table = Table::new(&table_name, ProtoFamily::Ipv4);
-    table.add(&mut batch, MsgType::Add);
+    let table = Table::new(&table_name, ProtoFamily::Ipv4);
+    batch.add(&table, MsgType::Add);
 
     send_batch(batch).or_else(ignore_errno(libc::EEXIST))
 }
@@ -42,19 +46,16 @@ fn reset_chain() -> Result<(), String> {
 
     // Recreate chain to keep rule set deterministic across restarts.
     let mut delete_batch = Batch::new();
-    let mut delete_chain = Chain::new(&chain_name, &table);
-    delete_chain.delete(&mut delete_batch, MsgType::Del);
+    let delete_chain = Chain::new(&chain_name, &table);
+    delete_batch.add(&delete_chain, MsgType::Del);
     let _ = send_batch(delete_batch).or_else(ignore_errno(libc::ENOENT));
 
     let mut add_batch = Batch::new();
     let mut chain = Chain::new(&chain_name, &table);
-    chain.set_type(&cstring("nat")?);
-    chain.set_hook(ChainHook {
-        hook: Hook::PostRouting,
-        prio: 100,
-    });
+    chain.set_type(ChainType::Nat);
+    chain.set_hook(Hook::PostRouting, 100);
     chain.set_policy(Policy::Accept);
-    chain.add(&mut add_batch, MsgType::Add);
+    add_batch.add(&chain, MsgType::Add);
     send_batch(add_batch)
 }
 
@@ -71,7 +72,7 @@ fn ensure_rule(iface_index: u32) -> Result<(), String> {
     rule.add_expr(&nftnl::nft_expr!(meta oif));
     rule.add_expr(&nftnl::nft_expr!(cmp == iface_index));
     rule.add_expr(&nftnl::nft_expr!(masquerade));
-    rule.add(&mut batch, MsgType::Add);
+    batch.add(&rule, MsgType::Add);
 
     send_batch(batch)
 }
@@ -93,20 +94,44 @@ fn cstring(value: &str) -> Result<CString, String> {
 
 #[cfg(feature = "native-nft")]
 fn send_batch(batch: Batch) -> Result<(), String> {
-    batch
-        .finalize()
-        .send_nlmsg()
-        .map_err(|err| format!("native nft netlink apply failed: {err}"))
+    let finalized = batch.finalize();
+    send_and_process(&finalized).map_err(|err| format!("native nft netlink apply failed: {err}"))
+}
+
+#[cfg(feature = "native-nft")]
+fn send_and_process(batch: &FinalizedBatch) -> io::Result<()> {
+    let socket = mnl::Socket::new(mnl::Bus::Netfilter)?;
+    socket.send_all(batch)?;
+
+    let portid = socket.portid();
+    let mut buffer = vec![0; nftnl::nft_nlmsg_maxsize() as usize];
+    let seq = 2;
+    while let Some(message) = socket_recv(&socket, &mut buffer)? {
+        match mnl::cb_run(message, seq, portid)? {
+            mnl::CbResult::Stop => break,
+            mnl::CbResult::Ok => (),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-nft")]
+fn socket_recv<'a>(socket: &mnl::Socket, buf: &'a mut [u8]) -> io::Result<Option<&'a [u8]>> {
+    let ret = socket.recv(buf)?;
+    if ret > 0 {
+        Ok(Some(&buf[..ret]))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(feature = "native-nft")]
 fn ignore_errno(errno: i32) -> impl FnOnce(String) -> Result<(), String> {
     move |err| {
-        if err.contains(&format!("os error {errno}")) {
-            Ok(())
-        } else {
-            Err(err)
-        }
+        let is_expected = err.contains(&format!("os error {errno}"))
+            || (errno == libc::EEXIST && err.contains("File exists"))
+            || (errno == libc::ENOENT && err.contains("No such file or directory"));
+        if is_expected { Ok(()) } else { Err(err) }
     }
 }
 

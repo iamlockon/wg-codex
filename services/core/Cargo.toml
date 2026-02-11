@@ -6,7 +6,7 @@ license.workspace = true
 
 [features]
 default = []
-native-nft = ["dep:libc", "dep:nftnl"]
+native-nft = ["dep:libc", "dep:mnl", "dep:nftnl"]
 
 [dependencies]
 anyhow.workspace = true
@@ -24,4 +24,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 libc = { version = "0.2", optional = true }
+mnl = { version = "0.2", optional = true }
 nftnl = { version = "0.7", optional = true }
