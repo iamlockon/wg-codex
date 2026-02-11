@@ -129,6 +129,7 @@
   - `deploy/k8s/preflight.sh <overlay>` renders kustomize output and validates required secret mounts/env wiring.
   - For non-dev overlays, it fails if SealedSecret placeholders (`AgReplaceMe`) remain.
   - It also enforces NAT rollout policy (`prod=cli`, `prod-native-canary=native`).
+  - It now enforces production security config invariants (core TLS required, legacy auth header off, strict redaction, OAuth nonce/PKCE required).
 - Kubernetes security context hardening added:
   - `entry` and `core` pods use `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`.
   - migration job now has bounded retries and TTL cleanup.

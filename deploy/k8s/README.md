@@ -29,6 +29,8 @@ deploy/k8s/preflight.sh prod
 The preflight gate enforces NAT rollout safety:
 - `prod` must render `WG_NAT_DRIVER=cli`
 - `prod-native-canary` must render `WG_NAT_DRIVER=native`
+It also enforces production security config (`APP_REQUIRE_CORE_TLS=true`,
+`CORE_REQUIRE_TLS=true`, legacy header disabled, strict log redaction, OAuth nonce/PKCE required).
 
 Development:
 ```bash

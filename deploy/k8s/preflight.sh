@@ -70,6 +70,11 @@ if [[ "$overlay" == "prod-native-canary" ]]; then
 fi
 
 if [[ "$overlay" != "dev" ]]; then
+  require_pattern 'APP_ENV: "production"' "production runtime mode"
+  require_pattern 'APP_REQUIRE_CORE_TLS: "true"' "entry-to-core TLS requirement"
+  require_pattern 'CORE_REQUIRE_TLS: "true"' "core TLS requirement"
+  require_pattern 'APP_ALLOW_LEGACY_CUSTOMER_HEADER: "false"' "legacy header disablement"
+  require_pattern 'APP_LOG_REDACTION_MODE: "strict"' "strict log redaction"
   require_pattern 'APP_REQUIRE_OAUTH_NONCE: "true"' "production OAuth nonce policy"
   require_pattern 'APP_REQUIRE_OAUTH_PKCE: "true"' "production OAuth PKCE policy"
 fi
