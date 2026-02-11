@@ -41,6 +41,7 @@
   - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)
   - `ADMIN_API_TOKEN` set
   - File-backed secret paths mounted and readable (`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, OIDC `*_FILE`)
+  - Pod/container security context enforces `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`
 - `core`:
   - `CORE_DATAPLANE_NOOP=false`
   - `CORE_REQUIRE_TLS=true`
@@ -48,6 +49,7 @@
   - File-backed secret paths mounted and readable (`WG_SERVER_PUBLIC_KEY_FILE`, `ADMIN_API_TOKEN_FILE`)
   - `/etc/wireguard/private.key` exists via `wireguard-keys` secret
   - `/etc/core-tls/{server.crt,server.key,ca.pem}` exists via `core-tls` secret
+  - Pod/container security context enforces `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`
 
 ## Smoke checks
 Preferred:

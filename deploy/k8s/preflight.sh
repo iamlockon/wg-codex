@@ -51,6 +51,8 @@ require_pattern 'DATABASE_URL_FILE' "DATABASE_URL_FILE env wiring"
 require_pattern 'APP_JWT_SIGNING_KEYS_FILE' "APP_JWT_SIGNING_KEYS_FILE env wiring"
 require_pattern 'GOOGLE_OIDC_CLIENT_SECRET_FILE' "GOOGLE_OIDC_CLIENT_SECRET_FILE env wiring"
 require_pattern 'WG_SERVER_PUBLIC_KEY_FILE' "WG_SERVER_PUBLIC_KEY_FILE env wiring"
+require_pattern 'seccompProfile:' "pod seccomp profile configuration"
+require_pattern 'allowPrivilegeEscalation: false' "container privilege-escalation hardening"
 
 if [[ "$overlay" != "dev" ]]; then
   if grep -q 'AgReplaceMe' "$tmp"; then

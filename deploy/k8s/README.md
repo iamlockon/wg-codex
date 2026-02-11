@@ -116,6 +116,9 @@ Run migration job:
 kubectl apply -f deploy/k8s/migrate-job.yaml
 kubectl -n wg-vpn logs -f job/db-migrate
 ```
+Notes:
+- Migration job uses bounded retries (`backoffLimit=2`) and auto-cleanup (`ttlSecondsAfterFinished=86400`).
+- Workload manifests use `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`.
 
 ## 5. Production hard requirements enforced by binaries
 - `APP_ENV=production`

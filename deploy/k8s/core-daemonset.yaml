@@ -14,6 +14,9 @@ spec:
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: core
           image: ghcr.io/replace-me/wg-core:latest
@@ -56,7 +59,10 @@ spec:
               mountPath: /etc/wireguard
               readOnly: true
           securityContext:
+            allowPrivilegeEscalation: false
             capabilities:
+              drop:
+                - ALL
               add:
                 - NET_ADMIN
                 - NET_RAW

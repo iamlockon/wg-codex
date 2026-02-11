@@ -122,6 +122,9 @@
 - Deployment preflight script added:
   - `deploy/k8s/preflight.sh <overlay>` renders kustomize output and validates required secret mounts/env wiring.
   - For non-dev overlays, it fails if SealedSecret placeholders (`AgReplaceMe`) remain.
+- Kubernetes security context hardening added:
+  - `entry` and `core` pods use `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`.
+  - migration job now has bounded retries and TTL cleanup.
 - Kubernetes manifests now mount sensitive materials from secrets:
   - `entry` reads admin/JWT/OIDC via `*_FILE` paths and mounts `core-grpc-client-tls`.
   - `core` mounts `core-tls` and `wireguard-keys`, and reads admin/WG public key via `*_FILE`.
