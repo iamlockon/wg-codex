@@ -1,7 +1,7 @@
 use crate::models::WireGuardClientConfig;
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
@@ -105,16 +105,36 @@ impl WireGuardWindowsController {
 }
 
 fn default_wireguard_exe_path() -> PathBuf {
-    // Standalone-default path: bundled executable in app-relative tools directory.
-    // Expected package layout:
-    //   <app dir>/wg-tools/wireguard.exe
-    if let Ok(current_exe) = std::env::current_exe()
-        && let Some(app_dir) = current_exe.parent()
-    {
-        return app_dir.join("wg-tools").join("wireguard.exe");
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(app_dir) = current_exe.parent() {
+            return resolve_wireguard_exe_from_app_dir(app_dir);
+        }
     }
-    // Fallback for environments where current executable path cannot be resolved.
     PathBuf::from("wireguard.exe")
+}
+
+fn resolve_wireguard_exe_from_app_dir(app_dir: &Path) -> PathBuf {
+    let candidates = [
+        // Direct app-relative tools dir (our canonical expectation).
+        app_dir.join("wg-tools").join("wireguard.exe"),
+        // Tauri bundle resource layout commonly used on Windows.
+        app_dir
+            .join("resources")
+            .join("wg-tools")
+            .join("wireguard.exe"),
+        // Defensive fallback for alternate parent layout conventions.
+        app_dir
+            .parent()
+            .map(|p| p.join("resources").join("wg-tools").join("wireguard.exe"))
+            .unwrap_or_else(|| PathBuf::from("wireguard.exe")),
+    ];
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return candidate.clone();
+        }
+    }
+    candidates[0].clone()
 }
 
 impl TunnelController for WireGuardWindowsController {
@@ -165,6 +185,8 @@ impl TunnelController for RecordingTunnelController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn render_config_contains_required_fields() {
@@ -186,5 +208,27 @@ mod tests {
         assert!(text.contains("PublicKey = server-key"));
         assert!(text.contains("PresharedKey = psk"));
         assert!(text.contains("Endpoint = node.example:51820"));
+    }
+
+    #[test]
+    fn resolve_wireguard_exe_prefers_existing_tauri_resource_path() {
+        let root = unique_tmp_dir("wg-paths");
+        let app_dir = root.join("app");
+        let resources_dir = app_dir.join("resources").join("wg-tools");
+        fs::create_dir_all(&resources_dir).expect("mkdir");
+        fs::write(resources_dir.join("wireguard.exe"), b"stub").expect("write stub");
+
+        let selected = resolve_wireguard_exe_from_app_dir(&app_dir);
+        assert!(selected.ends_with("resources/wg-tools/wireguard.exe"));
+    }
+
+    fn unique_tmp_dir(prefix: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}-{now}"));
+        fs::create_dir_all(&dir).expect("mkdir");
+        dir
     }
 }

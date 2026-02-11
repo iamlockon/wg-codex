@@ -40,6 +40,39 @@ Bundling expectation:
 - package `wireguard.exe` and required companion files under `wg-tools/` beside your app executable.
 - sign bundled binaries as required by your release pipeline.
 
+## Bundling Flow (Tauri Native)
+Use the included scripts and Tauri bundle resources on your Windows packaging machine:
+
+1. Stage runtime from installed WireGuard (default source: `C:\Program Files\WireGuard`):
+```powershell
+pwsh -File clients/windows-desktop/scripts/stage-wireguard-runtime.ps1 -CleanDestination
+```
+
+2. Or stage from a custom extracted/runtime folder:
+```powershell
+pwsh -File clients/windows-desktop/scripts/stage-wireguard-runtime.ps1 -SourcePath "D:\artifacts\WireGuard" -CleanDestination
+```
+
+3. Verify staged runtime:
+```powershell
+pwsh -File clients/windows-desktop/scripts/verify-wireguard-runtime.ps1
+```
+
+4. Build via Tauri (resources auto-included from `src-tauri/tauri.conf.json`):
+```powershell
+cd clients/windows-desktop
+npm install
+npm run tauri:build
+```
+
+This bundles `../wg-tools/**` into the installer artifacts.
+
+Notes:
+- `clients/windows-desktop/wg-tools` is intentionally git-ignored for binaries.
+- Runtime lookup in code supports both:
+  - `<app dir>/wg-tools/wireguard.exe`
+  - `<app dir>/resources/wg-tools/wireguard.exe` (Tauri bundle resource layout)
+
 ## Notes
 
 - This is not wired into CI yet.

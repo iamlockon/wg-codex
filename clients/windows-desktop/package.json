@@ -1,0 +1,14 @@
+{
+  "name": "wg-windows-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "bundle:wg": "pwsh -File scripts/stage-wireguard-runtime.ps1 -CleanDestination",
+    "bundle:verify": "pwsh -File scripts/verify-wireguard-runtime.ps1",
+    "tauri:dev": "tauri dev --config src-tauri/tauri.conf.json",
+    "tauri:build": "tauri build --config src-tauri/tauri.conf.json"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

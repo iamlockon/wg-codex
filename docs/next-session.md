@@ -174,6 +174,12 @@
   - Windows adapter layer now includes:
     - DPAPI-backed secure storage (`src-tauri/src/storage_windows.rs`) for auth-token persistence,
     - WireGuard-for-Windows command controller (`src-tauri/src/wireguard.rs`) for tunnel service install/uninstall, defaulting to bundled binary path (`<app dir>/wg-tools/wireguard.exe`) instead of host-installed WireGuard.
+  - Bundling automation scripts added:
+    - `clients/windows-desktop/scripts/stage-wireguard-runtime.ps1` stages runtime files into `clients/windows-desktop/wg-tools`,
+    - `clients/windows-desktop/scripts/verify-wireguard-runtime.ps1` validates staged runtime shape.
+  - Tauri-native bundling config added:
+    - `clients/windows-desktop/src-tauri/tauri.conf.json` includes `../wg-tools/**` in bundle resources for MSI/NSIS outputs.
+    - runtime lookup now supports Tauri resource layout (`<app dir>/resources/wg-tools/wireguard.exe`) in addition to direct app-relative path.
   - desktop-core integration tests now cover login/device/connect/disconnect, logout revocation behavior, and reconnect-after-restart behavior against a mock `entry` API.
 
 ## Not Production-Ready Yet
