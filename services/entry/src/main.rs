@@ -2329,9 +2329,12 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::{Body, to_bytes};
     use axum::http::HeaderValue;
+    use axum::http::Request;
     use chrono::Duration;
     use jsonwebtoken::errors::{Error as JwtError, ErrorKind};
+    use tower::ServiceExt;
 
     fn test_keys() -> JwtKeyStore {
         let mut keys = HashMap::new();
@@ -3362,5 +3365,145 @@ mod tests {
             .await
             .expect_err("mismatch should fail");
         assert_eq!(err.code, "session_key_mismatch");
+    }
+
+    fn session_routes(state: Arc<AppState>) -> Router {
+        Router::new()
+            .route("/v1/sessions/start", post(start_session))
+            .route(
+                "/v1/sessions/:session_key/terminate",
+                post(terminate_session),
+            )
+            .with_state(state)
+    }
+
+    #[tokio::test]
+    async fn start_session_http_returns_conflict_payload() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut devices = HashMap::new();
+        devices.insert(
+            customer_id,
+            vec![Device {
+                id: device_id,
+                customer_id,
+                name: "phone".to_string(),
+                public_key: "pk".to_string(),
+                created_at: Utc::now(),
+            }],
+        );
+        let mut repo = InMemorySessionRepository::default();
+        let _ = repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_existing".to_string(),
+            None,
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(devices),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(repo)),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let app = session_routes(state);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/sessions/start")
+            .header("content-type", "application/json")
+            .header("x-customer-id", customer_id.to_string())
+            .body(Body::from(
+                serde_json::json!({
+                    "device_id": device_id,
+                    "region": "us-west1"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["status"], "conflict");
+        assert_eq!(json["existing_session_key"], "sess_existing");
+        assert_eq!(json["message"], "active_session_exists");
+    }
+
+    #[tokio::test]
+    async fn terminate_session_http_returns_session_key_mismatch_error() {
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+        let mut repo = InMemorySessionRepository::default();
+        let _ = repo.start_session(
+            customer_id,
+            device_id,
+            "us-west1".to_string(),
+            "sess_existing".to_string(),
+            None,
+        );
+
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(repo)),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: true,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let app = session_routes(state);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/sessions/sess_wrong/terminate")
+            .header("x-customer-id", customer_id.to_string())
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["error"], "session_key_mismatch");
     }
 }
