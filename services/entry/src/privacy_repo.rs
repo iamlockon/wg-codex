@@ -131,3 +131,115 @@ impl PostgresPrivacyRepository {
         Ok((removed_sessions, removed_audits))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn setup_repo() -> Option<PostgresPrivacyRepository> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()?;
+        let schema = format!("test_priv_{}", Uuid::new_v4().simple());
+        let set_path = format!("SET search_path TO {schema}");
+        let create_schema = format!("CREATE SCHEMA {schema}");
+
+        sqlx::query(&create_schema).execute(&pool).await.ok()?;
+        sqlx::query(&set_path).execute(&pool).await.ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602090001_initial_schema.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+
+        Some(PostgresPrivacyRepository::new(pool))
+    }
+
+    #[tokio::test]
+    async fn insert_and_list_audit_events_returns_latest_first() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let customer_id = Uuid::new_v4();
+
+        repo.insert_audit_event(
+            Some(customer_id),
+            "customer",
+            &customer_id.to_string(),
+            "event_a",
+            serde_json::json!({"k":"a"}),
+        )
+        .await
+        .expect("insert event_a");
+        repo.insert_audit_event(
+            Some(customer_id),
+            "customer",
+            &customer_id.to_string(),
+            "event_b",
+            serde_json::json!({"k":"b"}),
+        )
+        .await
+        .expect("insert event_b");
+
+        let all = repo
+            .list_audit_events(10, 0, None, Some(customer_id))
+            .await
+            .expect("list all");
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].event_type, "event_b");
+        assert_eq!(all[1].event_type, "event_a");
+
+        let filtered = repo
+            .list_audit_events(10, 0, Some("event_a"), Some(customer_id))
+            .await
+            .expect("filtered");
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].event_type, "event_a");
+    }
+
+    #[tokio::test]
+    async fn purge_expired_metadata_removes_old_audit_rows() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        sqlx::query(
+            "INSERT INTO audit_events (actor_type, actor_id, event_type, payload, created_at)
+             VALUES ('system', 's1', 'old_event', '{}'::jsonb, now() - interval '10 days')",
+        )
+        .execute(&repo.pool)
+        .await
+        .expect("seed old audit event");
+        sqlx::query(
+            "INSERT INTO audit_events (actor_type, actor_id, event_type, payload, created_at)
+             VALUES ('system', 's2', 'new_event', '{}'::jsonb, now())",
+        )
+        .execute(&repo.pool)
+        .await
+        .expect("seed new audit event");
+
+        let (_sessions, audits) = repo.purge_expired_metadata(365, 3).await.expect("purge");
+        assert!(audits >= 1);
+
+        let remaining_old = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_events WHERE event_type = 'old_event'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("remaining old");
+        let remaining_new = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM audit_events WHERE event_type = 'new_event'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("remaining new");
+
+        assert_eq!(remaining_old, 0);
+        assert_eq!(remaining_new, 1);
+    }
+}
