@@ -88,3 +88,140 @@ async fn resolve_or_create_customer_tx(
 
     Ok(customer_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::postgres::PgPoolOptions;
+
+    async fn setup_repo() -> Option<PostgresOAuthRepository> {
+        let url = std::env::var("TEST_DATABASE_URL").ok()?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .ok()?;
+        let schema = format!("test_oauth_{}", Uuid::new_v4().simple());
+        let set_path = format!("SET search_path TO {schema}");
+        let create_schema = format!("CREATE SCHEMA {schema}");
+
+        sqlx::query(&create_schema).execute(&pool).await.ok()?;
+        sqlx::query(&set_path).execute(&pool).await.ok()?;
+        sqlx::raw_sql(include_str!(
+            "../../../db/migrations/202602090001_initial_schema.sql"
+        ))
+        .execute(&pool)
+        .await
+        .ok()?;
+
+        Some(PostgresOAuthRepository::new(pool))
+    }
+
+    #[tokio::test]
+    async fn resolve_or_create_customer_creates_identity_once() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        let customer_id = repo
+            .resolve_or_create_customer("google", "sub-1", Some("first@example.com"))
+            .await
+            .expect("create");
+        let customer_id_again = repo
+            .resolve_or_create_customer("google", "sub-1", Some("first@example.com"))
+            .await
+            .expect("resolve existing");
+        assert_eq!(customer_id, customer_id_again);
+
+        let customer_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM customers")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("customer count");
+        let identity_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM oauth_identities")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("identity count");
+
+        assert_eq!(customer_count, 1);
+        assert_eq!(identity_count, 1);
+    }
+
+    #[tokio::test]
+    async fn resolve_or_create_customer_updates_email_when_present() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        let customer_id = repo
+            .resolve_or_create_customer("google", "sub-2", Some("old@example.com"))
+            .await
+            .expect("create");
+        let customer_id_again = repo
+            .resolve_or_create_customer("google", "sub-2", Some("new@example.com"))
+            .await
+            .expect("update");
+        assert_eq!(customer_id, customer_id_again);
+
+        let stored_email = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT email FROM oauth_identities WHERE provider = 'google' AND subject = 'sub-2'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("email row");
+        assert_eq!(stored_email.as_deref(), Some("new@example.com"));
+    }
+
+    #[tokio::test]
+    async fn resolve_or_create_customer_keeps_existing_email_when_none_provided() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        let customer_id = repo
+            .resolve_or_create_customer("google", "sub-3", Some("keep@example.com"))
+            .await
+            .expect("create");
+        let customer_id_again = repo
+            .resolve_or_create_customer("google", "sub-3", None)
+            .await
+            .expect("resolve without email");
+        assert_eq!(customer_id, customer_id_again);
+
+        let stored_email = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT email FROM oauth_identities WHERE provider = 'google' AND subject = 'sub-3'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("email row");
+        assert_eq!(stored_email.as_deref(), Some("keep@example.com"));
+    }
+
+    #[tokio::test]
+    async fn resolve_or_create_customer_is_scoped_by_provider() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        let google_customer = repo
+            .resolve_or_create_customer("google", "same-subject", Some("g@example.com"))
+            .await
+            .expect("google create");
+        let apple_customer = repo
+            .resolve_or_create_customer("apple", "same-subject", Some("a@example.com"))
+            .await
+            .expect("apple create");
+
+        assert_ne!(google_customer, apple_customer);
+
+        let customer_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM customers")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("customer count");
+        let identity_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM oauth_identities")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("identity count");
+        assert_eq!(customer_count, 2);
+        assert_eq!(identity_count, 2);
+    }
+}
