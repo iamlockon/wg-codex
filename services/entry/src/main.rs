@@ -795,6 +795,22 @@ fn oauth_require_pkce(mode: RuntimeMode) -> bool {
     env_flag("APP_REQUIRE_OAUTH_PKCE", mode == RuntimeMode::Production)
 }
 
+fn max_terminated_session_retention_days() -> i64 {
+    std::env::var("APP_MAX_TERMINATED_SESSION_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(30)
+}
+
+fn max_audit_retention_days() -> i64 {
+    std::env::var("APP_MAX_AUDIT_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(90)
+}
+
 fn read_env_or_file(name: &str) -> Option<String> {
     if let Ok(value) = std::env::var(name) {
         let value = value.trim().to_string();
@@ -899,6 +915,16 @@ fn validate_runtime_configuration(mode: RuntimeMode, state: &AppState) -> anyhow
     }
     if !oauth_require_pkce(mode) {
         anyhow::bail!("APP_REQUIRE_OAUTH_PKCE must be true in production");
+    }
+    let max_session_days = max_terminated_session_retention_days();
+    if state.terminated_session_retention_days > max_session_days {
+        anyhow::bail!(
+            "APP_TERMINATED_SESSION_RETENTION_DAYS exceeds policy maximum ({max_session_days})"
+        );
+    }
+    let max_audit_days = max_audit_retention_days();
+    if state.audit_retention_days > max_audit_days {
+        anyhow::bail!("APP_AUDIT_RETENTION_DAYS exceeds policy maximum ({max_audit_days})");
     }
     Ok(())
 }
@@ -1144,9 +1170,11 @@ struct PrivacyPolicyResponse {
     mode: String,
     log_redaction_mode: String,
     terminated_session_retention_days: i64,
+    max_terminated_session_retention_days: i64,
     audit_retention_days: i64,
+    max_audit_retention_days: i64,
     compliant: bool,
-    notes: Vec<&'static str>,
+    notes: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1234,29 +1262,37 @@ async fn get_privacy_policy(
     headers: HeaderMap,
 ) -> Result<Json<PrivacyPolicyResponse>, ApiError> {
     require_admin_token(&state, &headers)?;
+    let max_session_days = max_terminated_session_retention_days();
+    let max_audit_days = max_audit_retention_days();
     let mut notes = Vec::new();
     let mut compliant = true;
 
-    if state.terminated_session_retention_days > 30 {
+    if state.terminated_session_retention_days > max_session_days {
         compliant = false;
-        notes.push("terminated session retention exceeds 30-day policy target");
+        notes.push(format!(
+            "terminated session retention exceeds {max_session_days}-day policy target"
+        ));
     }
-    if state.audit_retention_days > 90 {
+    if state.audit_retention_days > max_audit_days {
         compliant = false;
-        notes.push("audit retention exceeds 90-day policy target");
+        notes.push(format!(
+            "audit retention exceeds {max_audit_days}-day policy target"
+        ));
     }
     if state.runtime_mode == RuntimeMode::Production
         && !matches!(state.log_redaction_mode, LogRedactionMode::Strict)
     {
         compliant = false;
-        notes.push("production requires strict log redaction");
+        notes.push("production requires strict log redaction".to_string());
     }
 
     Ok(Json(PrivacyPolicyResponse {
         mode: runtime_mode_label(state.runtime_mode).to_string(),
         log_redaction_mode: log_redaction_mode_label(state.log_redaction_mode).to_string(),
         terminated_session_retention_days: state.terminated_session_retention_days,
+        max_terminated_session_retention_days: max_session_days,
         audit_retention_days: state.audit_retention_days,
+        max_audit_retention_days: max_audit_days,
         compliant,
         notes,
     }))
@@ -1288,6 +1324,8 @@ async fn get_core_status(
 }
 
 fn production_readiness_checks(state: &AppState) -> Vec<ReadinessCheck> {
+    let max_session_days = max_terminated_session_retention_days();
+    let max_audit_days = max_audit_retention_days();
     vec![
         ReadinessCheck {
             key: "database_url_configured",
@@ -1336,13 +1374,13 @@ fn production_readiness_checks(state: &AppState) -> Vec<ReadinessCheck> {
         },
         ReadinessCheck {
             key: "terminated_session_retention_policy",
-            ok: state.terminated_session_retention_days <= 30,
-            detail: "terminated session retention is <= 30 days".to_string(),
+            ok: state.terminated_session_retention_days <= max_session_days,
+            detail: format!("terminated session retention is <= {max_session_days} days"),
         },
         ReadinessCheck {
             key: "audit_retention_policy",
-            ok: state.audit_retention_days <= 90,
-            detail: "audit retention is <= 90 days".to_string(),
+            ok: state.audit_retention_days <= max_audit_days,
+            detail: format!("audit retention is <= {max_audit_days} days"),
         },
     ]
 }

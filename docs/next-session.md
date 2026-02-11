@@ -19,6 +19,9 @@
 - OAuth security policy hardening:
   - `entry` now requires nonce and PKCE verifier by default in production (`APP_REQUIRE_OAUTH_NONCE=true`, `APP_REQUIRE_OAUTH_PKCE=true`).
   - readiness report includes both policy checks.
+- Privacy retention policy hardening:
+  - production startup now fails if configured retention exceeds policy caps (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`).
+  - privacy policy and readiness endpoints report against configured policy caps rather than hardcoded thresholds.
 - OAuth identity persistence is now wired:
   - `services/entry/src/oauth_repo.rs` resolves/creates `customers` + `oauth_identities` in Postgres.
   - `oauth_callback` now uses this repository when `DATABASE_URL` is set.

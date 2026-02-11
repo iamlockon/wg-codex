@@ -38,6 +38,7 @@
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_REQUIRE_OAUTH_NONCE=true`
   - `APP_REQUIRE_OAUTH_PKCE=true`
+  - `APP_MAX_TERMINATED_SESSION_RETENTION_DAYS` and `APP_MAX_AUDIT_RETENTION_DAYS` configured to policy limits
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - `APP_LOG_REDACTION_MODE=strict` (or omitted; production defaults to strict)
   - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)

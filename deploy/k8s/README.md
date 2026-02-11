@@ -30,7 +30,8 @@ The preflight gate enforces NAT rollout safety:
 - `prod` must render `WG_NAT_DRIVER=cli`
 - `prod-native-canary` must render `WG_NAT_DRIVER=native`
 It also enforces production security config (`APP_REQUIRE_CORE_TLS=true`,
-`CORE_REQUIRE_TLS=true`, legacy header disabled, strict log redaction, OAuth nonce/PKCE required).
+`CORE_REQUIRE_TLS=true`, legacy header disabled, strict log redaction, OAuth nonce/PKCE required,
+and retention cap policy variables).
 
 Development:
 ```bash
@@ -132,6 +133,7 @@ Notes:
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_REQUIRE_OAUTH_NONCE=true`
   - `APP_REQUIRE_OAUTH_PKCE=true`
+  - retention caps configured (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`)
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - non-default JWT signing keys required
   - `ADMIN_API_TOKEN` required

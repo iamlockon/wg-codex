@@ -75,6 +75,8 @@ if [[ "$overlay" != "dev" ]]; then
   require_pattern 'CORE_REQUIRE_TLS: "true"' "core TLS requirement"
   require_pattern 'APP_ALLOW_LEGACY_CUSTOMER_HEADER: "false"' "legacy header disablement"
   require_pattern 'APP_LOG_REDACTION_MODE: "strict"' "strict log redaction"
+  require_pattern 'APP_MAX_TERMINATED_SESSION_RETENTION_DAYS: "30"' "session retention cap policy"
+  require_pattern 'APP_MAX_AUDIT_RETENTION_DAYS: "90"' "audit retention cap policy"
   require_pattern 'APP_REQUIRE_OAUTH_NONCE: "true"' "production OAuth nonce policy"
   require_pattern 'APP_REQUIRE_OAUTH_PKCE: "true"' "production OAuth PKCE policy"
 fi
