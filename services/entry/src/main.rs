@@ -102,6 +102,14 @@ async fn main() -> anyhow::Result<()> {
     if jwt_keys.using_insecure_default {
         warn!("APP_JWT_SIGNING_KEY(S) not set; using insecure development signing key");
     }
+    let terminated_session_retention_days = std::env::var("APP_TERMINATED_SESSION_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(7);
+    let audit_retention_days = std::env::var("APP_AUDIT_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(30);
 
     let state = Arc::new(AppState {
         runtime_sessions_by_customer: RwLock::new(HashMap::new()),
@@ -121,7 +129,10 @@ async fn main() -> anyhow::Result<()> {
         token_store,
         subscription_store,
         privacy_store,
+        runtime_mode: mode,
         log_redaction_mode: log_redaction_mode(mode),
+        terminated_session_retention_days,
+        audit_retention_days,
         node_freshness_secs: std::env::var("APP_NODE_FRESHNESS_SECS")
             .ok()
             .and_then(|v| v.parse::<i64>().ok())
@@ -135,14 +146,8 @@ async fn main() -> anyhow::Result<()> {
     if let Some(repo) = state.privacy_store.clone() {
         tokio::spawn(privacy_cleanup_loop(
             repo,
-            std::env::var("APP_TERMINATED_SESSION_RETENTION_DAYS")
-                .ok()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(7),
-            std::env::var("APP_AUDIT_RETENTION_DAYS")
-                .ok()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(30),
+            terminated_session_retention_days,
+            audit_retention_days,
         ));
     }
 
@@ -154,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sessions/start", post(start_session))
         .route("/v1/sessions/current", get(current_session))
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
+        .route("/v1/admin/privacy/policy", get(get_privacy_policy))
         .route(
             "/v1/admin/subscriptions",
             post(upsert_subscription).get(list_subscriptions),
@@ -198,7 +204,10 @@ struct AppState {
     token_store: Option<PostgresTokenRepository>,
     subscription_store: SubscriptionStore,
     privacy_store: Option<PostgresPrivacyRepository>,
+    runtime_mode: RuntimeMode,
     log_redaction_mode: LogRedactionMode,
+    terminated_session_retention_days: i64,
+    audit_retention_days: i64,
     node_freshness_secs: i64,
 }
 
@@ -790,6 +799,21 @@ fn log_redaction_mode(mode: RuntimeMode) -> LogRedactionMode {
     }
 }
 
+fn runtime_mode_label(mode: RuntimeMode) -> &'static str {
+    match mode {
+        RuntimeMode::Development => "development",
+        RuntimeMode::Production => "production",
+    }
+}
+
+fn log_redaction_mode_label(mode: LogRedactionMode) -> &'static str {
+    match mode {
+        LogRedactionMode::Off => "off",
+        LogRedactionMode::Partial => "partial",
+        LogRedactionMode::Strict => "strict",
+    }
+}
+
 fn redact_value(mode: LogRedactionMode, value: &str) -> String {
     match mode {
         LogRedactionMode::Off => value.to_string(),
@@ -1046,6 +1070,16 @@ struct ListSubscriptionsResponse {
     offset: i64,
 }
 
+#[derive(Serialize)]
+struct PrivacyPolicyResponse {
+    mode: String,
+    log_redaction_mode: String,
+    terminated_session_retention_days: i64,
+    audit_retention_days: i64,
+    compliant: bool,
+    notes: Vec<&'static str>,
+}
+
 impl From<SubscriptionRecord> for SubscriptionResponse {
     fn from(value: SubscriptionRecord) -> Self {
         Self {
@@ -1100,6 +1134,39 @@ async fn list_nodes(
     require_admin_token(&state, &headers)?;
     let nodes = state.node_store.list_nodes().await?;
     Ok(Json(nodes.into_iter().map(NodeResponse::from).collect()))
+}
+
+async fn get_privacy_policy(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<PrivacyPolicyResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let mut notes = Vec::new();
+    let mut compliant = true;
+
+    if state.terminated_session_retention_days > 30 {
+        compliant = false;
+        notes.push("terminated session retention exceeds 30-day policy target");
+    }
+    if state.audit_retention_days > 90 {
+        compliant = false;
+        notes.push("audit retention exceeds 90-day policy target");
+    }
+    if state.runtime_mode == RuntimeMode::Production
+        && !matches!(state.log_redaction_mode, LogRedactionMode::Strict)
+    {
+        compliant = false;
+        notes.push("production requires strict log redaction");
+    }
+
+    Ok(Json(PrivacyPolicyResponse {
+        mode: runtime_mode_label(state.runtime_mode).to_string(),
+        log_redaction_mode: log_redaction_mode_label(state.log_redaction_mode).to_string(),
+        terminated_session_retention_days: state.terminated_session_retention_days,
+        audit_retention_days: state.audit_retention_days,
+        compliant,
+        notes,
+    }))
 }
 
 async fn upsert_node(
@@ -1962,7 +2029,10 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
             privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
             log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
             node_freshness_secs: 60,
         };
 
@@ -2001,7 +2071,10 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
             privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
             log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
             node_freshness_secs: 60,
         };
 
@@ -2046,7 +2119,10 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
             privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
             log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
             node_freshness_secs: 60,
         };
 
@@ -2183,7 +2259,10 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
             log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
             node_freshness_secs: 60,
         });
 
@@ -2253,7 +2332,10 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
             log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
             node_freshness_secs: 60,
         });
 
@@ -2324,7 +2406,10 @@ mod tests {
             token_store: None,
             subscription_store: SubscriptionStore::InMemory(Mutex::new(subscriptions)),
             privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
             log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
             node_freshness_secs: 60,
         });
 

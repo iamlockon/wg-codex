@@ -97,6 +97,8 @@
 - Log redaction controls added in `entry`:
   - sensitive audit fields (customer/session/token identifiers) are redacted in logs,
   - `APP_LOG_REDACTION_MODE` supports `off|partial|strict` and production requires `strict`.
+- Privacy policy admin endpoint added:
+  - `GET /v1/admin/privacy/policy` returns effective retention/redaction config and compliance hints.
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`
@@ -110,7 +112,7 @@
 - Subscription reporting is now present; pagination/filter semantics are basic and may need expansion for large-scale ops.
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
-- Privacy policy enforcement is improved but still incomplete (retention exists; policy tuning/audit guarantees still need hardening).
+- Privacy policy enforcement is improved with runtime visibility; formal conformance checks and audit exports are still pending.
 - Native NAT milestone hook added:
   - `WG_NAT_DRIVER=native` selects a feature-gated path backed by `native-nft`,
   - current native hook is intentionally fail-fast until netlink nftables programming is fully wired.

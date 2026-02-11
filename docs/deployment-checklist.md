@@ -43,6 +43,7 @@
 4. `curl http://<entry-service>/healthz`
 5. Verify admin API:
    - `POST /v1/admin/nodes`
+   - `GET /v1/admin/privacy/policy`
    - `POST /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions`
    - `GET /v1/admin/subscriptions/{customer_id}`
