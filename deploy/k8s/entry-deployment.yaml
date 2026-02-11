@@ -23,11 +23,8 @@ spec:
             - configMapRef:
                 name: entry-config
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: entry-secrets
-                  key: DATABASE_URL
+            - name: DATABASE_URL_FILE
+              value: /var/run/secrets/entry-sensitive/DATABASE_URL
             - name: ADMIN_API_TOKEN_FILE
               value: /var/run/secrets/entry-sensitive/ADMIN_API_TOKEN
             - name: APP_JWT_SIGNING_KEYS_FILE
@@ -73,6 +70,8 @@ spec:
           secret:
             secretName: entry-secrets
             items:
+              - key: DATABASE_URL
+                path: DATABASE_URL
               - key: ADMIN_API_TOKEN
                 path: ADMIN_API_TOKEN
               - key: APP_JWT_SIGNING_KEYS

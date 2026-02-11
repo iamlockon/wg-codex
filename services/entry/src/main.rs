@@ -73,7 +73,7 @@ async fn main() -> anyhow::Result<()> {
     let core_client = build_core_client(&grpc_target).await?;
 
     let (session_store, identity_store, node_store, token_store, subscription_store, privacy_store) =
-        if let Ok(database_url) = std::env::var("DATABASE_URL") {
+        if let Some(database_url) = read_env_or_file("DATABASE_URL") {
             let pool = PgPoolOptions::new()
                 .max_connections(10)
                 .connect(&database_url)
@@ -865,7 +865,7 @@ fn validate_runtime_configuration(mode: RuntimeMode, state: &AppState) -> anyhow
         return Ok(());
     }
 
-    if std::env::var("DATABASE_URL").is_err() {
+    if read_env_or_file("DATABASE_URL").is_none() {
         anyhow::bail!("DATABASE_URL is required in APP_ENV=production");
     }
     if state.jwt_keys.using_insecure_default {
@@ -1246,8 +1246,8 @@ fn production_readiness_checks(state: &AppState) -> Vec<ReadinessCheck> {
     vec![
         ReadinessCheck {
             key: "database_url_configured",
-            ok: std::env::var("DATABASE_URL").is_ok(),
-            detail: "DATABASE_URL is set".to_string(),
+            ok: read_env_or_file("DATABASE_URL").is_some(),
+            detail: "DATABASE_URL or DATABASE_URL_FILE is set".to_string(),
         },
         ReadinessCheck {
             key: "jwt_signing_key_secure",

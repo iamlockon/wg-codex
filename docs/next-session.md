@@ -106,7 +106,7 @@
 - Readiness admin endpoint added:
   - `GET /v1/admin/readiness` aggregates production guardrails and live core status into a single deployment gate signal.
 - File-backed secret loading added for sensitive runtime config:
-  - `entry`: `ADMIN_API_TOKEN`, `APP_JWT_SIGNING_KEYS`/`APP_JWT_SIGNING_KEY`, and Google OIDC credentials now support `*_FILE`.
+  - `entry`: `DATABASE_URL`, `ADMIN_API_TOKEN`, `APP_JWT_SIGNING_KEYS`/`APP_JWT_SIGNING_KEY`, and Google OIDC credentials now support `*_FILE`.
   - `core`: `WG_SERVER_PUBLIC_KEY` and health-reporter `ADMIN_API_TOKEN` now support `*_FILE`.
 - Deployment assets added:
   - `services/entry/Dockerfile`

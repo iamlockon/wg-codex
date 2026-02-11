@@ -31,7 +31,7 @@
 ## Required production env policy
 - `APP_ENV=production`
 - `entry`:
-  - `DATABASE_URL` present
+  - `DATABASE_URL` (or `DATABASE_URL_FILE`) present
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - `APP_LOG_REDACTION_MODE=strict` (or omitted; production defaults to strict)

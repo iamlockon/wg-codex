@@ -86,8 +86,8 @@ kubectl -n wg-vpn create secret generic wireguard-keys \
 
 Keep `ADMIN_API_TOKEN` identical between entry and core.
 The manifests now use file-backed sensitive settings by default:
-`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, `GOOGLE_OIDC_CLIENT_ID_FILE`,
-`GOOGLE_OIDC_CLIENT_SECRET_FILE`, and `WG_SERVER_PUBLIC_KEY_FILE`.
+`DATABASE_URL_FILE`, `ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`,
+`GOOGLE_OIDC_CLIENT_ID_FILE`, `GOOGLE_OIDC_CLIENT_SECRET_FILE`, and `WG_SERVER_PUBLIC_KEY_FILE`.
 
 ## 3.1 Canary rollback
 If canary shows errors, immediately roll back:
@@ -114,7 +114,7 @@ kubectl -n wg-vpn logs -f job/db-migrate
 ## 5. Production hard requirements enforced by binaries
 - `APP_ENV=production`
 - `entry`:
-  - `DATABASE_URL` required
+  - `DATABASE_URL` or `DATABASE_URL_FILE` required
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - non-default JWT signing keys required
