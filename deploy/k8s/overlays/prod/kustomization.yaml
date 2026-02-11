@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: wg-vpn
+
+resources:
+  - ../../base
+  - sealedsecret-entry.yaml
+  - sealedsecret-core.yaml
+
+images:
+  - name: ghcr.io/replace-me/wg-entry
+    newTag: stable
+  - name: ghcr.io/replace-me/wg-core
+    newTag: stable

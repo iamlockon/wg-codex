@@ -8,29 +8,51 @@ docker push ghcr.io/<org>/wg-entry:<tag>
 docker push ghcr.io/<org>/wg-core:<tag>
 ```
 
-Update image tags in:
-- `deploy/k8s/entry-deployment.yaml`
-- `deploy/k8s/core-daemonset.yaml`
+Update image tags in overlays:
+- `deploy/k8s/overlays/dev/kustomization.yaml`
+- `deploy/k8s/overlays/prod/kustomization.yaml`
 
-## 2. Prepare secrets/config
-1. Copy and edit:
-   - `deploy/k8s/entry-secret.example.yaml`
-   - `deploy/k8s/core-secret.example.yaml`
-2. Keep `ADMIN_API_TOKEN` identical between entry and core.
-3. Provide valid TLS file paths in secret values.
-
-## 3. Apply manifests
+## 2. One-command deploy per environment
+Development:
 ```bash
-kubectl apply -f deploy/k8s/namespace.yaml
-kubectl apply -f deploy/k8s/entry-configmap.yaml
-kubectl apply -f deploy/k8s/core-configmap.yaml
-kubectl apply -f deploy/k8s/entry-secret.example.yaml
-kubectl apply -f deploy/k8s/core-secret.example.yaml
-kubectl apply -f deploy/k8s/entry-deployment.yaml
-kubectl apply -f deploy/k8s/core-daemonset.yaml
+kubectl apply -k deploy/k8s/overlays/dev
 ```
 
-## 4. Run DB migrations
+Production:
+```bash
+kubectl apply -k deploy/k8s/overlays/prod
+```
+
+## 3. SealedSecret flow for production
+Prereq: Sealed Secrets controller and `kubeseal` installed.
+
+Generate SealedSecrets and replace:
+- `deploy/k8s/overlays/prod/sealedsecret-entry.yaml`
+- `deploy/k8s/overlays/prod/sealedsecret-core.yaml`
+
+Example:
+```bash
+kubectl -n wg-vpn create secret generic entry-secrets \
+  --from-literal=DATABASE_URL='postgres://...' \
+  --from-literal=ADMIN_API_TOKEN='...' \
+  --from-literal=APP_JWT_SIGNING_KEYS='v1:...' \
+  --from-literal=GOOGLE_OIDC_CLIENT_ID='...' \
+  --from-literal=GOOGLE_OIDC_CLIENT_SECRET='...' \
+  --dry-run=client -o yaml \
+| kubeseal --format yaml > deploy/k8s/overlays/prod/sealedsecret-entry.yaml
+
+kubectl -n wg-vpn create secret generic core-secrets \
+  --from-literal=CORE_NODE_ID='...' \
+  --from-literal=ADMIN_API_TOKEN='...' \
+  --from-literal=WG_SERVER_PUBLIC_KEY='...' \
+  --from-literal=WG_PRIVATE_KEY_PATH='/etc/wireguard/private.key' \
+  --dry-run=client -o yaml \
+| kubeseal --format yaml > deploy/k8s/overlays/prod/sealedsecret-core.yaml
+```
+
+Keep `ADMIN_API_TOKEN` identical between entry and core.
+
+## 4. Run DB migrations (one-time per environment)
 Create a migration ConfigMap from SQL files:
 ```bash
 kubectl -n wg-vpn create configmap db-migrations \
