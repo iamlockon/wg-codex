@@ -1,0 +1,25 @@
+{
+  "name": "wg-codex-dev",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "workspace",
+  "workspaceFolder": "/workspace/wg-codex",
+  "runServices": [
+    "workspace",
+    "postgres"
+  ],
+  "forwardPorts": [
+    5432
+  ],
+  "remoteEnv": {
+    "TEST_DATABASE_URL": "postgres://postgres:postgres@postgres:5432/wg_test"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "ms-azuretools.vscode-docker",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  }
+}

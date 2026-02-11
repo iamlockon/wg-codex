@@ -242,4 +242,86 @@ mod tests {
         assert_eq!(remaining_old, 0);
         assert_eq!(remaining_new, 1);
     }
+
+    #[tokio::test]
+    async fn purge_expired_metadata_removes_only_old_terminated_sessions() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let customer_id = Uuid::new_v4();
+        let device_id = Uuid::new_v4();
+
+        sqlx::query("INSERT INTO customers (id) VALUES ($1)")
+            .bind(customer_id)
+            .execute(&repo.pool)
+            .await
+            .expect("insert customer");
+        sqlx::query(
+            "INSERT INTO devices (id, customer_id, name, public_key) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(device_id)
+        .bind(customer_id)
+        .bind("device")
+        .bind(format!("pk-{}", Uuid::new_v4()))
+        .execute(&repo.pool)
+        .await
+        .expect("insert device");
+
+        sqlx::query(
+            "INSERT INTO sessions (session_key, customer_id, device_id, region, state, terminated_at)
+             VALUES ('old_term', $1, $2, 'us-west1', 'terminated', now() - interval '10 days')",
+        )
+        .bind(customer_id)
+        .bind(device_id)
+        .execute(&repo.pool)
+        .await
+        .expect("seed old terminated");
+
+        sqlx::query(
+            "INSERT INTO sessions (session_key, customer_id, device_id, region, state, terminated_at)
+             VALUES ('new_term', $1, $2, 'us-west1', 'terminated', now() - interval '1 day')",
+        )
+        .bind(customer_id)
+        .bind(device_id)
+        .execute(&repo.pool)
+        .await
+        .expect("seed new terminated");
+
+        sqlx::query(
+            "INSERT INTO sessions (session_key, customer_id, device_id, region, state, connected_at)
+             VALUES ('active_one', $1, $2, 'us-west1', 'active', now())",
+        )
+        .bind(customer_id)
+        .bind(device_id)
+        .execute(&repo.pool)
+        .await
+        .expect("seed active");
+
+        let (removed_sessions, _removed_audits) =
+            repo.purge_expired_metadata(3, 365).await.expect("purge");
+        assert_eq!(removed_sessions, 1);
+
+        let old_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sessions WHERE session_key = 'old_term'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("old count");
+        let new_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sessions WHERE session_key = 'new_term'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("new count");
+        let active_count = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sessions WHERE session_key = 'active_one'",
+        )
+        .fetch_one(&repo.pool)
+        .await
+        .expect("active count");
+
+        assert_eq!(old_count, 0);
+        assert_eq!(new_count, 1);
+        assert_eq!(active_count, 1);
+    }
 }

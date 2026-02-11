@@ -33,3 +33,12 @@ This file defines the expected Postgres repository behavior before wiring `sqlx`
 - Uses transaction boundaries for `start_session` and `terminate_session`.
 - Uses `uniq_active_session_per_customer` to enforce single-active-session under races.
 - On unique-constraint race during insert, re-reads active session and returns `Reconnected` or `Conflict` per reconnect key.
+
+## Dev Container Test DB
+- Dev container config now includes Postgres test DB wiring:
+  - `.devcontainer/devcontainer.json`
+  - `.devcontainer/docker-compose.yml`
+- In a Docker-capable environment, set:
+  - `TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/wg_test`
+- Run DB-backed integration suites:
+  - `scripts/run-db-integration-tests.sh`

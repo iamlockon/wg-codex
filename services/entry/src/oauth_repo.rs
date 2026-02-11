@@ -260,4 +260,33 @@ mod tests {
         assert_eq!(customer_count, 1);
         assert_eq!(identity_count, 1);
     }
+
+    #[tokio::test]
+    async fn resolve_or_create_customer_separates_different_subjects_same_provider() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+
+        let customer_a = repo
+            .resolve_or_create_customer("google", "subject-a", Some("a@example.com"))
+            .await
+            .expect("customer a");
+        let customer_b = repo
+            .resolve_or_create_customer("google", "subject-b", Some("b@example.com"))
+            .await
+            .expect("customer b");
+
+        assert_ne!(customer_a, customer_b);
+
+        let customer_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM customers")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("customer count");
+        let identity_count = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM oauth_identities")
+            .fetch_one(&repo.pool)
+            .await
+            .expect("identity count");
+        assert_eq!(customer_count, 2);
+        assert_eq!(identity_count, 2);
+    }
 }
