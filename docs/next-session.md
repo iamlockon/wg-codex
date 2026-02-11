@@ -116,6 +116,10 @@
   - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
   - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
   - `docs/deployment-checklist.md`
+- Kubernetes manifests now mount sensitive materials from secrets:
+  - `entry` reads admin/JWT/OIDC via `*_FILE` paths and mounts `core-grpc-client-tls`.
+  - `core` mounts `core-tls` and `wireguard-keys`, and reads admin/WG public key via `*_FILE`.
+  - prod overlay now includes sealed-secret placeholders for `core-tls`, `core-grpc-client-tls`, and `wireguard-keys`.
 
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.

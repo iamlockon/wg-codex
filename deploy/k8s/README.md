@@ -42,6 +42,9 @@ Prereq: Sealed Secrets controller and `kubeseal` installed.
 Generate SealedSecrets and replace:
 - `deploy/k8s/overlays/prod/sealedsecret-entry.yaml`
 - `deploy/k8s/overlays/prod/sealedsecret-core.yaml`
+- `deploy/k8s/overlays/prod/sealedsecret-core-tls.yaml`
+- `deploy/k8s/overlays/prod/sealedsecret-core-grpc-client-tls.yaml`
+- `deploy/k8s/overlays/prod/sealedsecret-wireguard-keys.yaml`
 
 Example:
 ```bash
@@ -58,15 +61,33 @@ kubectl -n wg-vpn create secret generic core-secrets \
   --from-literal=CORE_NODE_ID='...' \
   --from-literal=ADMIN_API_TOKEN='...' \
   --from-literal=WG_SERVER_PUBLIC_KEY='...' \
-  --from-literal=WG_PRIVATE_KEY_PATH='/etc/wireguard/private.key' \
   --dry-run=client -o yaml \
 | kubeseal --format yaml > deploy/k8s/overlays/prod/sealedsecret-core.yaml
+
+kubectl -n wg-vpn create secret generic core-tls \
+  --from-file=server.crt=./server.crt \
+  --from-file=server.key=./server.key \
+  --from-file=ca.pem=./ca.pem \
+  --dry-run=client -o yaml \
+| kubeseal --format yaml > deploy/k8s/overlays/prod/sealedsecret-core-tls.yaml
+
+kubectl -n wg-vpn create secret generic core-grpc-client-tls \
+  --from-file=ca.pem=./ca.pem \
+  --from-file=client.crt=./entry-client.crt \
+  --from-file=client.key=./entry-client.key \
+  --dry-run=client -o yaml \
+| kubeseal --format yaml > deploy/k8s/overlays/prod/sealedsecret-core-grpc-client-tls.yaml
+
+kubectl -n wg-vpn create secret generic wireguard-keys \
+  --from-file=private.key=./wireguard-private.key \
+  --dry-run=client -o yaml \
+| kubeseal --format yaml > deploy/k8s/overlays/prod/sealedsecret-wireguard-keys.yaml
 ```
 
 Keep `ADMIN_API_TOKEN` identical between entry and core.
-Sensitive values can also be supplied via `*_FILE` environment variables
-(`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, `GOOGLE_OIDC_CLIENT_SECRET_FILE`,
-`WG_SERVER_PUBLIC_KEY_FILE`) when mounted from secret volumes.
+The manifests now use file-backed sensitive settings by default:
+`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, `GOOGLE_OIDC_CLIENT_ID_FILE`,
+`GOOGLE_OIDC_CLIENT_SECRET_FILE`, and `WG_SERVER_PUBLIC_KEY_FILE`.
 
 ## 3.1 Canary rollback
 If canary shows errors, immediately roll back:

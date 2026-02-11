@@ -5,7 +5,12 @@
 - Managed Postgres reachable from cluster (Cloud SQL or equivalent).
 - TLS assets issued for mTLS between `entry` and `core`.
 - Google OAuth client configured.
-- Secret delivery method decided (direct env or mounted files via `*_FILE` variables).
+- Secret objects provisioned:
+  - `entry-secrets`
+  - `core-secrets`
+  - `core-tls`
+  - `core-grpc-client-tls`
+  - `wireguard-keys`
 - Environment templates available:
   - `deploy/env/entry.env.example`
   - `deploy/env/core.env.example`
@@ -32,12 +37,14 @@
   - `APP_LOG_REDACTION_MODE=strict` (or omitted; production defaults to strict)
   - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)
   - `ADMIN_API_TOKEN` set
-  - If using file-backed secrets: `ADMIN_API_TOKEN_FILE`/`APP_JWT_SIGNING_KEYS_FILE`/OIDC `*_FILE` paths mounted and readable
+  - File-backed secret paths mounted and readable (`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, OIDC `*_FILE`)
 - `core`:
   - `CORE_DATAPLANE_NOOP=false`
   - `CORE_REQUIRE_TLS=true`
   - `WG_SERVER_PUBLIC_KEY` set (non-placeholder)
-  - If using file-backed secrets: `WG_SERVER_PUBLIC_KEY_FILE` and `ADMIN_API_TOKEN_FILE` mounted and readable
+  - File-backed secret paths mounted and readable (`WG_SERVER_PUBLIC_KEY_FILE`, `ADMIN_API_TOKEN_FILE`)
+  - `/etc/wireguard/private.key` exists via `wireguard-keys` secret
+  - `/etc/core-tls/{server.crt,server.key,ca.pem}` exists via `core-tls` secret
 
 ## Smoke checks
 Preferred:

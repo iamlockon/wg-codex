@@ -6,6 +6,9 @@ resources:
   - ../../base
   - sealedsecret-entry.yaml
   - sealedsecret-core.yaml
+  - sealedsecret-core-tls.yaml
+  - sealedsecret-core-grpc-client-tls.yaml
+  - sealedsecret-wireguard-keys.yaml
 
 images:
   - name: ghcr.io/replace-me/wg-entry

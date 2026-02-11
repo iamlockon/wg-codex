@@ -22,8 +22,33 @@ spec:
           envFrom:
             - configMapRef:
                 name: entry-config
-            - secretRef:
-                name: entry-secrets
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: entry-secrets
+                  key: DATABASE_URL
+            - name: ADMIN_API_TOKEN_FILE
+              value: /var/run/secrets/entry-sensitive/ADMIN_API_TOKEN
+            - name: APP_JWT_SIGNING_KEYS_FILE
+              value: /var/run/secrets/entry-sensitive/APP_JWT_SIGNING_KEYS
+            - name: GOOGLE_OIDC_CLIENT_ID_FILE
+              value: /var/run/secrets/entry-sensitive/GOOGLE_OIDC_CLIENT_ID
+            - name: GOOGLE_OIDC_CLIENT_SECRET_FILE
+              value: /var/run/secrets/entry-sensitive/GOOGLE_OIDC_CLIENT_SECRET
+            - name: CORE_GRPC_TLS_CA_CERT_PATH
+              value: /var/run/secrets/core-grpc-client/ca.pem
+            - name: CORE_GRPC_TLS_CLIENT_CERT_PATH
+              value: /var/run/secrets/core-grpc-client/client.crt
+            - name: CORE_GRPC_TLS_CLIENT_KEY_PATH
+              value: /var/run/secrets/core-grpc-client/client.key
+          volumeMounts:
+            - name: entry-sensitive
+              mountPath: /var/run/secrets/entry-sensitive
+              readOnly: true
+            - name: core-grpc-client-tls
+              mountPath: /var/run/secrets/core-grpc-client
+              readOnly: true
           livenessProbe:
             httpGet:
               path: /healthz
@@ -43,6 +68,22 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+      volumes:
+        - name: entry-sensitive
+          secret:
+            secretName: entry-secrets
+            items:
+              - key: ADMIN_API_TOKEN
+                path: ADMIN_API_TOKEN
+              - key: APP_JWT_SIGNING_KEYS
+                path: APP_JWT_SIGNING_KEYS
+              - key: GOOGLE_OIDC_CLIENT_ID
+                path: GOOGLE_OIDC_CLIENT_ID
+              - key: GOOGLE_OIDC_CLIENT_SECRET
+                path: GOOGLE_OIDC_CLIENT_SECRET
+        - name: core-grpc-client-tls
+          secret:
+            secretName: core-grpc-client-tls
 ---
 apiVersion: v1
 kind: Service

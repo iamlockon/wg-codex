@@ -27,8 +27,34 @@ spec:
           envFrom:
             - configMapRef:
                 name: core-config
-            - secretRef:
-                name: core-secrets
+          env:
+            - name: CORE_NODE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: core-secrets
+                  key: CORE_NODE_ID
+            - name: ADMIN_API_TOKEN_FILE
+              value: /var/run/secrets/core-sensitive/ADMIN_API_TOKEN
+            - name: WG_SERVER_PUBLIC_KEY_FILE
+              value: /var/run/secrets/core-sensitive/WG_SERVER_PUBLIC_KEY
+            - name: WG_PRIVATE_KEY_PATH
+              value: /etc/wireguard/private.key
+            - name: CORE_TLS_CERT_PATH
+              value: /etc/core-tls/server.crt
+            - name: CORE_TLS_KEY_PATH
+              value: /etc/core-tls/server.key
+            - name: CORE_TLS_CLIENT_CA_CERT_PATH
+              value: /etc/core-tls/ca.pem
+          volumeMounts:
+            - name: core-sensitive
+              mountPath: /var/run/secrets/core-sensitive
+              readOnly: true
+            - name: core-tls
+              mountPath: /etc/core-tls
+              readOnly: true
+            - name: wireguard-keys
+              mountPath: /etc/wireguard
+              readOnly: true
           securityContext:
             capabilities:
               add:
@@ -41,6 +67,24 @@ spec:
             limits:
               cpu: "1000m"
               memory: "1Gi"
+      volumes:
+        - name: core-sensitive
+          secret:
+            secretName: core-secrets
+            items:
+              - key: ADMIN_API_TOKEN
+                path: ADMIN_API_TOKEN
+              - key: WG_SERVER_PUBLIC_KEY
+                path: WG_SERVER_PUBLIC_KEY
+        - name: core-tls
+          secret:
+            secretName: core-tls
+        - name: wireguard-keys
+          secret:
+            secretName: wireguard-keys
+            items:
+              - key: private.key
+                path: private.key
 ---
 apiVersion: v1
 kind: Service
