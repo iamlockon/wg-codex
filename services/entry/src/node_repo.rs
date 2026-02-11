@@ -118,7 +118,7 @@ impl PostgresNodeRepository {
                  created_at,
                  updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(), now())
              ON CONFLICT (id)
              DO UPDATE SET
                  region = EXCLUDED.region,

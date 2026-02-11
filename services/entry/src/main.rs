@@ -214,6 +214,7 @@ struct AppState {
     node_freshness_secs: i64,
 }
 
+#[derive(Debug)]
 struct AuthContext {
     customer_id: Uuid,
     token_id: Option<String>,
@@ -958,7 +959,7 @@ impl OAuthProvider {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct OAuthCallbackResponse {
     provider: String,
     customer_id: Uuid,
@@ -1196,7 +1197,7 @@ struct ListSubscriptionsResponse {
     offset: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct AuditEventResponse {
     id: Uuid,
     customer_id: Option<Uuid>,
@@ -1207,7 +1208,7 @@ struct AuditEventResponse {
     created_at: chrono::DateTime<Utc>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct ListAuditEventsResponse {
     items: Vec<AuditEventResponse>,
     limit: i64,
@@ -1226,7 +1227,7 @@ struct PrivacyPolicyResponse {
     notes: Vec<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 struct CoreStatusResponse {
     healthy: bool,
     active_peer_count: i64,
@@ -1680,7 +1681,7 @@ struct StartSessionRequest {
     node_hint: Option<Uuid>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum StartSessionResponse {
     Active {
@@ -2697,7 +2698,6 @@ mod tests {
         assert_eq!(err.code, "privacy_store_not_configured");
     }
 
-    #[test]
     #[tokio::test]
     async fn customer_id_from_request_requires_bearer_when_legacy_disabled() {
         let state = AppState {

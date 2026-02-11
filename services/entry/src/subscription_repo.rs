@@ -82,20 +82,21 @@ impl PostgresSubscriptionRepository {
         &self,
         customer_id: Uuid,
     ) -> Result<bool, SubscriptionRepoError> {
-        let row = sqlx::query_scalar::<_, i64>(
-            "SELECT 1
-             FROM customer_subscriptions s
-             WHERE s.customer_id = $1
-               AND s.status IN ('active', 'trialing')
-               AND s.starts_at <= now()
-               AND (s.ends_at IS NULL OR s.ends_at >= now())
-             LIMIT 1",
+        let eligible = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM customer_subscriptions s
+                WHERE s.customer_id = $1
+                  AND s.status IN ('active', 'trialing')
+                  AND s.starts_at <= now()
+                  AND (s.ends_at IS NULL OR s.ends_at >= now())
+             )",
         )
         .bind(customer_id)
-        .fetch_optional(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        Ok(row.is_some())
+        Ok(eligible)
     }
 
     pub async fn upsert_customer_subscription(

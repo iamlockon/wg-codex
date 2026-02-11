@@ -166,6 +166,11 @@ mod tests {
             return;
         };
         let customer_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO customers (id) VALUES ($1)")
+            .bind(customer_id)
+            .execute(&repo.pool)
+            .await
+            .expect("insert customer");
 
         repo.insert_audit_event(
             Some(customer_id),
