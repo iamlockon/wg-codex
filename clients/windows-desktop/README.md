@@ -47,17 +47,17 @@ Use the included scripts and Tauri bundle resources on your Windows packaging ma
 
 1. Stage runtime from installed WireGuard (default source: `C:\Program Files\WireGuard`):
 ```powershell
-pwsh -File clients/windows-desktop/scripts/stage-wireguard-runtime.ps1 -CleanDestination
+npm run bundle:wg
 ```
 
 2. Or stage from a custom extracted/runtime folder:
 ```powershell
-pwsh -File clients/windows-desktop/scripts/stage-wireguard-runtime.ps1 -SourcePath "D:\artifacts\WireGuard" -CleanDestination
+node scripts/run-ps-script.js scripts/stage-wireguard-runtime.ps1 -SourcePath "D:\artifacts\WireGuard" -CleanDestination
 ```
 
 3. Verify staged runtime:
 ```powershell
-pwsh -File clients/windows-desktop/scripts/verify-wireguard-runtime.ps1
+npm run bundle:verify
 ```
 
 4. Build via Tauri (resources auto-included from `src-tauri/tauri.conf.json`):
@@ -74,6 +74,7 @@ Notes:
 - Runtime lookup in code supports both:
   - `<app dir>/wg-tools/wireguard.exe`
   - `<app dir>/resources/wg-tools/wireguard.exe` (Tauri bundle resource layout)
+- `bundle:wg`/`bundle:verify` auto-detect `pwsh` first and fall back to Windows `powershell`.
 
 ## Local UI Development
 1. Install desktop and UI dependencies:

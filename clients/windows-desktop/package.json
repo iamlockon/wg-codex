@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "scripts": {
     "setup": "npm install && npm --prefix ui install",
-    "bundle:wg": "pwsh -File scripts/stage-wireguard-runtime.ps1 -CleanDestination",
-    "bundle:verify": "pwsh -File scripts/verify-wireguard-runtime.ps1",
+    "bundle:wg": "node scripts/run-ps-script.js scripts/stage-wireguard-runtime.ps1 -CleanDestination",
+    "bundle:verify": "node scripts/run-ps-script.js scripts/verify-wireguard-runtime.ps1",
     "tauri:dev": "tauri dev --config src-tauri/tauri.conf.json",
     "tauri:build": "tauri build --config src-tauri/tauri.conf.json"
   },
