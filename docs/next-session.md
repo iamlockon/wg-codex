@@ -100,6 +100,12 @@
   - `token_repo`: revocation expiry and purge behavior,
   - `oauth_repo`: identity idempotency, provider scoping, email update behavior, and race-safe parallel identity resolution,
   - `privacy_repo`: audit-event insert/list filters and retention purge behavior.
+- DB-backed integration suite runner is now green end-to-end via `scripts/run-db-integration-tests.sh` (all repository suites pass with current migrations).
+- Recent stability fixes landed while validating integration tests:
+  - `entry` test-build fixes for async test annotation and `Debug` derivations used by `expect_err`.
+  - `node_repo` `upsert_node` SQL values/column count mismatch fixed.
+  - `privacy_repo` integration test now seeds `customers` before FK-bound `audit_events` inserts.
+  - `subscription_repo` eligibility query now uses `SELECT EXISTS(...)` (bool) to avoid `INT4`/`INT8` decode mismatch.
 - `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring.
 - Privacy metadata cleanup worker added in `entry` for terminated sessions and audit events (retention env-configurable).
 - TLS enforcement toggles added:
@@ -164,11 +170,11 @@
   - rollback path is `kubectl apply -k deploy/k8s/overlays/prod`.
 
 ## Priority Next Steps
-1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
-2. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) and retire direct secret volumes for entry/core sensitive values.
-3. Run production canary validation for `WG_NAT_DRIVER=native` and, once stable, switch production default from `cli` to `native`.
-4. Add auditable privacy policy toggles and retention/redaction conformance checks.
-5. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
+1. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) and retire direct secret volumes for entry/core sensitive values.
+2. Run production canary validation for `WG_NAT_DRIVER=native` and, once stable, switch production default from `cli` to `native`.
+3. Add auditable privacy policy toggles and retention/redaction conformance checks.
+4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
+5. Add API-level end-to-end integration coverage (beyond repository-level DB tests), including auth, subscription gating, and readiness/privacy admin flows.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
@@ -192,4 +198,4 @@
 cargo fmt --all
 cargo check --workspace
 ```
-Note: this environment currently fails Rust compilation with `Invalid cross-device link (os error 18)` while writing `.rmeta` files, so `cargo test/check` may fail despite valid source changes.
+Note: in restricted/sandboxed environments you may hit `Invalid cross-device link (os error 18)` during Rust `.rmeta` writes; if that occurs, run in the dev container shell/session where `scripts/run-db-integration-tests.sh` currently passes.
