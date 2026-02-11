@@ -74,7 +74,9 @@
   - session start requires active/trialing subscription status.
 - Admin subscription endpoint added:
   - `POST /v1/admin/subscriptions` updates customer plan/status.
+  - `GET /v1/admin/subscriptions` lists latest subscription snapshots with filter/pagination.
   - `GET /v1/admin/subscriptions/{customer_id}` returns latest plan/status snapshot.
+  - `GET /v1/admin/subscriptions/{customer_id}/history` returns customer subscription timeline.
 - Subscription status transition logic in Postgres is now transactional:
   - previous active/trialing rows are closed before inserting the new status row.
 - Added repository-level integration tests in `subscription_repo.rs` (gated by `TEST_DATABASE_URL`) for:
@@ -105,7 +107,7 @@
 
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
-- Subscription history/listing APIs are still minimal (latest snapshot lookup only).
+- Subscription reporting is now present; pagination/filter semantics are basic and may need expansion for large-scale ops.
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
 - mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
 - Privacy policy enforcement is improved but still incomplete (retention exists; policy tuning/audit guarantees still need hardening).
@@ -118,7 +120,7 @@
 2. Move TLS materials and secrets to GCP Secret Manager + IAM policies; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
 3. Complete `native-nft` implementation (netlink nftables programming) and switch production from `WG_NAT_DRIVER=cli` to `native` after validation.
 4. Add auditable privacy policy toggles and retention/redaction conformance checks.
-5. Expand subscription admin/reporting APIs for operational visibility (history and list endpoints).
+5. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.

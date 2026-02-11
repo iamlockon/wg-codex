@@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -154,10 +154,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sessions/start", post(start_session))
         .route("/v1/sessions/current", get(current_session))
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
-        .route("/v1/admin/subscriptions", post(upsert_subscription))
+        .route(
+            "/v1/admin/subscriptions",
+            post(upsert_subscription).get(list_subscriptions),
+        )
         .route(
             "/v1/admin/subscriptions/:customer_id",
             get(get_subscription),
+        )
+        .route(
+            "/v1/admin/subscriptions/:customer_id/history",
+            get(get_subscription_history),
         )
         .route("/v1/internal/nodes/health", post(update_node_health))
         .route(
@@ -591,6 +598,87 @@ impl SubscriptionStore {
                 .map_err(map_subscription_repo_error),
         }
     }
+
+    async fn list_subscriptions(
+        &self,
+        limit: i64,
+        offset: i64,
+        status: Option<&str>,
+        plan_code: Option<&str>,
+    ) -> Result<Vec<SubscriptionRecord>, ApiError> {
+        match self {
+            SubscriptionStore::InMemory(store) => {
+                let store = store.lock().await;
+                let mut rows: Vec<SubscriptionRecord> = store
+                    .iter()
+                    .map(|(customer_id, p)| SubscriptionRecord {
+                        customer_id: *customer_id,
+                        plan_code: "in_memory".to_string(),
+                        status: if p.session_eligible {
+                            "active".to_string()
+                        } else {
+                            "canceled".to_string()
+                        },
+                        starts_at: Utc::now(),
+                        ends_at: None,
+                    })
+                    .collect();
+
+                if let Some(status) = status {
+                    rows.retain(|r| r.status == status);
+                }
+                if let Some(plan_code) = plan_code {
+                    rows.retain(|r| r.plan_code == plan_code);
+                }
+                rows.sort_by_key(|r| r.customer_id);
+                let start = offset.max(0) as usize;
+                let end = (start + limit.max(0) as usize).min(rows.len());
+                if start >= rows.len() {
+                    return Ok(Vec::new());
+                }
+                Ok(rows[start..end].to_vec())
+            }
+            SubscriptionStore::Postgres(repo) => repo
+                .list_subscriptions(limit, offset, status, plan_code)
+                .await
+                .map_err(map_subscription_repo_error),
+        }
+    }
+
+    async fn get_customer_subscription_history(
+        &self,
+        customer_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<SubscriptionRecord>, ApiError> {
+        match self {
+            SubscriptionStore::InMemory(store) => {
+                let store = store.lock().await;
+                Ok(store
+                    .get(&customer_id)
+                    .map(|p| {
+                        vec![SubscriptionRecord {
+                            customer_id,
+                            plan_code: "in_memory".to_string(),
+                            status: if p.session_eligible {
+                                "active".to_string()
+                            } else {
+                                "canceled".to_string()
+                            },
+                            starts_at: Utc::now(),
+                            ends_at: None,
+                        }]
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(limit.max(0) as usize)
+                    .collect())
+            }
+            SubscriptionStore::Postgres(repo) => repo
+                .get_customer_subscription_history(customer_id, limit)
+                .await
+                .map_err(map_subscription_repo_error),
+        }
+    }
 }
 
 async fn healthz() -> &'static str {
@@ -938,6 +1026,38 @@ struct SubscriptionResponse {
     ends_at: Option<chrono::DateTime<Utc>>,
 }
 
+#[derive(Deserialize)]
+struct ListSubscriptionsQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    status: Option<String>,
+    plan_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SubscriptionHistoryQuery {
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ListSubscriptionsResponse {
+    items: Vec<SubscriptionResponse>,
+    limit: i64,
+    offset: i64,
+}
+
+impl From<SubscriptionRecord> for SubscriptionResponse {
+    fn from(value: SubscriptionRecord) -> Self {
+        Self {
+            customer_id: value.customer_id,
+            plan_code: value.plan_code,
+            status: value.status,
+            starts_at: value.starts_at,
+            ends_at: value.ends_at,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct NodeResponse {
     id: Uuid,
@@ -1082,13 +1202,48 @@ async fn get_subscription(
         .await?
         .ok_or_else(|| ApiError::not_found("subscription_not_found"))?;
 
-    Ok(Json(SubscriptionResponse {
-        customer_id: sub.customer_id,
-        plan_code: sub.plan_code,
-        status: sub.status,
-        starts_at: sub.starts_at,
-        ends_at: sub.ends_at,
+    Ok(Json(sub.into()))
+}
+
+async fn list_subscriptions(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ListSubscriptionsQuery>,
+) -> Result<Json<ListSubscriptionsResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+
+    let items = state
+        .subscription_store
+        .list_subscriptions(
+            limit,
+            offset,
+            query.status.as_deref(),
+            query.plan_code.as_deref(),
+        )
+        .await?;
+
+    Ok(Json(ListSubscriptionsResponse {
+        items: items.into_iter().map(Into::into).collect(),
+        limit,
+        offset,
     }))
+}
+
+async fn get_subscription_history(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(customer_id): Path<Uuid>,
+    Query(query): Query<SubscriptionHistoryQuery>,
+) -> Result<Json<Vec<SubscriptionResponse>>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let items = state
+        .subscription_store
+        .get_customer_subscription_history(customer_id, limit)
+        .await?;
+    Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
 #[derive(Deserialize)]

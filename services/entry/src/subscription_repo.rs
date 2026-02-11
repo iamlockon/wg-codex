@@ -164,6 +164,57 @@ impl PostgresSubscriptionRepository {
         .await?;
         Ok(row.map(Into::into))
     }
+
+    pub async fn list_subscriptions(
+        &self,
+        limit: i64,
+        offset: i64,
+        status: Option<&str>,
+        plan_code: Option<&str>,
+    ) -> Result<Vec<SubscriptionRecord>, SubscriptionRepoError> {
+        let rows = sqlx::query_as::<_, SubscriptionDbRow>(
+            "SELECT DISTINCT ON (s.customer_id)
+                s.customer_id,
+                p.code AS plan_code,
+                s.status,
+                s.starts_at,
+                s.ends_at
+             FROM customer_subscriptions s
+             JOIN plans p ON p.id = s.plan_id
+             WHERE ($1::text IS NULL OR s.status = $1)
+               AND ($2::text IS NULL OR p.code = $2)
+             ORDER BY s.customer_id, s.created_at DESC
+             LIMIT $3
+             OFFSET $4",
+        )
+        .bind(status)
+        .bind(plan_code)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn get_customer_subscription_history(
+        &self,
+        customer_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<SubscriptionRecord>, SubscriptionRepoError> {
+        let rows = sqlx::query_as::<_, SubscriptionDbRow>(
+            "SELECT s.customer_id, p.code AS plan_code, s.status, s.starts_at, s.ends_at
+             FROM customer_subscriptions s
+             JOIN plans p ON p.id = s.plan_id
+             WHERE s.customer_id = $1
+             ORDER BY s.created_at DESC
+             LIMIT $2",
+        )
+        .bind(customer_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
 }
 
 impl SubscriptionStatus {
@@ -323,5 +374,38 @@ mod tests {
                 .await
                 .expect("ineligible")
         );
+    }
+
+    #[tokio::test]
+    async fn list_and_history_return_expected_rows() {
+        let Some(repo) = setup_repo().await else {
+            return;
+        };
+        let customer_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO customers (id) VALUES ($1)")
+            .bind(customer_id)
+            .execute(&repo.pool)
+            .await
+            .expect("insert customer");
+
+        repo.upsert_customer_subscription(customer_id, "free", SubscriptionStatus::Active)
+            .await
+            .expect("activate");
+        repo.upsert_customer_subscription(customer_id, "plus", SubscriptionStatus::PastDue)
+            .await
+            .expect("past due");
+
+        let list = repo
+            .list_subscriptions(10, 0, Some("past_due"), None)
+            .await
+            .expect("list");
+        assert!(list.iter().any(|r| r.customer_id == customer_id));
+
+        let history = repo
+            .get_customer_subscription_history(customer_id, 10)
+            .await
+            .expect("history");
+        assert!(history.len() >= 2);
+        assert_eq!(history[0].plan_code, "plus");
     }
 }
