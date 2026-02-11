@@ -5,6 +5,9 @@
 - Managed Postgres reachable from cluster (Cloud SQL or equivalent).
 - TLS assets issued for mTLS between `entry` and `core`.
 - Google OAuth client configured.
+- Environment templates available:
+  - `deploy/env/entry.env.example`
+  - `deploy/env/core.env.example`
 
 ## Build and publish
 1. Build images:
