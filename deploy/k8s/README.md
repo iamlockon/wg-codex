@@ -128,6 +128,8 @@ Notes:
 - `entry`:
   - `DATABASE_URL` or `DATABASE_URL_FILE` required
   - `APP_REQUIRE_CORE_TLS=true`
+  - `APP_REQUIRE_OAUTH_NONCE=true`
+  - `APP_REQUIRE_OAUTH_PKCE=true`
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - non-default JWT signing keys required
   - `ADMIN_API_TOKEN` required

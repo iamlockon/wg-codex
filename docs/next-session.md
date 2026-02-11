@@ -16,6 +16,9 @@
   - In-memory fallback when `DATABASE_URL` is not set.
 - Google OAuth callback in `entry` now performs OIDC code exchange and ID token validation (JWKS signature + audience/issuer + optional nonce) via `services/entry/src/google_oidc.rs`.
 - OAuth callback provider dispatch is now explicitly parsed via provider enum in `entry` (Google implemented; extension point ready for additional providers).
+- OAuth security policy hardening:
+  - `entry` now requires nonce and PKCE verifier by default in production (`APP_REQUIRE_OAUTH_NONCE=true`, `APP_REQUIRE_OAUTH_PKCE=true`).
+  - readiness report includes both policy checks.
 - OAuth identity persistence is now wired:
   - `services/entry/src/oauth_repo.rs` resolves/creates `customers` + `oauth_identities` in Postgres.
   - `oauth_callback` now uses this repository when `DATABASE_URL` is set.

@@ -69,4 +69,9 @@ if [[ "$overlay" == "prod-native-canary" ]]; then
   require_pattern 'WG_NAT_DRIVER: "native"' "canary NAT driver set to native"
 fi
 
+if [[ "$overlay" != "dev" ]]; then
+  require_pattern 'APP_REQUIRE_OAUTH_NONCE: "true"' "production OAuth nonce policy"
+  require_pattern 'APP_REQUIRE_OAUTH_PKCE: "true"' "production OAuth PKCE policy"
+fi
+
 echo "preflight ok: overlay=${overlay}"

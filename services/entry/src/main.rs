@@ -787,6 +787,14 @@ fn env_flag(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn oauth_require_nonce(mode: RuntimeMode) -> bool {
+    env_flag("APP_REQUIRE_OAUTH_NONCE", mode == RuntimeMode::Production)
+}
+
+fn oauth_require_pkce(mode: RuntimeMode) -> bool {
+    env_flag("APP_REQUIRE_OAUTH_PKCE", mode == RuntimeMode::Production)
+}
+
 fn read_env_or_file(name: &str) -> Option<String> {
     if let Ok(value) = std::env::var(name) {
         let value = value.trim().to_string();
@@ -886,6 +894,12 @@ fn validate_runtime_configuration(mode: RuntimeMode, state: &AppState) -> anyhow
     if state.google_oidc.is_none() {
         anyhow::bail!("Google OIDC configuration is required in production");
     }
+    if !oauth_require_nonce(mode) {
+        anyhow::bail!("APP_REQUIRE_OAUTH_NONCE must be true in production");
+    }
+    if !oauth_require_pkce(mode) {
+        anyhow::bail!("APP_REQUIRE_OAUTH_PKCE must be true in production");
+    }
     Ok(())
 }
 
@@ -934,6 +948,12 @@ async fn oauth_callback(
 
     if payload.code.trim().is_empty() {
         return Err(ApiError::bad_request("missing_oauth_code"));
+    }
+    if oauth_require_nonce(state.runtime_mode) && payload.nonce.is_none() {
+        return Err(ApiError::bad_request("missing_oauth_nonce"));
+    }
+    if oauth_require_pkce(state.runtime_mode) && payload.code_verifier.is_none() {
+        return Err(ApiError::bad_request("missing_oauth_code_verifier"));
     }
 
     let (subject, email) = match provider {
@@ -1303,6 +1323,16 @@ fn production_readiness_checks(state: &AppState) -> Vec<ReadinessCheck> {
             key: "google_oidc_configured",
             ok: state.google_oidc.is_some(),
             detail: "Google OIDC client settings are configured".to_string(),
+        },
+        ReadinessCheck {
+            key: "oauth_nonce_required",
+            ok: oauth_require_nonce(state.runtime_mode),
+            detail: "APP_REQUIRE_OAUTH_NONCE resolves to true".to_string(),
+        },
+        ReadinessCheck {
+            key: "oauth_pkce_required",
+            ok: oauth_require_pkce(state.runtime_mode),
+            detail: "APP_REQUIRE_OAUTH_PKCE resolves to true".to_string(),
         },
         ReadinessCheck {
             key: "terminated_session_retention_policy",
@@ -2170,6 +2200,90 @@ mod tests {
     #[test]
     fn oauth_provider_parse_rejects_unknown_provider() {
         assert!(OAuthProvider::parse("apple").is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_requires_nonce_when_policy_enabled() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Production,
+            log_redaction_mode: LogRedactionMode::Strict,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let err = oauth_callback(
+            State(state),
+            Path("google".to_string()),
+            Json(OAuthCallbackRequest {
+                code: "auth-code".to_string(),
+                code_verifier: Some("pkce".to_string()),
+                nonce: None,
+            }),
+        )
+        .await
+        .expect_err("nonce is required in production");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, "missing_oauth_nonce");
+    }
+
+    #[tokio::test]
+    async fn oauth_callback_requires_code_verifier_when_policy_enabled() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Production,
+            log_redaction_mode: LogRedactionMode::Strict,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+
+        let err = oauth_callback(
+            State(state),
+            Path("google".to_string()),
+            Json(OAuthCallbackRequest {
+                code: "auth-code".to_string(),
+                code_verifier: None,
+                nonce: Some("nonce".to_string()),
+            }),
+        )
+        .await
+        .expect_err("code verifier is required in production");
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code, "missing_oauth_code_verifier");
     }
 
     #[test]
