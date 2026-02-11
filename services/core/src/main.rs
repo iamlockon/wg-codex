@@ -28,14 +28,23 @@ use tonic::{Code, Request, Response, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeMode {
+    Development,
+    Production,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("core=info")
         .without_time()
         .init();
+    let mode = runtime_mode();
 
-    let addr = "127.0.0.1:50051".parse()?;
+    let addr = std::env::var("CORE_BIND_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:50051".to_string())
+        .parse()?;
     let endpoint_template = std::env::var("WG_ENDPOINT_TEMPLATE")
         .unwrap_or_else(|_| "{region}.gcp.vpn.example.net:51820".to_string());
     let server_public_key =
@@ -44,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let use_noop = std::env::var("CORE_DATAPLANE_NOOP")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
+    validate_runtime_configuration(mode, use_noop, &server_public_key)?;
     let dataplane: Arc<dyn DataPlane> = if use_noop {
         Arc::new(NoopDataPlane)
     } else {
@@ -99,6 +109,44 @@ async fn main() -> anyhow::Result<()> {
         .serve(addr)
         .await?;
 
+    Ok(())
+}
+
+fn runtime_mode() -> RuntimeMode {
+    match std::env::var("APP_ENV")
+        .unwrap_or_else(|_| "development".to_string())
+        .to_lowercase()
+        .as_str()
+    {
+        "production" => RuntimeMode::Production,
+        _ => RuntimeMode::Development,
+    }
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn validate_runtime_configuration(
+    mode: RuntimeMode,
+    use_noop: bool,
+    server_public_key: &str,
+) -> anyhow::Result<()> {
+    if mode != RuntimeMode::Production {
+        return Ok(());
+    }
+
+    if use_noop {
+        anyhow::bail!("CORE_DATAPLANE_NOOP must be false in APP_ENV=production");
+    }
+    if !env_flag("CORE_REQUIRE_TLS", false) {
+        anyhow::bail!("CORE_REQUIRE_TLS must be true in APP_ENV=production");
+    }
+    if server_public_key == "<server_public_key>" || server_public_key.trim().is_empty() {
+        anyhow::bail!("WG_SERVER_PUBLIC_KEY must be configured in production");
+    }
     Ok(())
 }
 

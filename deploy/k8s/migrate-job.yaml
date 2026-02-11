@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: wg-vpn
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: postgres:16
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: entry-secrets
+                  key: DATABASE_URL
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/202602090001_initial_schema.sql
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/202602100002_revoked_tokens.sql
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/202602100003_consumer_model.sql
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+      volumes:
+        - name: migrations
+          configMap:
+            name: db-migrations

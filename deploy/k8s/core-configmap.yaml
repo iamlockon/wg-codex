@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: core-config
+  namespace: wg-vpn
+data:
+  APP_ENV: "production"
+  CORE_REQUIRE_TLS: "true"
+  CORE_DATAPLANE_NOOP: "false"
+  CORE_BIND_ADDR: "0.0.0.0:50051"
+  WG_ENDPOINT_TEMPLATE: "{region}.vpn.example.net:51820"
+  WG_INTERFACE: "wg0"
+  WG_INTERFACE_CIDR: "10.90.0.1/24"
+  WG_LISTEN_PORT: "51820"
+  WG_EGRESS_IFACE: "eth0"
+  WG_NAT_BACKEND: "nft"
+  CORE_ENTRY_HEALTH_URL: "http://entry.wg-vpn.svc.cluster.local:8080/v1/internal/nodes/health"

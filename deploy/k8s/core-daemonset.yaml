@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: core
+  namespace: wg-vpn
+spec:
+  selector:
+    matchLabels:
+      app: core
+  template:
+    metadata:
+      labels:
+        app: core
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: core
+          image: ghcr.io/replace-me/wg-core:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+              hostPort: 50051
+            - containerPort: 51820
+              hostPort: 51820
+              protocol: UDP
+          envFrom:
+            - configMapRef:
+                name: core-config
+            - secretRef:
+                name: core-secrets
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - NET_RAW
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: core
+  namespace: wg-vpn
+spec:
+  selector:
+    app: core
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051

@@ -74,6 +74,7 @@
   - session start requires active/trialing subscription status.
 - Admin subscription endpoint added:
   - `POST /v1/admin/subscriptions` updates customer plan/status.
+  - `GET /v1/admin/subscriptions/{customer_id}` returns latest plan/status snapshot.
 - Subscription status transition logic in Postgres is now transactional:
   - previous active/trialing rows are closed before inserting the new status row.
 - Added repository-level integration tests in `subscription_repo.rs` (gated by `TEST_DATABASE_URL`) for:
@@ -88,22 +89,29 @@
 - TLS enforcement toggles added:
   - `APP_REQUIRE_CORE_TLS` in `entry` client startup,
   - `CORE_REQUIRE_TLS` in `core` server startup.
+- Production startup guardrails added:
+  - `entry` fails fast in `APP_ENV=production` if DB/JWT/admin token/TLS/OIDC requirements are not satisfied.
+  - `core` fails fast in `APP_ENV=production` if noop dataplane is enabled, TLS is not required, or server key is unset.
+- Deployment assets added:
+  - `services/entry/Dockerfile`
+  - `services/core/Dockerfile`
+  - `deploy/k8s/*` manifests (namespace, configmaps, secrets examples, entry deployment, core daemonset, migration job)
+  - `docs/deployment-checklist.md`
 
 ## Not Production-Ready Yet
 - Product policy is intentionally one customer = one active session; plan/session semantics should remain aligned to that invariant.
-- Subscription lifecycle management APIs/backoffice flows are not implemented yet (only entitlement reads are wired).
-- Subscription listing/history APIs are not implemented yet (only upsert-style admin write is wired).
+- Subscription history/listing APIs are still minimal (latest snapshot lookup only).
 - Node pool/profile model is currently column-based (`pool`) and not yet a richer policy engine.
-- mTLS enforcement is opt-in via env flags; not defaulted on in all environments yet.
+- mTLS enforcement exists and can be required; rollout in each environment still depends on secret/cert provisioning.
 - Privacy policy enforcement is incomplete (retention/redaction/minimal logging controls still need hardening).
 - Remaining shell-based NAT path still exists (`iptables`/`nft` command execution).
 
 ## Priority Next Steps
 1. Add integration tests against real Postgres + migrations for subscription entitlements, single-session lifecycle, node selection, and token revocation flows.
-2. Add subscription read APIs/backoffice views (current coverage is admin upsert + runtime eligibility checks).
-3. Move TLS materials and secrets to GCP Secret Manager + IAM policies; turn `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` on by default in deployed environments.
-4. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
-5. Add privacy controls: log redaction guarantees and auditable policy toggles on top of retention cleanup.
+2. Move TLS materials and secrets to GCP Secret Manager + IAM policies; keep `APP_REQUIRE_CORE_TLS` and `CORE_REQUIRE_TLS` enforced in deployed environments.
+3. Replace remaining shell-based NAT rule management with Rust-native firewall handling (nftables/netlink integration).
+4. Add privacy controls: log redaction guarantees and auditable policy toggles on top of retention cleanup.
+5. Expand subscription admin/reporting APIs for operational visibility (history and list endpoints).
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.

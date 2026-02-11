@@ -1,0 +1,18 @@
+FROM rust:1.85-bookworm AS builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY services ./services
+
+RUN cargo build --release -p core --locked
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates iptables nftables iproute2 && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/target/release/core /usr/local/bin/core
+
+ENV APP_ENV=production
+EXPOSE 50051
+ENTRYPOINT ["/usr/local/bin/core"]

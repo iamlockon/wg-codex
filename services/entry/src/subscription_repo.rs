@@ -1,3 +1,4 @@
+use chrono::DateTime;
 use chrono::Utc;
 use sqlx::PgPool;
 use thiserror::Error;
@@ -16,6 +17,15 @@ pub struct Entitlements {
     pub max_active_sessions: i32,
     pub max_devices: i32,
     pub allowed_regions: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubscriptionRecord {
+    pub customer_id: Uuid,
+    pub plan_code: String,
+    pub status: String,
+    pub starts_at: DateTime<Utc>,
+    pub ends_at: Option<DateTime<Utc>>,
 }
 
 impl Default for Entitlements {
@@ -136,6 +146,24 @@ impl PostgresSubscriptionRepository {
 
         Ok(())
     }
+
+    pub async fn get_customer_subscription(
+        &self,
+        customer_id: Uuid,
+    ) -> Result<Option<SubscriptionRecord>, SubscriptionRepoError> {
+        let row = sqlx::query_as::<_, SubscriptionDbRow>(
+            "SELECT s.customer_id, p.code AS plan_code, s.status, s.starts_at, s.ends_at
+             FROM customer_subscriptions s
+             JOIN plans p ON p.id = s.plan_id
+             WHERE s.customer_id = $1
+             ORDER BY s.created_at DESC
+             LIMIT 1",
+        )
+        .bind(customer_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
+    }
 }
 
 impl SubscriptionStatus {
@@ -172,6 +200,27 @@ impl From<EntitlementsDbRow> for Entitlements {
             max_active_sessions: value.max_active_sessions,
             max_devices: value.max_devices,
             allowed_regions: value.allowed_regions,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SubscriptionDbRow {
+    customer_id: Uuid,
+    plan_code: String,
+    status: String,
+    starts_at: DateTime<Utc>,
+    ends_at: Option<DateTime<Utc>>,
+}
+
+impl From<SubscriptionDbRow> for SubscriptionRecord {
+    fn from(value: SubscriptionDbRow) -> Self {
+        Self {
+            customer_id: value.customer_id,
+            plan_code: value.plan_code,
+            status: value.status,
+            starts_at: value.starts_at,
+            ends_at: value.ends_at,
         }
     }
 }

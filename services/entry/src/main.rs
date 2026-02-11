@@ -35,7 +35,8 @@ use serde::{Deserialize, Serialize};
 use session_repo::{InMemorySessionRepository, RepoError, SessionRepository, StartSessionOutcome};
 use sqlx::postgres::PgPoolOptions;
 use subscription_repo::{
-    Entitlements, PostgresSubscriptionRepository, SubscriptionRepoError, SubscriptionStatus,
+    Entitlements, PostgresSubscriptionRepository, SubscriptionRecord, SubscriptionRepoError,
+    SubscriptionStatus,
 };
 use subtle::ConstantTimeEq;
 use token_repo::{PostgresTokenRepository, TokenRepoError};
@@ -45,12 +46,19 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity
 use tracing::{info, warn};
 use uuid::Uuid;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RuntimeMode {
+    Development,
+    Production,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("entry=info")
         .without_time()
         .init();
+    let mode = runtime_mode();
 
     let grpc_target =
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
@@ -110,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(60),
     });
+    validate_runtime_configuration(mode, &state)?;
 
     if let Some(repo) = state.token_store.clone() {
         tokio::spawn(revocation_cleanup_loop(repo));
@@ -137,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/sessions/current", get(current_session))
         .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
         .route("/v1/admin/subscriptions", post(upsert_subscription))
+        .route(
+            "/v1/admin/subscriptions/:customer_id",
+            get(get_subscription),
+        )
         .route("/v1/internal/nodes/health", post(update_node_health))
         .route(
             "/v1/sessions/:session_key/terminate",
@@ -144,7 +157,9 @@ async fn main() -> anyhow::Result<()> {
         )
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = std::env::var("ENTRY_BIND_ADDR")
+        .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
+        .parse::<SocketAddr>()?;
     info!(%addr, grpc_target, "entry service started");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
@@ -540,6 +555,32 @@ impl SubscriptionStore {
                 .map_err(map_subscription_repo_error),
         }
     }
+
+    async fn get_customer_subscription(
+        &self,
+        customer_id: Uuid,
+    ) -> Result<Option<SubscriptionRecord>, ApiError> {
+        match self {
+            SubscriptionStore::InMemory(store) => {
+                let store = store.lock().await;
+                Ok(store.get(&customer_id).map(|p| SubscriptionRecord {
+                    customer_id,
+                    plan_code: "in_memory".to_string(),
+                    status: if p.session_eligible {
+                        "active".to_string()
+                    } else {
+                        "canceled".to_string()
+                    },
+                    starts_at: Utc::now(),
+                    ends_at: None,
+                }))
+            }
+            SubscriptionStore::Postgres(repo) => repo
+                .get_customer_subscription(customer_id)
+                .await
+                .map_err(map_subscription_repo_error),
+        }
+    }
 }
 
 async fn healthz() -> &'static str {
@@ -618,6 +659,49 @@ fn client_tls_config_from_env() -> anyhow::Result<Option<ClientTlsConfig>> {
     }
 
     Ok(Some(tls))
+}
+
+fn runtime_mode() -> RuntimeMode {
+    match std::env::var("APP_ENV")
+        .unwrap_or_else(|_| "development".to_string())
+        .to_lowercase()
+        .as_str()
+    {
+        "production" => RuntimeMode::Production,
+        _ => RuntimeMode::Development,
+    }
+}
+
+fn env_flag(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn validate_runtime_configuration(mode: RuntimeMode, state: &AppState) -> anyhow::Result<()> {
+    if mode != RuntimeMode::Production {
+        return Ok(());
+    }
+
+    if std::env::var("DATABASE_URL").is_err() {
+        anyhow::bail!("DATABASE_URL is required in APP_ENV=production");
+    }
+    if state.jwt_keys.using_insecure_default {
+        anyhow::bail!("APP_JWT_SIGNING_KEYS or APP_JWT_SIGNING_KEY must be set in production");
+    }
+    if state.allow_legacy_customer_header {
+        anyhow::bail!("APP_ALLOW_LEGACY_CUSTOMER_HEADER must be false in production");
+    }
+    if state.admin_api_token.is_none() {
+        anyhow::bail!("ADMIN_API_TOKEN is required in production");
+    }
+    if !env_flag("APP_REQUIRE_CORE_TLS", false) {
+        anyhow::bail!("APP_REQUIRE_CORE_TLS must be true in production");
+    }
+    if state.google_oidc.is_none() {
+        anyhow::bail!("Google OIDC configuration is required in production");
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -789,6 +873,15 @@ struct UpsertSubscriptionResponse {
 }
 
 #[derive(Serialize)]
+struct SubscriptionResponse {
+    customer_id: Uuid,
+    plan_code: String,
+    status: String,
+    starts_at: chrono::DateTime<Utc>,
+    ends_at: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Serialize)]
 struct NodeResponse {
     id: Uuid,
     region: String,
@@ -917,6 +1010,27 @@ async fn upsert_subscription(
         customer_id: payload.customer_id,
         plan_code: normalized_plan,
         status: payload.status,
+    }))
+}
+
+async fn get_subscription(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(customer_id): Path<Uuid>,
+) -> Result<Json<SubscriptionResponse>, ApiError> {
+    require_admin_token(&state, &headers)?;
+    let sub = state
+        .subscription_store
+        .get_customer_subscription(customer_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("subscription_not_found"))?;
+
+    Ok(Json(SubscriptionResponse {
+        customer_id: sub.customer_id,
+        plan_code: sub.plan_code,
+        status: sub.status,
+        starts_at: sub.starts_at,
+        ends_at: sub.ends_at,
     }))
 }
 
