@@ -38,6 +38,8 @@ spec:
                 - ALL
             readOnlyRootFilesystem: true
             runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
       volumes:
         - name: migrations
           configMap:

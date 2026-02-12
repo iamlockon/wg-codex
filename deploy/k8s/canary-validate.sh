@@ -38,10 +38,15 @@ require_cmd jq
 
 applied=0
 
+apply_overlay() {
+  local overlay="$1"
+  kubectl kustomize --load-restrictor=LoadRestrictionsNone "${SCRIPT_DIR}/overlays/${overlay}" | kubectl apply -f -
+}
+
 rollback() {
   set +e
   echo "==> rollback: applying overlay ${ROLLBACK_OVERLAY}"
-  kubectl apply -k "${SCRIPT_DIR}/overlays/${ROLLBACK_OVERLAY}"
+  apply_overlay "${ROLLBACK_OVERLAY}"
   kubectl -n "${NAMESPACE}" rollout status deployment/entry --timeout="${ROLLOUT_TIMEOUT}"
   kubectl -n "${NAMESPACE}" rollout status daemonset/core --timeout="${ROLLOUT_TIMEOUT}"
 }
@@ -60,7 +65,7 @@ echo "==> preflight: ${OVERLAY}"
 "${SCRIPT_DIR}/preflight.sh" "${OVERLAY}"
 
 echo "==> apply: ${OVERLAY}"
-kubectl apply -k "${SCRIPT_DIR}/overlays/${OVERLAY}"
+apply_overlay "${OVERLAY}"
 applied=1
 
 echo "==> rollout status: deployment/entry"

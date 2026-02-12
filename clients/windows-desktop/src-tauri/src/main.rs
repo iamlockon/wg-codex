@@ -13,12 +13,10 @@ use models::Device;
 use session::DesktopClient;
 #[cfg(not(windows))]
 use storage::FileSecureStorage;
-use storage::SecureStorage;
 use tauri::Manager;
 use tokio::sync::Mutex;
 #[cfg(not(windows))]
 use wireguard::NoopTunnelController;
-use wireguard::TunnelController;
 #[cfg(windows)]
 use wireguard::WireGuardWindowsController;
 

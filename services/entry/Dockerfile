@@ -1,10 +1,13 @@
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.93-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY services ./services
+COPY clients/windows-desktop/src-tauri/Cargo.toml ./clients/windows-desktop/src-tauri/Cargo.toml
+COPY clients/windows-desktop/src-tauri/build.rs ./clients/windows-desktop/src-tauri/build.rs
+COPY clients/windows-desktop/src-tauri/src ./clients/windows-desktop/src-tauri/src
 
 RUN cargo build --release -p entry --locked
 

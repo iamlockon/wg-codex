@@ -9,5 +9,5 @@ patchesStrategicMerge:
   - patch-core-native-driver.yaml
 
 images:
-  - name: ghcr.io/replace-me/wg-core
-    newTag: stable-native-canary
+  - name: asia-east1-docker.pkg.dev/wg-codex/wg/wg-core
+    newTag: v1

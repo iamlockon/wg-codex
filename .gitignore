@@ -1,1 +1,10 @@
 /target
+
+# Windows desktop client generated artifacts
+/clients/windows-desktop/node_modules/
+/clients/windows-desktop/ui/node_modules/
+/clients/windows-desktop/package-lock.json
+/clients/windows-desktop/ui/package-lock.json
+/clients/windows-desktop/src-tauri/gen/
+
+.tmp-secrets/

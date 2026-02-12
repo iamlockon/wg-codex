@@ -38,27 +38,27 @@ and retention cap policy variables).
 
 Development:
 ```bash
-kubectl apply -k deploy/k8s/overlays/dev
+kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/dev | kubectl apply -f -
 ```
 
 Production:
 ```bash
-kubectl apply -k deploy/k8s/overlays/prod
+kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/prod | kubectl apply -f -
 ```
 
 Production (GCP Secret Manager CSI + Workload Identity):
 ```bash
-kubectl apply -k deploy/k8s/overlays/prod-gcp-sm
+kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/prod-gcp-sm | kubectl apply -f -
 ```
 
 Production native canary:
 ```bash
-kubectl apply -k deploy/k8s/overlays/prod-native-canary
+kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/prod-native-canary | kubectl apply -f -
 ```
 
 Production native canary with GCP Secret Manager CSI:
 ```bash
-kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary
+kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/prod-gcp-sm-native-canary | kubectl apply -f -
 ```
 
 Automated canary validation (recommended):
@@ -147,7 +147,7 @@ and `WG_SERVER_PUBLIC_KEY_FILE`.
 ## 3.1 Canary rollback
 If canary shows errors, immediately roll back:
 ```bash
-kubectl apply -k deploy/k8s/overlays/prod
+kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/k8s/overlays/prod | kubectl apply -f -
 ```
 This resets `WG_NAT_DRIVER=cli` and stable core image tag.
 

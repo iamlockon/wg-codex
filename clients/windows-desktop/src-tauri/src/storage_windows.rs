@@ -8,9 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use windows_sys::Win32::Security::Cryptography::{
-    CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData, DATA_BLOB,
+    CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB, CryptProtectData, CryptUnprotectData,
 };
-use windows_sys::Win32::System::Memory::LocalFree;
+use windows_sys::Win32::Foundation::LocalFree;
 
 #[derive(Debug, Clone)]
 pub struct DpapiFileSecureStorage {
@@ -112,22 +112,22 @@ fn dpapi_protect(input: &[u8]) -> Result<Vec<u8>> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
-    let mut in_blob = DATA_BLOB {
+    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: input.len() as u32,
         pbData: input.as_ptr() as *mut u8,
     };
-    let mut out_blob = DATA_BLOB {
+    let mut out_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: ptr::null_mut(),
     };
 
     let ok = unsafe {
         CryptProtectData(
-            &mut in_blob,
+            &in_blob,
             ptr::null(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
             CRYPTPROTECT_UI_FORBIDDEN,
             &mut out_blob,
         )
@@ -142,7 +142,7 @@ fn dpapi_protect(input: &[u8]) -> Result<Vec<u8>> {
     let data =
         unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) }.to_vec();
     unsafe {
-        let _ = LocalFree(out_blob.pbData as isize);
+        let _ = LocalFree(out_blob.pbData as _);
     }
     Ok(data)
 }
@@ -151,22 +151,22 @@ fn dpapi_unprotect(input: &[u8]) -> Result<Vec<u8>> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
-    let mut in_blob = DATA_BLOB {
+    let in_blob = CRYPT_INTEGER_BLOB {
         cbData: input.len() as u32,
         pbData: input.as_ptr() as *mut u8,
     };
-    let mut out_blob = DATA_BLOB {
+    let mut out_blob = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: ptr::null_mut(),
     };
 
     let ok = unsafe {
         CryptUnprotectData(
-            &mut in_blob,
+            &in_blob,
             ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
             CRYPTPROTECT_UI_FORBIDDEN,
             &mut out_blob,
         )
@@ -181,7 +181,7 @@ fn dpapi_unprotect(input: &[u8]) -> Result<Vec<u8>> {
     let data =
         unsafe { std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize) }.to_vec();
     unsafe {
-        let _ = LocalFree(out_blob.pbData as isize);
+        let _ = LocalFree(out_blob.pbData as _);
     }
     Ok(data)
 }

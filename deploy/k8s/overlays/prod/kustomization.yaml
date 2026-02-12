@@ -11,7 +11,7 @@ resources:
   - sealedsecret-wireguard-keys.yaml
 
 images:
-  - name: ghcr.io/replace-me/wg-entry
-    newTag: stable
-  - name: ghcr.io/replace-me/wg-core
-    newTag: stable
+  - name: asia-east1-docker.pkg.dev/wg-codex/wg/wg-entry
+    newTag: v1
+  - name: asia-east1-docker.pkg.dev/wg-codex/wg/wg-core
+    newTag: v1

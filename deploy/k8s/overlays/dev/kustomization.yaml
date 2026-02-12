@@ -11,7 +11,7 @@ patchesStrategicMerge:
   - patch-core-config.yaml
 
 images:
-  - name: ghcr.io/replace-me/wg-entry
-    newTag: dev
-  - name: ghcr.io/replace-me/wg-core
-    newTag: dev
+  - name: asia-east1-docker.pkg.dev/wg-codex/wg/wg-entry
+    newTag: v1
+  - name: asia-east1-docker.pkg.dev/wg-codex/wg/wg-core
+    newTag: v1

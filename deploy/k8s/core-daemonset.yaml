@@ -19,7 +19,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: core
-          image: ghcr.io/replace-me/wg-core:latest
+          image: asia-east1-docker.pkg.dev/wg-codex/wg/wg-core:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 50051

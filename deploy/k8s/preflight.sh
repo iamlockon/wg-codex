@@ -28,7 +28,7 @@ require_cmd grep
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-kubectl kustomize "deploy/k8s/overlays/${overlay}" >"$tmp"
+kubectl kustomize --load-restrictor=LoadRestrictionsNone "deploy/k8s/overlays/${overlay}" >"$tmp"
 
 require_pattern() {
   local pattern="$1"
@@ -100,19 +100,19 @@ if [[ "$overlay" != "dev" ]]; then
 fi
 
 if [[ "$overlay" == "prod" || "$overlay" == "prod-gcp-sm" ]]; then
-  require_pattern 'WG_NAT_DRIVER: "cli"' "prod NAT driver pin to cli"
+  require_pattern 'WG_NAT_DRIVER: "?cli"?' "prod NAT driver pin to cli"
 fi
 
 if [[ "$overlay" == "prod-native-canary" || "$overlay" == "prod-gcp-sm-native-canary" ]]; then
-  require_pattern 'WG_NAT_DRIVER: "native"' "canary NAT driver set to native"
+  require_pattern 'WG_NAT_DRIVER: "?native"?' "canary NAT driver set to native"
 fi
 
 if [[ "$overlay" != "dev" ]]; then
-  require_pattern 'APP_ENV: "production"' "production runtime mode"
+  require_pattern 'APP_ENV: "?production"?' "production runtime mode"
   require_pattern 'APP_REQUIRE_CORE_TLS: "true"' "entry-to-core TLS requirement"
   require_pattern 'CORE_REQUIRE_TLS: "true"' "core TLS requirement"
   require_pattern 'APP_ALLOW_LEGACY_CUSTOMER_HEADER: "false"' "legacy header disablement"
-  require_pattern 'APP_LOG_REDACTION_MODE: "strict"' "strict log redaction"
+  require_pattern 'APP_LOG_REDACTION_MODE: "?strict"?' "strict log redaction"
   require_pattern 'APP_MAX_TERMINATED_SESSION_RETENTION_DAYS: "30"' "session retention cap policy"
   require_pattern 'APP_MAX_AUDIT_RETENTION_DAYS: "90"' "audit retention cap policy"
   require_pattern 'APP_REQUIRE_OAUTH_NONCE: "true"' "production OAuth nonce policy"

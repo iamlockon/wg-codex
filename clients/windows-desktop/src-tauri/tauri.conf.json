@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.wg.windowsclient",
   "build": {
-    "beforeDevCommand": "npm --prefix ../ui run dev -- --host 127.0.0.1 --port 1420",
-    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "beforeDevCommand": "npm --prefix ./ui run dev -- --host 127.0.0.1 --port 1420",
+    "beforeBuildCommand": "npm --prefix ./ui run build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../ui/dist"
   },
@@ -21,7 +21,8 @@
   },
   "bundle": {
     "active": true,
+    "icon": ["icons/icon.ico"],
     "targets": ["msi", "nsis"],
-    "resources": ["../wg-tools/**"]
+    "resources": ["../wg-tools"]
   }
 }
