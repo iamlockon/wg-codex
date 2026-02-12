@@ -8,3 +8,4 @@
 /clients/windows-desktop/src-tauri/gen/
 
 .tmp-secrets/
+.target/
