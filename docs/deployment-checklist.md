@@ -1,7 +1,8 @@
 # Deployment Checklist (GCP/GKE)
 
 ## Preconditions
-- GKE cluster created with node pools for control-plane (`entry`) and dataplane (`core`).
+- If `deploy/terraform` is used with `manage_gke=true`, GKE cluster/node pools are provisioned by Terraform.
+- If `manage_gke=false`, an existing GKE cluster with node pools for control-plane (`entry`) and dataplane (`core`) is required.
 - Managed Postgres reachable from cluster (Cloud SQL or equivalent).
 - TLS assets issued for mTLS between `entry` and `core`.
 - Google OAuth client configured.
@@ -13,7 +14,8 @@
   - `wireguard-keys`
 - Optional alternative for `entry-secrets` and `core-secrets`:
   - GCP Secret Manager CSI via `deploy/k8s/overlays/prod-gcp-sm` (requires Workload Identity and CSI driver).
-  - Preflight for GCP overlays fails if placeholders (`PROJECT_NUMBER`, `replace-me`) are not replaced.
+  - Provision Workload Identity service accounts, Secret Manager secrets, and SecretProviderClass resources via Terraform in `deploy/terraform`.
+  - CSI driver and GCP provider can also be installed by Terraform with `install_secrets_store_csi_driver=true`.
 - Environment templates available:
   - `deploy/env/entry.env.example`
   - `deploy/env/core.env.example`
@@ -31,13 +33,16 @@
    - `deploy/k8s/preflight.sh prod`
    - `deploy/k8s/preflight.sh prod-gcp-sm`
    - `deploy/k8s/preflight.sh prod-gcp-sm-native-canary`
-1. Dev: `kubectl apply -k deploy/k8s/overlays/dev`
-2. Prod: `kubectl apply -k deploy/k8s/overlays/prod`
-3. Prod with GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm`
-4. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
-5. Native canary + GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary`
-6. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
-7. Prefer automated canary gate for native rollout:
+1. For GCP Secret Manager overlays, provision infra first:
+   - `cd deploy/terraform`
+   - `terraform init && terraform apply`
+2. Dev: `kubectl apply -k deploy/k8s/overlays/dev`
+3. Prod: `kubectl apply -k deploy/k8s/overlays/prod`
+4. Prod with GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm`
+5. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
+6. Native canary + GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary`
+7. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
+8. Prefer automated canary gate for native rollout:
    - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary`
    - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-gcp-sm-native-canary`
    - For GCP Secret Manager environments, set `ROLLBACK_OVERLAY=prod-gcp-sm` so rollback keeps CSI wiring.

@@ -75,19 +75,19 @@ Useful env overrides:
 
 Prerequisites for `prod-gcp-sm`:
 - GKE Workload Identity enabled for the cluster/node pool.
-- Secrets Store CSI driver + GCP provider installed.
-- Replace placeholders in:
-  - `deploy/k8s/gcp/serviceaccounts.yaml`
-  - `deploy/k8s/gcp/entry-secretproviderclass.yaml`
-  - `deploy/k8s/gcp/core-secretproviderclass.yaml`
-- Provision Secret Manager secrets referenced by those classes, including:
-  - entry runtime secrets (`DATABASE_URL`, admin token, JWT keys, Google OIDC client id/secret)
-  - entry mTLS client material for core (`ca.pem`, `client.crt`, `client.key`)
-  - core runtime secrets (`CORE_NODE_ID`, admin token, WG server public key)
-  - core TLS material (`server.crt`, `server.key`, `ca.pem`)
-  - WireGuard private key (`private.key`)
-- Preflight now fails if `PROJECT_NUMBER` or `replace-me` placeholders are still present.
-  For `prod-gcp-sm*`, it also fails if direct Kubernetes secret volumes are still used for
+- Secrets Store CSI driver + GCP provider installed (or set `install_secrets_store_csi_driver=true` in `deploy/terraform`).
+- Provision infra via Terraform:
+```bash
+cd deploy/terraform
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform apply
+```
+- Terraform manages:
+  - Workload Identity service accounts (`entry-wi`, `core-wi`) and IAM bindings
+  - Secret Manager secret containers (+ optional initial versions)
+  - SecretProviderClass resources used by the CSI mounts
+- For `prod-gcp-sm*`, preflight fails if direct Kubernetes secret volumes are still used for
   `entry-secrets`, `core-secrets`, `core-tls`, `core-grpc-client-tls`, or `wireguard-keys`.
 
 ## 3. SealedSecret flow for production

@@ -4,9 +4,6 @@ namespace: wg-vpn
 
 resources:
   - ../prod
-  - ../../gcp/serviceaccounts.yaml
-  - ../../gcp/entry-secretproviderclass.yaml
-  - ../../gcp/core-secretproviderclass.yaml
 
 patchesStrategicMerge:
   - patch-entry-csi.yaml

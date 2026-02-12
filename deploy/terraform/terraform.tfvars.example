@@ -1,0 +1,55 @@
+project_id     = "my-gcp-project"
+project_number = "123456789012"
+namespace      = "wg-vpn"
+manage_namespace = true
+manage_gke       = true
+gke_cluster_name = "wg-cluster"
+gke_location     = "us-central1"
+gke_region       = "us-central1"
+install_secrets_store_csi_driver = true
+
+# Create this OAuth client in Google Cloud Console:
+# APIs & Services > Credentials > OAuth client ID (Web application),
+# then set its callback URI to your entry callback endpoint.
+google_oauth_client_id     = "replace-me.apps.googleusercontent.com"
+google_oauth_client_secret = "replace-me"
+
+# Optional: provision Cloud SQL and automatically publish entry-database-url.
+manage_postgres              = true
+postgres_instance_name       = "wg-entry-postgres"
+postgres_region              = "us-central1"
+postgres_tier                = "db-custom-1-3840"
+postgres_disk_size_gb        = 20
+postgres_database            = "wg_entry"
+postgres_username            = "wg_entry"
+postgres_deletion_protection = true
+postgres_private_ip_enabled  = true
+postgres_enable_public_ip    = false
+
+# Option A: create a dedicated VPC in this stack.
+create_vpc = true
+vpc_name   = "wg-vpc"
+
+# Option B: reuse an existing VPC self_link.
+# create_vpc   = false
+# vpc_self_link = "projects/my-gcp-project/global/networks/my-vpc"
+
+create_private_service_networking = true
+private_service_range_name        = "wg-sql-private-range"
+private_service_range_prefix_length = 16
+
+# Optional: seed values for first apply. Keep this file out of source control.
+secret_values = {
+  entry-admin-api-token           = "replace-me"
+  entry-jwt-signing-keys          = "v1:replace-me"
+  core-grpc-client-tls-ca         = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  core-grpc-client-tls-client-crt = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  core-grpc-client-tls-client-key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+  core-admin-api-token            = "replace-me"
+  core-node-id                    = "node-1"
+  core-wg-server-public-key       = "replace-me"
+  core-tls-server-crt             = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  core-tls-server-key             = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+  core-tls-ca                     = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+  wireguard-private-key           = "replace-me"
+}

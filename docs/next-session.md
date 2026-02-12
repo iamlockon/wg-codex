@@ -138,7 +138,7 @@
   - `deploy/k8s/*` manifests (namespace, configmaps, secrets examples, entry deployment, core daemonset, migration job)
   - `deploy/k8s/base` + `deploy/k8s/overlays/{dev,prod}` kustomize structure for one-command deploy per env
   - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
-  - optional GCP Secret Manager CSI overlay (`deploy/k8s/overlays/prod-gcp-sm`) with Workload Identity service accounts and SecretProviderClass manifests
+  - optional GCP Secret Manager CSI overlay (`deploy/k8s/overlays/prod-gcp-sm`) with Terraform-managed Workload Identity and SecretProviderClass resources (`deploy/terraform`)
   - optional combined GCP Secret Manager CSI + native NAT canary overlay (`deploy/k8s/overlays/prod-gcp-sm-native-canary`)
   - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
     - supports optional NAT driver assertion (`cli` or `native`) for rollout validation.
@@ -163,7 +163,7 @@
   - `entry` now mounts both `entry-sensitive` and `core-grpc-client-tls` via CSI (`entry-gcp-secrets`).
   - `core` now mounts `core-sensitive`, `core-tls`, and `wireguard-keys` via CSI (`core-gcp-secrets`).
   - `core` health reporter now supports `CORE_NODE_ID_FILE`, and k8s wiring uses file-backed `CORE_NODE_ID_FILE`.
-  - GCP SecretProviderClass templates now include entries for node id, core TLS, WireGuard private key, and entry client mTLS files.
+  - Terraform in `deploy/terraform` now manages SecretProviderClass resources, including node id, core TLS, WireGuard private key, and entry client mTLS mappings.
   - preflight now fails `prod-gcp-sm*` if direct secret volumes remain for sensitive service mounts.
 - Native NAT canary validation automation added:
   - `deploy/k8s/canary-validate.sh` runs preflight, applies canary overlay, waits for rollout, runs smoke checks expecting `nat_driver=native`, and auto-rolls back on failure by default.

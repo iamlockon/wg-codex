@@ -51,7 +51,6 @@ require_pattern 'name: core-tls' "core-tls reference"
 require_pattern 'name: core-grpc-client-tls' "core-grpc-client-tls reference"
 require_pattern 'name: wireguard-keys' "wireguard-keys reference"
 if [[ "$overlay" == "prod-gcp-sm" || "$overlay" == "prod-gcp-sm-native-canary" ]]; then
-  require_pattern '^kind: SecretProviderClass$' "secretproviderclass resources"
   require_pattern 'secretProviderClass: entry-gcp-secrets' "entry secret provider class mount"
   require_pattern 'secretProviderClass: core-gcp-secrets' "core secret provider class mount"
   if grep -q 'secretName: entry-secrets' "$tmp"; then
@@ -72,14 +71,6 @@ if [[ "$overlay" == "prod-gcp-sm" || "$overlay" == "prod-gcp-sm-native-canary" ]
   fi
   if grep -q 'secretName: wireguard-keys' "$tmp"; then
     echo "preflight failed: found direct wireguard-keys volume in GCP Secret Manager overlay" >&2
-    exit 4
-  fi
-  if grep -q 'PROJECT_NUMBER' "$tmp"; then
-    echo "preflight failed: found PROJECT_NUMBER placeholder in GCP Secret Manager resources" >&2
-    exit 4
-  fi
-  if grep -q '@replace-me\.iam\.gserviceaccount\.com' "$tmp"; then
-    echo "preflight failed: found replace-me GCP service account placeholder" >&2
     exit 4
   fi
 fi
