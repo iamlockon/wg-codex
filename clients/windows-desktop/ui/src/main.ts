@@ -16,46 +16,71 @@ type Device = {
   created_at: string;
 };
 
+type PendingOAuth = {
+  codeVerifier: string;
+  nonce: string;
+  state: string;
+};
+
+const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_OIDC_CLIENT_ID as string | undefined) ?? "";
+const GOOGLE_REDIRECT_URI =
+  (import.meta.env.VITE_GOOGLE_OIDC_REDIRECT_URI as string | undefined) ?? "";
+
 const app = document.getElementById("app")!;
 
 app.innerHTML = `
-  <h1>WG Windows Client</h1>
-  <p class="subtitle">Desktop flow: OAuth callback -> device -> connect -> disconnect/logout</p>
+  <h1>WG Desktop VPN</h1>
+  <p class="subtitle">Sign in with Google, choose a device, then pick location and connect.</p>
   <div class="layout">
     <section class="card">
-      <h2>Auth</h2>
-      <div class="grid">
-        <div><label>Provider</label><input id="provider" value="google" /></div>
-        <div><label>OAuth code</label><input id="code" placeholder="paste callback code" /></div>
-        <div><label>Code verifier (optional)</label><input id="code_verifier" /></div>
-        <div><label>Nonce (optional)</label><input id="nonce" /></div>
+      <h2>1. Google Login</h2>
+      <p class="section-note">Sign in via browser, then paste the redirect URL you land on.</p>
+      <div class="grid one-col">
+        <div><label>OAuth callback URL</label><input id="callback_url" placeholder="https://.../?code=..." /></div>
       </div>
       <div class="actions">
-        <button id="btn-login">Login</button>
-        <button id="btn-restore" class="secondary">Restore+Reconnect</button>
+        <button id="btn-google-start">Sign Up / Log In With Google</button>
+        <button id="btn-google-complete" class="ok">Complete Login</button>
+        <button id="btn-restore" class="secondary">Restore Session</button>
         <button id="btn-logout" class="danger">Logout</button>
       </div>
 
-      <h2 style="margin-top:14px">Device</h2>
-      <div class="grid">
-        <div><label>Name</label><input id="device_name" value="desktop" /></div>
-        <div><label>Public key</label><input id="device_pub" placeholder="base64 WireGuard public key" /></div>
-      </div>
-      <div class="actions">
-        <button id="btn-register" class="ok">Register device</button>
-        <button id="btn-list" class="secondary">List devices</button>
-      </div>
+      <fieldset id="device-section" class="step-fieldset">
+        <h2 style="margin-top:14px">2. Select Device</h2>
+        <p class="section-note">Pick an existing device or register this machine.</p>
+        <div class="actions">
+          <button id="btn-list" class="secondary">Refresh Devices</button>
+        </div>
+        <div class="grid" style="margin-top:8px">
+          <div><label>New device name</label><input id="device_name" value="desktop" /></div>
+          <div><label>WireGuard public key</label><input id="device_pub" placeholder="base64 WireGuard public key" /></div>
+        </div>
+        <div class="actions">
+          <button id="btn-register" class="ok">Register Device</button>
+        </div>
+      </fieldset>
 
-      <h2 style="margin-top:14px">Session</h2>
-      <div class="grid">
-        <div><label>Region</label><input id="region" value="us-west1" /></div>
-        <div><label>Select device ID</label><input id="selected_device" placeholder="device id" /></div>
-      </div>
-      <div class="actions">
-        <button id="btn-select" class="secondary">Select device</button>
-        <button id="btn-connect" class="ok">Connect</button>
-        <button id="btn-disconnect" class="warn">Disconnect</button>
-      </div>
+      <fieldset id="session-section" class="step-fieldset">
+        <h2 style="margin-top:14px">3. Location & Connection</h2>
+        <p class="section-note">Choose VPN location and connect.</p>
+        <div class="grid">
+          <div>
+            <label>Region</label>
+            <select id="region">
+              <option value="us-west1">US West</option>
+              <option value="us-central1">US Central</option>
+              <option value="us-east1">US East</option>
+              <option value="europe-west1">Europe West</option>
+              <option value="asia-east1">Asia East</option>
+            </select>
+          </div>
+          <div><label>Selected device ID</label><input id="selected_device" readonly /></div>
+        </div>
+        <div class="actions">
+          <button id="btn-connect" class="ok">Connect</button>
+          <button id="btn-disconnect" class="warn">Disconnect</button>
+        </div>
+      </fieldset>
     </section>
 
     <section class="card">
@@ -77,8 +102,17 @@ const devicesEl = document.getElementById("devices")!;
 
 let devices: Device[] = [];
 let status: UiStatus | null = null;
+let pendingOAuth: PendingOAuth | null = null;
 
 const el = (id: string) => document.getElementById(id) as HTMLInputElement;
+const deviceSection = document.getElementById("device-section") as HTMLFieldSetElement;
+const sessionSection = document.getElementById("session-section") as HTMLFieldSetElement;
+const googleStartBtn = document.getElementById("btn-google-start") as HTMLButtonElement;
+const googleCompleteBtn = document.getElementById("btn-google-complete") as HTMLButtonElement;
+const restoreBtn = document.getElementById("btn-restore") as HTMLButtonElement;
+const logoutBtn = document.getElementById("btn-logout") as HTMLButtonElement;
+const connectBtn = document.getElementById("btn-connect") as HTMLButtonElement;
+const disconnectBtn = document.getElementById("btn-disconnect") as HTMLButtonElement;
 
 function appendLog(line: string) {
   const ts = new Date().toISOString();
@@ -90,27 +124,125 @@ function renderStatus() {
     statusEl.innerHTML = "<div class='status-row'><span class='key'>state</span><span>unknown</span></div>";
     return;
   }
+  const connectionState = status.active_session_key ? "Connected" : "Disconnected";
+  const authState = status.authenticated ? "Authenticated" : "Signed out";
   statusEl.innerHTML = `
-    <div class="status-row"><span class="key">authenticated</span><span>${String(status.authenticated)}</span></div>
+    <div class="status-row"><span class="key">auth</span><span>${authState}</span></div>
+    <div class="status-row"><span class="key">connection</span><span>${connectionState}</span></div>
     <div class="status-row"><span class="key">customer_id</span><span>${status.customer_id ?? "-"}</span></div>
     <div class="status-row"><span class="key">selected_device_id</span><span>${status.selected_device_id ?? "-"}</span></div>
-    <div class="status-row"><span class="key">active_session_key</span><span>${status.active_session_key ?? "-"}</span></div>
+    <div class="status-row"><span class="key">session_key</span><span>${status.active_session_key ?? "-"}</span></div>
     <div class="status-row"><span class="key">last_region</span><span>${status.last_region ?? "-"}</span></div>
   `;
 }
 
+function syncInteractivity() {
+  const hasAuth = Boolean(status?.authenticated);
+  const hasDevice = Boolean(status?.selected_device_id);
+  const hasSession = Boolean(status?.active_session_key);
+  deviceSection.disabled = !hasAuth;
+  sessionSection.disabled = !hasAuth || !hasDevice;
+  restoreBtn.disabled = !hasAuth;
+  logoutBtn.disabled = !hasAuth;
+  connectBtn.disabled = !hasAuth || !hasDevice || hasSession;
+  disconnectBtn.disabled = !hasSession;
+  googleStartBtn.disabled = hasAuth;
+  googleCompleteBtn.disabled = hasAuth || !pendingOAuth;
+  el("selected_device").value = status?.selected_device_id ?? "";
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function randomUrlSafeString(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return toBase64Url(bytes);
+}
+
+async function sha256Base64Url(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return toBase64Url(new Uint8Array(digest));
+}
+
+function parseCodeAndStateFromCallback(raw: string): { code: string; state: string | null } {
+  const value = raw.trim();
+  if (!value) {
+    throw new Error("missing_callback_url");
+  }
+  const url = new URL(value);
+  const code = url.searchParams.get("code");
+  if (!code) {
+    throw new Error("missing_oauth_code_in_callback_url");
+  }
+  return { code, state: url.searchParams.get("state") };
+}
+
 function renderDevices() {
   devicesEl.innerHTML = "";
+  if (!devices.length) {
+    const li = document.createElement("li");
+    li.textContent = "No registered devices yet.";
+    devicesEl.appendChild(li);
+    return;
+  }
   for (const d of devices) {
     const li = document.createElement("li");
-    li.textContent = `${d.name} | ${d.id} | created=${d.created_at}`;
+    li.className = "device-item";
+    const selected = status?.selected_device_id === d.id;
+    const created = new Date(d.created_at).toLocaleString();
+    li.innerHTML = `
+      <div class="device-main">
+        <strong>${d.name}</strong>
+        <span class="device-meta">${created}</span>
+      </div>
+      <div class="device-id">${d.id}</div>
+      <div class="actions">
+        <button class="${selected ? "secondary" : "ok"}" data-device-id="${d.id}" ${selected ? "disabled" : ""}>
+          ${selected ? "Selected" : "Select"}
+        </button>
+      </div>
+    `;
     devicesEl.appendChild(li);
   }
+  devicesEl.querySelectorAll("button[data-device-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const deviceId = (btn as HTMLButtonElement).dataset.deviceId;
+      if (!deviceId) {
+        return;
+      }
+      void safe("select_device", async () => {
+        status = await invoke<UiStatus>("select_device", {
+          input: { deviceId },
+        });
+        renderStatus();
+        renderDevices();
+        syncInteractivity();
+      });
+    });
+  });
 }
 
 async function refreshStatus() {
   status = await invoke<UiStatus>("get_status");
   renderStatus();
+  syncInteractivity();
+}
+
+async function refreshDevices() {
+  if (!status?.authenticated) {
+    devices = [];
+    renderDevices();
+    return;
+  }
+  devices = await invoke<Device[]>("list_devices");
+  renderDevices();
 }
 
 async function safe(name: string, fn: () => Promise<void>) {
@@ -122,17 +254,59 @@ async function safe(name: string, fn: () => Promise<void>) {
   }
 }
 
-document.getElementById("btn-login")!.addEventListener("click", () =>
-  safe("oauth_login", async () => {
+document.getElementById("btn-google-start")!.addEventListener("click", () =>
+  safe("google_oauth_start", async () => {
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
+      throw new Error(
+        "missing_google_oauth_ui_config (set VITE_GOOGLE_OIDC_CLIENT_ID and VITE_GOOGLE_OIDC_REDIRECT_URI)",
+      );
+    }
+    const codeVerifier = randomUrlSafeString(64);
+    const codeChallenge = await sha256Base64Url(codeVerifier);
+    const nonce = randomUrlSafeString(24);
+    const state = randomUrlSafeString(24);
+    pendingOAuth = { codeVerifier, nonce, state };
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "openid email profile");
+    authUrl.searchParams.set("code_challenge", codeChallenge);
+    authUrl.searchParams.set("code_challenge_method", "S256");
+    authUrl.searchParams.set("nonce", nonce);
+    authUrl.searchParams.set("state", state);
+
+    window.open(authUrl.toString(), "_blank", "noopener,noreferrer");
+    syncInteractivity();
+    appendLog("google_oauth_start: browser opened; paste callback URL then click Complete Login");
+  }),
+);
+
+document.getElementById("btn-google-complete")!.addEventListener("click", () =>
+  safe("google_oauth_complete", async () => {
+    if (!pendingOAuth) {
+      throw new Error("oauth_not_started");
+    }
+
+    const callback = parseCodeAndStateFromCallback(el("callback_url").value);
+    if (callback.state !== pendingOAuth.state) {
+      throw new Error("oauth_state_mismatch");
+    }
+
     status = await invoke<UiStatus>("oauth_login", {
       input: {
-        provider: el("provider").value,
-        code: el("code").value,
-        codeVerifier: el("code_verifier").value || null,
-        nonce: el("nonce").value || null,
+        provider: "google",
+        code: callback.code,
+        codeVerifier: pendingOAuth.codeVerifier,
+        nonce: pendingOAuth.nonce,
       },
     });
+    pendingOAuth = null;
+    el("callback_url").value = "";
     renderStatus();
+    syncInteractivity();
+    await refreshDevices();
   }),
 );
 
@@ -142,6 +316,7 @@ document.getElementById("btn-logout")!.addEventListener("click", () =>
     devices = [];
     renderStatus();
     renderDevices();
+    syncInteractivity();
   }),
 );
 
@@ -149,6 +324,8 @@ document.getElementById("btn-restore")!.addEventListener("click", () =>
   safe("restore_and_reconnect", async () => {
     status = await invoke<UiStatus>("restore_and_reconnect");
     renderStatus();
+    syncInteractivity();
+    await refreshDevices();
   }),
 );
 
@@ -161,26 +338,14 @@ document.getElementById("btn-register")!.addEventListener("click", () =>
       },
     });
     devices = [device, ...devices.filter((d) => d.id !== device.id)];
-    el("selected_device").value = device.id;
     renderDevices();
     await refreshStatus();
+    await refreshDevices();
   }),
 );
 
 document.getElementById("btn-list")!.addEventListener("click", () =>
-  safe("list_devices", async () => {
-    devices = await invoke<Device[]>("list_devices");
-    renderDevices();
-  }),
-);
-
-document.getElementById("btn-select")!.addEventListener("click", () =>
-  safe("select_device", async () => {
-    status = await invoke<UiStatus>("select_device", {
-      input: { deviceId: el("selected_device").value },
-    });
-    renderStatus();
-  }),
+  safe("list_devices", async () => refreshDevices()),
 );
 
 document.getElementById("btn-connect")!.addEventListener("click", () =>
@@ -190,6 +355,7 @@ document.getElementById("btn-connect")!.addEventListener("click", () =>
     });
     appendLog(`connected session=${result.session_key}`);
     await refreshStatus();
+    await refreshDevices();
   }),
 );
 
@@ -197,10 +363,11 @@ document.getElementById("btn-disconnect")!.addEventListener("click", () =>
   safe("disconnect", async () => {
     status = await invoke<UiStatus>("disconnect");
     renderStatus();
+    syncInteractivity();
   }),
 );
 
 safe("init", async () => {
   await refreshStatus();
-  renderDevices();
+  await refreshDevices();
 });

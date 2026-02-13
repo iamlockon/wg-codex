@@ -52,10 +52,20 @@ h2 {
   font-size: 18px;
 }
 
+.section-note {
+  margin: -2px 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.grid.one-col {
+  grid-template-columns: 1fr;
 }
 
 label {
@@ -95,6 +105,17 @@ button.warn { background: #b35f00; }
 button.danger { background: var(--danger); }
 button:disabled { opacity: 0.6; cursor: default; }
 
+.step-fieldset {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 14px 0 0;
+}
+
+.step-fieldset:disabled {
+  opacity: 0.55;
+}
+
 .status-row {
   display: grid;
   grid-template-columns: 180px 1fr;
@@ -116,6 +137,25 @@ button:disabled { opacity: 0.6; cursor: default; }
   padding: 8px;
   margin-bottom: 7px;
   background: #f8fbff;
+}
+
+.device-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.device-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.device-id {
+  margin-top: 6px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  color: #1f364d;
+  word-break: break-all;
 }
 
 .log {

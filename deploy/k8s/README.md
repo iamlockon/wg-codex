@@ -21,6 +21,14 @@ Update image tags in overlays:
 - `deploy/k8s/overlays/prod/kustomization.yaml`
 
 ## 2. One-command deploy per environment
+Backend deploy automation (build + push + apply + rollout + migrations):
+```bash
+scripts/deploy-backends-k8s.sh --overlay prod-gcp-sm
+```
+Notes:
+- Assumes Terraform stack in `deploy/terraform` has already been applied for `prod-gcp-sm*`.
+- Uses immutable image tags per run and pins Deployment/DaemonSet images after apply.
+
 Run preflight validation before apply:
 ```bash
 deploy/k8s/preflight.sh dev
