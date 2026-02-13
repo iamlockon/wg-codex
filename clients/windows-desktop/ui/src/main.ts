@@ -25,22 +25,19 @@ type PendingOAuth = {
 const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_OIDC_CLIENT_ID as string | undefined) ?? "";
 const GOOGLE_REDIRECT_URI =
   (import.meta.env.VITE_GOOGLE_OIDC_REDIRECT_URI as string | undefined) ?? "";
+const PENDING_OAUTH_STORAGE_KEY = "wg.pendingOAuth";
 
 const app = document.getElementById("app")!;
 
 app.innerHTML = `
   <h1>WG Desktop VPN</h1>
-  <p class="subtitle">Sign in with Google, choose a device, then pick location and connect.</p>
+  <p class="subtitle">Sign in with Google, select device, choose location, then connect and disconnect VPN.</p>
   <div class="layout">
     <section class="card">
       <h2>1. Google Login</h2>
-      <p class="section-note">Sign in via browser, then paste the redirect URL you land on.</p>
-      <div class="grid one-col">
-        <div><label>OAuth callback URL</label><input id="callback_url" placeholder="https://.../?code=..." /></div>
-      </div>
+      <p class="section-note">Continue to Google, sign in, and return to the app automatically.</p>
       <div class="actions">
         <button id="btn-google-start">Sign Up / Log In With Google</button>
-        <button id="btn-google-complete" class="ok">Complete Login</button>
         <button id="btn-restore" class="secondary">Restore Session</button>
         <button id="btn-logout" class="danger">Logout</button>
       </div>
@@ -63,6 +60,7 @@ app.innerHTML = `
       <fieldset id="session-section" class="step-fieldset">
         <h2 style="margin-top:14px">3. Location & Connection</h2>
         <p class="section-note">Choose VPN location and connect.</p>
+        <div id="connection-banner" class="connection-banner disconnected">Disconnected</div>
         <div class="grid">
           <div>
             <label>Region</label>
@@ -108,11 +106,11 @@ const el = (id: string) => document.getElementById(id) as HTMLInputElement;
 const deviceSection = document.getElementById("device-section") as HTMLFieldSetElement;
 const sessionSection = document.getElementById("session-section") as HTMLFieldSetElement;
 const googleStartBtn = document.getElementById("btn-google-start") as HTMLButtonElement;
-const googleCompleteBtn = document.getElementById("btn-google-complete") as HTMLButtonElement;
 const restoreBtn = document.getElementById("btn-restore") as HTMLButtonElement;
 const logoutBtn = document.getElementById("btn-logout") as HTMLButtonElement;
 const connectBtn = document.getElementById("btn-connect") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("btn-disconnect") as HTMLButtonElement;
+const connectionBanner = document.getElementById("connection-banner") as HTMLDivElement;
 
 function appendLog(line: string) {
   const ts = new Date().toISOString();
@@ -122,10 +120,16 @@ function appendLog(line: string) {
 function renderStatus() {
   if (!status) {
     statusEl.innerHTML = "<div class='status-row'><span class='key'>state</span><span>unknown</span></div>";
+    connectionBanner.textContent = "Disconnected";
+    connectionBanner.classList.remove("connected");
+    connectionBanner.classList.add("disconnected");
     return;
   }
   const connectionState = status.active_session_key ? "Connected" : "Disconnected";
   const authState = status.authenticated ? "Authenticated" : "Signed out";
+  connectionBanner.textContent = connectionState;
+  connectionBanner.classList.toggle("connected", Boolean(status.active_session_key));
+  connectionBanner.classList.toggle("disconnected", !status.active_session_key);
   statusEl.innerHTML = `
     <div class="status-row"><span class="key">auth</span><span>${authState}</span></div>
     <div class="status-row"><span class="key">connection</span><span>${connectionState}</span></div>
@@ -147,7 +151,6 @@ function syncInteractivity() {
   connectBtn.disabled = !hasAuth || !hasDevice || hasSession;
   disconnectBtn.disabled = !hasSession;
   googleStartBtn.disabled = hasAuth;
-  googleCompleteBtn.disabled = hasAuth || !pendingOAuth;
   el("selected_device").value = status?.selected_device_id ?? "";
 }
 
@@ -171,17 +174,111 @@ async function sha256Base64Url(input: string): Promise<string> {
   return toBase64Url(new Uint8Array(digest));
 }
 
-function parseCodeAndStateFromCallback(raw: string): { code: string; state: string | null } {
-  const value = raw.trim();
-  if (!value) {
-    throw new Error("missing_callback_url");
-  }
-  const url = new URL(value);
+function parseCodeAndStateFromCallbackUrl(url: URL): { code: string; state: string | null } {
   const code = url.searchParams.get("code");
   if (!code) {
-    throw new Error("missing_oauth_code_in_callback_url");
+    throw new Error("missing_oauth_code_in_callback");
   }
   return { code, state: url.searchParams.get("state") };
+}
+
+function loadPendingOAuthFromStorage(): PendingOAuth | null {
+  const raw = localStorage.getItem(PENDING_OAUTH_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as PendingOAuth;
+    if (!parsed.codeVerifier || !parsed.nonce || !parsed.state) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function savePendingOAuthToStorage(value: PendingOAuth): void {
+  localStorage.setItem(PENDING_OAUTH_STORAGE_KEY, JSON.stringify(value));
+}
+
+function clearPendingOAuthFromStorage(): void {
+  localStorage.removeItem(PENDING_OAUTH_STORAGE_KEY);
+}
+
+function cleanupOAuthQueryParams(): void {
+  const current = new URL(window.location.href);
+  const params = current.searchParams;
+  const keys = ["code", "state", "scope", "authuser", "prompt", "hd"];
+  let changed = false;
+  for (const key of keys) {
+    if (params.has(key)) {
+      params.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) {
+    const next = `${current.pathname}${params.toString() ? `?${params.toString()}` : ""}${current.hash}`;
+    window.history.replaceState({}, document.title, next);
+  }
+}
+
+async function maybeCompleteOAuthFromReturnUrl() {
+  const current = new URL(window.location.href);
+  if (!current.searchParams.has("code")) {
+    pendingOAuth = loadPendingOAuthFromStorage();
+    return;
+  }
+
+  const code = current.searchParams.get("code");
+  const returnedState = current.searchParams.get("state");
+  if (!code || !returnedState) {
+    appendLog("google_oauth_complete: ignored (missing code/state)");
+    clearPendingOAuthFromStorage();
+    pendingOAuth = null;
+    cleanupOAuthQueryParams();
+    return;
+  }
+
+  const callback = parseCodeAndStateFromCallbackUrl(current);
+  const pending = loadPendingOAuthFromStorage();
+  if (!pending) {
+    appendLog("google_oauth_complete: ignored (oauth_not_started)");
+    cleanupOAuthQueryParams();
+    return;
+  }
+  if (callback.state !== pending.state) {
+    appendLog("google_oauth_complete: ignored (oauth_state_mismatch)");
+    clearPendingOAuthFromStorage();
+    pendingOAuth = null;
+    cleanupOAuthQueryParams();
+    return;
+  }
+
+  try {
+    status = await invoke<UiStatus>("oauth_login", {
+      input: {
+        provider: "google",
+        code: callback.code,
+        codeVerifier: pending.codeVerifier,
+        nonce: pending.nonce,
+      },
+    });
+  } catch (e) {
+    appendLog(`google_oauth_complete: ${String(e)}`);
+    clearPendingOAuthFromStorage();
+    pendingOAuth = null;
+    cleanupOAuthQueryParams();
+    return;
+  }
+
+  pendingOAuth = null;
+  clearPendingOAuthFromStorage();
+  cleanupOAuthQueryParams();
+  renderStatus();
+  syncInteractivity();
+  appendLog("google_oauth_complete: ok");
+  await refreshDevices();
 }
 
 function renderDevices() {
@@ -266,6 +363,7 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     const nonce = randomUrlSafeString(24);
     const state = randomUrlSafeString(24);
     pendingOAuth = { codeVerifier, nonce, state };
+    savePendingOAuthToStorage(pendingOAuth);
 
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
@@ -277,36 +375,10 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     authUrl.searchParams.set("nonce", nonce);
     authUrl.searchParams.set("state", state);
 
-    window.open(authUrl.toString(), "_blank", "noopener,noreferrer");
+    appendLog(`google_oauth_start_url: ${authUrl.toString()}`);
+    appendLog("google_oauth_start: redirecting to Google sign in");
     syncInteractivity();
-    appendLog("google_oauth_start: browser opened; paste callback URL then click Complete Login");
-  }),
-);
-
-document.getElementById("btn-google-complete")!.addEventListener("click", () =>
-  safe("google_oauth_complete", async () => {
-    if (!pendingOAuth) {
-      throw new Error("oauth_not_started");
-    }
-
-    const callback = parseCodeAndStateFromCallback(el("callback_url").value);
-    if (callback.state !== pendingOAuth.state) {
-      throw new Error("oauth_state_mismatch");
-    }
-
-    status = await invoke<UiStatus>("oauth_login", {
-      input: {
-        provider: "google",
-        code: callback.code,
-        codeVerifier: pendingOAuth.codeVerifier,
-        nonce: pendingOAuth.nonce,
-      },
-    });
-    pendingOAuth = null;
-    el("callback_url").value = "";
-    renderStatus();
-    syncInteractivity();
-    await refreshDevices();
+    window.location.assign(authUrl.toString());
   }),
 );
 
@@ -369,5 +441,6 @@ document.getElementById("btn-disconnect")!.addEventListener("click", () =>
 
 safe("init", async () => {
   await refreshStatus();
+  await maybeCompleteOAuthFromReturnUrl();
   await refreshDevices();
 });

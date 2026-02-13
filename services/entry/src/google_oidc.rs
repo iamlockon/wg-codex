@@ -76,6 +76,14 @@ pub enum OidcError {
     UnknownKeyId,
     #[error("invalid_nonce")]
     InvalidNonce,
+    #[error("token_exchange_failed status={status} code={error}")]
+    TokenExchange {
+        status: u16,
+        error: String,
+        description: Option<String>,
+    },
+    #[error("jwks_fetch_failed status={status}")]
+    JwksFetch { status: u16 },
     #[error("http_error")]
     Http(#[from] reqwest::Error),
     #[error("jwt_error")]
@@ -86,6 +94,12 @@ pub enum OidcError {
 struct GoogleTokenResponse {
     _access_token: String,
     id_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleErrorResponse {
+    error: String,
+    error_description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -143,11 +157,29 @@ async fn exchange_code(
         params.push(("code_verifier", code_verifier.to_string()));
     }
 
-    http.post(&config.token_url)
+    let response = http
+        .post(&config.token_url)
         .form(&params)
         .send()
-        .await?
-        .error_for_status()?
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        let parsed = serde_json::from_str::<GoogleErrorResponse>(&body).ok();
+        return Err(OidcError::TokenExchange {
+            status,
+            error: parsed
+                .as_ref()
+                .map(|e| e.error.clone())
+                .unwrap_or_else(|| "unknown_error".to_string()),
+            description: parsed
+                .and_then(|e| e.error_description)
+                .or_else(|| (!body.trim().is_empty()).then_some(body)),
+        });
+    }
+
+    response
         .json::<GoogleTokenResponse>()
         .await
         .map_err(OidcError::from)
@@ -161,13 +193,13 @@ async fn validate_id_token(
 ) -> Result<GoogleIdentity, OidcError> {
     let header = decode_header(id_token)?;
     let kid = header.kid.ok_or(OidcError::MissingKeyId)?;
-    let jwks = http
-        .get(&config.jwks_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<GoogleJwks>()
-        .await?;
+    let jwks_response = http.get(&config.jwks_url).send().await?;
+    if !jwks_response.status().is_success() {
+        return Err(OidcError::JwksFetch {
+            status: jwks_response.status().as_u16(),
+        });
+    }
+    let jwks = jwks_response.json::<GoogleJwks>().await?;
 
     let key = jwks
         .keys

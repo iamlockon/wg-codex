@@ -90,7 +90,7 @@ npm run tauri:dev
 ```
 
 3. Use the in-app flow:
-- paste OAuth callback code and click `Login`,
+- click `Sign Up / Log In With Google` and complete Google auth; app returns as logged in,
 - register/select device,
 - connect/disconnect,
 - logout or restore+reconnect.

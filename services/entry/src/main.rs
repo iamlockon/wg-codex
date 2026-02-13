@@ -2230,7 +2230,39 @@ fn map_oidc_error(err: OidcError) -> ApiError {
         | OidcError::UnknownKeyId
         | OidcError::InvalidNonce
         | OidcError::Jwt(_) => ApiError::unauthorized("oauth_invalid_identity"),
-        OidcError::Http(_) => ApiError::service_unavailable("oauth_provider_unreachable"),
+        OidcError::TokenExchange {
+            status,
+            error,
+            description,
+        } => {
+            warn!(
+                status,
+                oauth_error = %error,
+                oauth_error_description = ?description,
+                "google token exchange failed"
+            );
+            match (status, error.as_str()) {
+                (400, "invalid_grant") => ApiError::unauthorized("oauth_invalid_grant"),
+                (400, "redirect_uri_mismatch") => {
+                    ApiError::unauthorized("oauth_redirect_uri_mismatch")
+                }
+                (401, "invalid_client") => ApiError::service_unavailable("oauth_invalid_client"),
+                _ if (400..500).contains(&status) => ApiError::unauthorized("oauth_invalid_identity"),
+                _ => ApiError::service_unavailable("oauth_provider_unreachable"),
+            }
+        }
+        OidcError::JwksFetch { status } => {
+            warn!(status, "google jwks fetch failed");
+            if (400..500).contains(&status) {
+                ApiError::unauthorized("oauth_invalid_identity")
+            } else {
+                ApiError::service_unavailable("oauth_provider_unreachable")
+            }
+        }
+        OidcError::Http(http_err) => {
+            warn!(error = %http_err, "google oidc transport failure");
+            ApiError::service_unavailable("oauth_provider_unreachable")
+        }
     }
 }
 

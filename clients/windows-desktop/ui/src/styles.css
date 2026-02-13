@@ -90,6 +90,27 @@ input, select {
   margin-top: 10px;
 }
 
+.connection-banner {
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.connection-banner.connected {
+  background: #e9f9f3;
+  border-color: #9fdec4;
+  color: #09593f;
+}
+
+.connection-banner.disconnected {
+  background: #fff0e8;
+  border-color: #f2b79a;
+  color: #8f2d00;
+}
+
 button {
   border: 0;
   border-radius: 8px;
