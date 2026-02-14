@@ -964,6 +964,8 @@ struct OAuthCallbackResponse {
     provider: String,
     customer_id: Uuid,
     access_token: String,
+    email: Option<String>,
+    name: Option<String>,
 }
 
 async fn oauth_callback(
@@ -984,7 +986,7 @@ async fn oauth_callback(
         return Err(ApiError::bad_request("missing_oauth_code_verifier"));
     }
 
-    let (subject, email) = match provider {
+    let (subject, email, name) = match provider {
         OAuthProvider::Google => {
             let google_oidc = state
                 .google_oidc
@@ -999,7 +1001,7 @@ async fn oauth_callback(
             )
             .await
             .map_err(map_oidc_error)?;
-            (identity.sub, identity.email)
+            (identity.sub, identity.email, identity.name)
         }
     };
 
@@ -1029,6 +1031,8 @@ async fn oauth_callback(
         provider: provider.as_str().to_string(),
         customer_id,
         access_token,
+        email,
+        name,
     }))
 }
 

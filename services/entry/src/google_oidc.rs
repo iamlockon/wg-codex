@@ -64,6 +64,7 @@ fn read_env_or_file(name: &str) -> Option<String> {
 pub struct GoogleIdentity {
     pub sub: String,
     pub email: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -126,6 +127,7 @@ struct GoogleClaims {
     _iss: String,
     nonce: Option<String>,
     email: Option<String>,
+    name: Option<String>,
 }
 
 pub async fn authenticate_google(
@@ -224,6 +226,7 @@ async fn validate_id_token(
     Ok(GoogleIdentity {
         sub: claims.sub,
         email: claims.email,
+        name: claims.name,
     })
 }
 

@@ -28,6 +28,10 @@ struct PersistedState {
 struct PersistedAuthState {
     customer_id: String,
     access_token_dpapi_hex: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl DpapiFileSecureStorage {
@@ -72,6 +76,8 @@ impl SecureStorage for DpapiFileSecureStorage {
                 Some(AuthState {
                     customer_id: auth.customer_id,
                     access_token,
+                    email: auth.email,
+                    name: auth.name,
                 })
             }
         };
@@ -85,6 +91,8 @@ impl SecureStorage for DpapiFileSecureStorage {
         state.auth = Some(PersistedAuthState {
             customer_id: auth.customer_id.clone(),
             access_token_dpapi_hex: encode_hex(&encrypted),
+            email: auth.email.clone(),
+            name: auth.name.clone(),
         });
         self.save_state(&state)
     }

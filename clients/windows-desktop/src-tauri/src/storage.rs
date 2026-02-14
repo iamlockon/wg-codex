@@ -30,6 +30,10 @@ struct PersistedState {
 struct PersistedAuthState {
     customer_id: String,
     access_token_obfuscated: String,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl FileSecureStorage {
@@ -106,6 +110,8 @@ impl SecureStorage for FileSecureStorage {
             Some(auth) => Some(AuthState {
                 customer_id: auth.customer_id,
                 access_token: self.deobfuscate(&auth.access_token_obfuscated)?,
+                email: auth.email,
+                name: auth.name,
             }),
         };
         Ok(auth)
@@ -117,6 +123,8 @@ impl SecureStorage for FileSecureStorage {
         state.auth = Some(PersistedAuthState {
             customer_id: auth.customer_id.clone(),
             access_token_obfuscated: self.obfuscate(&auth.access_token),
+            email: auth.email.clone(),
+            name: auth.name.clone(),
         });
         self.save_state(&state)
     }
@@ -169,6 +177,8 @@ mod tests {
         let auth = AuthState {
             customer_id: "cust-1".to_string(),
             access_token: "secret-token-value".to_string(),
+            email: Some("tester@example.com".to_string()),
+            name: Some("Tester".to_string()),
         };
         storage.save_auth_state(&auth).expect("save state");
         let raw = fs::read_to_string(&path).expect("read state file");

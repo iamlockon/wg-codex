@@ -57,6 +57,10 @@ pub struct OAuthCallbackResponse {
     pub provider: String,
     pub customer_id: String,
     pub access_token: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 type UiStatus = {
   authenticated: boolean;
   customer_id: string | null;
+  email: string | null;
+  name: string | null;
   selected_device_id: string | null;
   active_session_key: string | null;
   last_region: string | null;
@@ -36,6 +38,7 @@ app.innerHTML = `
     <section class="card">
       <h2>1. Google Login</h2>
       <p class="section-note">Continue to Google, sign in, and return to the app automatically.</p>
+      <div id="google-login-identity" class="section-note">Not signed in</div>
       <div class="actions">
         <button id="btn-google-start">Sign Up / Log In With Google</button>
         <button id="btn-restore" class="secondary">Restore Session</button>
@@ -100,6 +103,7 @@ const sessionSection = document.getElementById("session-section") as HTMLFieldSe
 const googleStartBtn = document.getElementById("btn-google-start") as HTMLButtonElement;
 const restoreBtn = document.getElementById("btn-restore") as HTMLButtonElement;
 const logoutBtn = document.getElementById("btn-logout") as HTMLButtonElement;
+const googleLoginIdentityEl = document.getElementById("google-login-identity") as HTMLDivElement;
 const createDeviceBtn = document.getElementById("btn-create-device") as HTMLButtonElement;
 const connectBtn = document.getElementById("btn-connect") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("btn-disconnect") as HTMLButtonElement;
@@ -116,6 +120,7 @@ function renderStatus() {
     connectionBanner.textContent = "Disconnected";
     connectionBanner.classList.remove("connected");
     connectionBanner.classList.add("disconnected");
+    googleLoginIdentityEl.textContent = "Not signed in";
     return;
   }
   const connectionState = status.active_session_key ? "Connected" : "Disconnected";
@@ -131,6 +136,12 @@ function renderStatus() {
     <div class="status-row"><span class="key">session_key</span><span>${status.active_session_key ?? "-"}</span></div>
     <div class="status-row"><span class="key">last_region</span><span>${status.last_region ?? "-"}</span></div>
   `;
+  if (status.authenticated) {
+    const identity = status.name || status.email || status.customer_id || "unknown user";
+    googleLoginIdentityEl.textContent = `Signed in as ${identity}`;
+  } else {
+    googleLoginIdentityEl.textContent = "Not signed in";
+  }
 }
 
 function syncInteractivity() {
@@ -400,6 +411,7 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     authUrl.searchParams.set("code_challenge_method", "S256");
     authUrl.searchParams.set("nonce", nonce);
     authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("prompt", "select_account");
 
     appendLog(`google_oauth_start_url: ${authUrl.toString()}`);
     appendLog("google_oauth_start: redirecting to Google sign in");

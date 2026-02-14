@@ -90,6 +90,8 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
         self.auth = Some(AuthState {
             customer_id: response.customer_id,
             access_token: response.access_token,
+            email: response.email,
+            name: response.name,
         });
         self.storage
             .save_auth_state(self.auth.as_ref().expect("just set"))
@@ -577,6 +579,8 @@ mod tests {
             provider: "google".to_string(),
             customer_id: state.customer_id,
             access_token: state.token,
+            email: Some("tester@example.com".to_string()),
+            name: Some("Test User".to_string()),
         }))
     }
 

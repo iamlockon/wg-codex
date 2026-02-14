@@ -5,6 +5,8 @@ use std::collections::HashMap;
 pub struct AuthState {
     pub customer_id: String,
     pub access_token: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

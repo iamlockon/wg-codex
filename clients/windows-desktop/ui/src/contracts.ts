@@ -75,4 +75,6 @@ export interface OAuthCallbackResponse {
   provider: string;
   customer_id: string;
   access_token: string;
+  email?: string;
+  name?: string;
 }

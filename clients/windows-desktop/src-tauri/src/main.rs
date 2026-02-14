@@ -46,6 +46,8 @@ struct AppState {
 struct UiStatus {
     authenticated: bool,
     customer_id: Option<String>,
+    email: Option<String>,
+    name: Option<String>,
     selected_device_id: Option<String>,
     active_session_key: Option<String>,
     last_region: Option<String>,
@@ -133,7 +135,9 @@ fn to_ui_status(client: &ClientType) -> UiStatus {
     let runtime = client.runtime_state().clone();
     UiStatus {
         authenticated: auth.is_some(),
-        customer_id: auth.map(|a: AuthState| a.customer_id),
+        customer_id: auth.as_ref().map(|a: &AuthState| a.customer_id.clone()),
+        email: auth.as_ref().and_then(|a: &AuthState| a.email.clone()),
+        name: auth.as_ref().and_then(|a: &AuthState| a.name.clone()),
         selected_device_id: runtime.selected_device_id,
         active_session_key: runtime.last_session_key,
         last_region: runtime.last_region,
