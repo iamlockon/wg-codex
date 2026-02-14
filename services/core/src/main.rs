@@ -448,6 +448,14 @@ impl ControlPlane for CoreService {
 
         if let Err(err) = self.dataplane.connect_peer(&peer).await {
             self.set_healthy(false);
+            warn!(
+                customer_id = %customer_id,
+                session_key = %req.session_key,
+                region = %req.region,
+                device_id = %req.device_id,
+                error = %err,
+                "dataplane connect failed"
+            );
             let mut runtime = self.runtime.write().await;
             runtime.ip_pool.release_for(customer_id);
             return Err(Status::new(
