@@ -191,11 +191,15 @@ async fn register_default_device(state: tauri::State<'_, AppState>) -> Result<De
     let _guard = state.op_lock.lock().await;
     let mut client = build_client(&state.config)?;
     let name = default_device_name();
-    let public_key = generate_wireguard_public_key();
-    client
+    let (private_key, public_key) = generate_wireguard_keypair();
+    let device = client
         .register_device(&name, &public_key)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    client
+        .remember_device_private_key(device.id.clone(), private_key)
+        .map_err(|e| e.to_string())?;
+    Ok(device)
 }
 
 #[tauri::command]
@@ -227,7 +231,7 @@ async fn connect(
 
 #[tauri::command]
 async fn disconnect(state: tauri::State<'_, AppState>) -> Result<UiStatus, String> {
-    let _guard = state.op_lock.lock().await;
+    // Keep disconnect independent from op_lock so users can always force local teardown.
     let mut client = build_client(&state.config)?;
     client.disconnect().await.map_err(|e| e.to_string())?;
     Ok(to_ui_status(&client))
@@ -295,10 +299,13 @@ fn default_device_name() -> String {
     format!("desktop-{}", host.to_lowercase())
 }
 
-fn generate_wireguard_public_key() -> String {
+fn generate_wireguard_keypair() -> (String, String) {
     let private_key = StaticSecret::random_from_rng(OsRng);
     let public_key = PublicKey::from(&private_key);
-    STANDARD.encode(public_key.as_bytes())
+    (
+        STANDARD.encode(private_key.to_bytes()),
+        STANDARD.encode(public_key.as_bytes()),
+    )
 }
 
 fn main() {

@@ -58,6 +58,17 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
             .map_err(|e| ClientError::Storage(e.to_string()))
     }
 
+    pub fn remember_device_private_key(
+        &mut self,
+        device_id: String,
+        private_key: String,
+    ) -> Result<(), ClientError> {
+        self.runtime.device_private_keys.insert(device_id, private_key);
+        self.storage
+            .save_runtime_state(&self.runtime)
+            .map_err(|e| ClientError::Storage(e.to_string()))
+    }
+
     pub async fn login_oauth_callback(
         &mut self,
         provider: &str,
@@ -138,8 +149,11 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
             StartSessionResponse::Active {
                 session_key,
                 region,
-                config,
+                mut config,
             } => {
+                if let Some(private_key) = self.runtime.device_private_keys.get(&device_id).cloned() {
+                    config.client_private_key = Some(private_key);
+                }
                 self.tunnel
                     .apply_and_up(&config)
                     .map_err(|e| ClientError::Tunnel(e.to_string()))?;
@@ -158,7 +172,7 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
                     .start_session(
                         token,
                         StartSessionRequest {
-                            device_id,
+                            device_id: device_id.clone(),
                             region: region.to_string(),
                             country_code: None,
                             city_code: None,
@@ -175,8 +189,11 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
             StartSessionResponse::Active {
                 session_key,
                 region,
-                config,
+                mut config,
             } => {
+                if let Some(private_key) = self.runtime.device_private_keys.get(&device_id).cloned() {
+                    config.client_private_key = Some(private_key);
+                }
                 self.tunnel
                     .apply_and_up(&config)
                     .map_err(|e| ClientError::Tunnel(e.to_string()))?;
@@ -195,17 +212,27 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
     }
 
     pub async fn disconnect(&mut self) -> Result<(), ClientError> {
-        let token = self.access_token()?;
-        if let Some(session_key) = self.runtime.last_session_key.clone() {
-            self.api.terminate_session(token, &session_key).await?;
-        }
+        let token = self.auth.as_ref().map(|auth| auth.access_token.clone());
+        let session_key = self.runtime.last_session_key.clone();
         self.tunnel
             .down()
             .map_err(|e| ClientError::Tunnel(e.to_string()))?;
         self.runtime.last_session_key = None;
         self.storage
             .save_runtime_state(&self.runtime)
-            .map_err(|e| ClientError::Storage(e.to_string()))
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        if let (Some(token), Some(session_key)) = (token, session_key) {
+            let api = self.api.clone();
+            tokio::spawn(async move {
+                if let Err(err) = api.terminate_session(&token, &session_key).await {
+                    tracing::warn!(
+                        "best-effort session termination failed during disconnect: {}",
+                        err
+                    );
+                }
+            });
+        }
+        Ok(())
     }
 
     pub async fn logout(&mut self) -> Result<(), ClientError> {
@@ -474,6 +501,31 @@ mod tests {
         assert!(tunnel_probe.events().iter().any(|e| e.starts_with("up:")));
     }
 
+    #[tokio::test]
+    async fn disconnect_still_succeeds_when_terminate_session_fails() {
+        let (base_url, _guard) = run_mock_server().await;
+        let storage_path = unique_tmp_file("wg-desktop-disconnect-best-effort");
+        let storage = FileSecureStorage::new(storage_path, "k4".to_string());
+        let tunnel = RecordingTunnelController::default();
+        let tunnel_probe = tunnel.clone();
+        let mut client = DesktopClient::new(EntryApi::new(base_url), storage, tunnel).expect("client");
+
+        client
+            .login_oauth_callback("google", "ok-code", None, None)
+            .await
+            .expect("login");
+        let _ = client
+            .register_device("laptop", "pubkey")
+            .await
+            .expect("register");
+        let _ = client.connect("us-west1").await.expect("connect");
+
+        client.auth.as_mut().expect("auth").access_token = "bad-token".to_string();
+        client.disconnect().await.expect("disconnect must remain usable");
+        assert!(client.runtime_state().last_session_key.is_none());
+        assert!(tunnel_probe.events().iter().any(|e| e == "down"));
+    }
+
     async fn run_mock_server() -> (String, MockState) {
         let state = MockState {
             token: "token-abc".to_string(),
@@ -706,6 +758,7 @@ mod tests {
             dns_servers: vec!["1.1.1.1".to_string()],
             persistent_keepalive_secs: 25,
             qr_payload: "wgcfg".to_string(),
+            client_private_key: Some("test-private-key".to_string()),
         }
     }
 
