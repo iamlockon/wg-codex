@@ -1797,7 +1797,10 @@ async fn start_session(
                 client
                     .connect_device(request)
                     .await
-                    .map_err(|_| ApiError::service_unavailable("core_connect_failed"))?
+                    .map_err(|err| {
+                        warn!(error = %err, "entry->core connect_device failed");
+                        ApiError::service_unavailable("core_connect_failed")
+                    })?
                     .into_inner()
             };
             let config = connect_response
@@ -1861,7 +1864,10 @@ async fn start_session(
                 client
                     .connect_device(request)
                     .await
-                    .map_err(|_| ApiError::service_unavailable("core_connect_failed"))?
+                    .map_err(|err| {
+                        warn!(error = %err, "entry->core connect_device failed");
+                        ApiError::service_unavailable("core_connect_failed")
+                    })?
                     .into_inner()
             };
 

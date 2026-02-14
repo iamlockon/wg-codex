@@ -9,7 +9,9 @@ mod wireguard;
 
 use api::EntryApi;
 use auth::AuthState;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use models::Device;
+use rand_core::OsRng;
 use session::DesktopClient;
 #[cfg(not(windows))]
 use storage::FileSecureStorage;
@@ -19,6 +21,7 @@ use tokio::sync::Mutex;
 use wireguard::NoopTunnelController;
 #[cfg(windows)]
 use wireguard::WireGuardWindowsController;
+use x25519_dalek::{PublicKey, StaticSecret};
 
 #[derive(Clone)]
 struct AppConfig {
@@ -184,6 +187,18 @@ async fn register_device(
 }
 
 #[tauri::command]
+async fn register_default_device(state: tauri::State<'_, AppState>) -> Result<Device, String> {
+    let _guard = state.op_lock.lock().await;
+    let mut client = build_client(&state.config)?;
+    let name = default_device_name();
+    let public_key = generate_wireguard_public_key();
+    client
+        .register_device(&name, &public_key)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn select_device(
     state: tauri::State<'_, AppState>,
     input: SelectDeviceInput,
@@ -273,6 +288,19 @@ fn app_config() -> AppConfig {
     }
 }
 
+fn default_device_name() -> String {
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "desktop".to_string());
+    format!("desktop-{}", host.to_lowercase())
+}
+
+fn generate_wireguard_public_key() -> String {
+    let private_key = StaticSecret::random_from_rng(OsRng);
+    let public_key = PublicKey::from(&private_key);
+    STANDARD.encode(public_key.as_bytes())
+}
+
 fn main() {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let state = AppState {
@@ -292,6 +320,7 @@ fn main() {
             oauth_login,
             list_devices,
             register_device,
+            register_default_device,
             select_device,
             connect,
             disconnect,

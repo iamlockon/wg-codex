@@ -43,17 +43,10 @@ app.innerHTML = `
       </div>
 
       <fieldset id="device-section" class="step-fieldset">
-        <h2 style="margin-top:14px">2. Select Device</h2>
-        <p class="section-note">Pick an existing device or register this machine.</p>
+        <h2 style="margin-top:14px">2. Device (Auto)</h2>
+        <p class="section-note">This app auto-registers and auto-selects the current device.</p>
         <div class="actions">
           <button id="btn-list" class="secondary">Refresh Devices</button>
-        </div>
-        <div class="grid" style="margin-top:8px">
-          <div><label>New device name</label><input id="device_name" value="desktop" /></div>
-          <div><label>WireGuard public key</label><input id="device_pub" placeholder="base64 WireGuard public key" /></div>
-        </div>
-        <div class="actions">
-          <button id="btn-register" class="ok">Register Device</button>
         </div>
       </fieldset>
 
@@ -85,9 +78,6 @@ app.innerHTML = `
       <h2>Status</h2>
       <div id="status"></div>
 
-      <h2 style="margin-top:14px">Devices</h2>
-      <ul class="list" id="devices"></ul>
-
       <h2 style="margin-top:14px">Log</h2>
       <div class="log" id="log"></div>
     </section>
@@ -96,7 +86,7 @@ app.innerHTML = `
 
 const logEl = document.getElementById("log")!;
 const statusEl = document.getElementById("status")!;
-const devicesEl = document.getElementById("devices")!;
+const devicesEl = document.getElementById("devices");
 
 let devices: Device[] = [];
 let status: UiStatus | null = null;
@@ -183,7 +173,7 @@ function parseCodeAndStateFromCallbackUrl(url: URL): { code: string; state: stri
 }
 
 function loadPendingOAuthFromStorage(): PendingOAuth | null {
-  const raw = localStorage.getItem(PENDING_OAUTH_STORAGE_KEY);
+  const raw = sessionStorage.getItem(PENDING_OAUTH_STORAGE_KEY);
   if (!raw) {
     return null;
   }
@@ -199,11 +189,11 @@ function loadPendingOAuthFromStorage(): PendingOAuth | null {
 }
 
 function savePendingOAuthToStorage(value: PendingOAuth): void {
-  localStorage.setItem(PENDING_OAUTH_STORAGE_KEY, JSON.stringify(value));
+  sessionStorage.setItem(PENDING_OAUTH_STORAGE_KEY, JSON.stringify(value));
 }
 
 function clearPendingOAuthFromStorage(): void {
-  localStorage.removeItem(PENDING_OAUTH_STORAGE_KEY);
+  sessionStorage.removeItem(PENDING_OAUTH_STORAGE_KEY);
 }
 
 function cleanupOAuthQueryParams(): void {
@@ -223,6 +213,12 @@ function cleanupOAuthQueryParams(): void {
   }
 }
 
+function clearOAuthTransientState(): void {
+  clearPendingOAuthFromStorage();
+  pendingOAuth = null;
+  cleanupOAuthQueryParams();
+}
+
 async function maybeCompleteOAuthFromReturnUrl() {
   const current = new URL(window.location.href);
   if (!current.searchParams.has("code")) {
@@ -234,9 +230,7 @@ async function maybeCompleteOAuthFromReturnUrl() {
   const returnedState = current.searchParams.get("state");
   if (!code || !returnedState) {
     appendLog("google_oauth_complete: ignored (missing code/state)");
-    clearPendingOAuthFromStorage();
-    pendingOAuth = null;
-    cleanupOAuthQueryParams();
+    clearOAuthTransientState();
     return;
   }
 
@@ -249,9 +243,7 @@ async function maybeCompleteOAuthFromReturnUrl() {
   }
   if (callback.state !== pending.state) {
     appendLog("google_oauth_complete: ignored (oauth_state_mismatch)");
-    clearPendingOAuthFromStorage();
-    pendingOAuth = null;
-    cleanupOAuthQueryParams();
+    clearOAuthTransientState();
     return;
   }
 
@@ -266,15 +258,11 @@ async function maybeCompleteOAuthFromReturnUrl() {
     });
   } catch (e) {
     appendLog(`google_oauth_complete: ${String(e)}`);
-    clearPendingOAuthFromStorage();
-    pendingOAuth = null;
-    cleanupOAuthQueryParams();
+    clearOAuthTransientState();
     return;
   }
 
-  pendingOAuth = null;
-  clearPendingOAuthFromStorage();
-  cleanupOAuthQueryParams();
+  clearOAuthTransientState();
   renderStatus();
   syncInteractivity();
   appendLog("google_oauth_complete: ok");
@@ -282,6 +270,9 @@ async function maybeCompleteOAuthFromReturnUrl() {
 }
 
 function renderDevices() {
+  if (!devicesEl) {
+    return;
+  }
   devicesEl.innerHTML = "";
   if (!devices.length) {
     const li = document.createElement("li");
@@ -297,33 +288,36 @@ function renderDevices() {
     li.innerHTML = `
       <div class="device-main">
         <strong>${d.name}</strong>
-        <span class="device-meta">${created}</span>
+        <span class="device-meta">${selected ? "Auto-selected" : created}</span>
       </div>
       <div class="device-id">${d.id}</div>
-      <div class="actions">
-        <button class="${selected ? "secondary" : "ok"}" data-device-id="${d.id}" ${selected ? "disabled" : ""}>
-          ${selected ? "Selected" : "Select"}
-        </button>
-      </div>
     `;
     devicesEl.appendChild(li);
   }
-  devicesEl.querySelectorAll("button[data-device-id]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const deviceId = (btn as HTMLButtonElement).dataset.deviceId;
-      if (!deviceId) {
-        return;
-      }
-      void safe("select_device", async () => {
-        status = await invoke<UiStatus>("select_device", {
-          input: { deviceId },
-        });
-        renderStatus();
-        renderDevices();
-        syncInteractivity();
-      });
-    });
+}
+
+async function ensureAutoSelectedDevice() {
+  if (!status?.authenticated || !devices.length) {
+    return;
+  }
+
+  if (
+    status.selected_device_id &&
+    devices.some((d) => d.id === status?.selected_device_id)
+  ) {
+    return;
+  }
+
+  const preferred = [...devices].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  )[0];
+  status = await invoke<UiStatus>("select_device", {
+    input: { deviceId: preferred.id },
   });
+  appendLog(`auto_selected_device: ${preferred.id}`);
+  renderStatus();
+  syncInteractivity();
+  renderDevices();
 }
 
 async function refreshStatus() {
@@ -339,6 +333,13 @@ async function refreshDevices() {
     return;
   }
   devices = await invoke<Device[]>("list_devices");
+  if (!devices.length) {
+    const created = await invoke<Device>("register_default_device");
+    appendLog(`register_default_device: ${created.id}`);
+    devices = [created];
+    await refreshStatus();
+  }
+  await ensureAutoSelectedDevice();
   renderDevices();
 }
 
@@ -347,6 +348,9 @@ async function safe(name: string, fn: () => Promise<void>) {
     await fn();
     appendLog(`${name}: ok`);
   } catch (e) {
+    if (name.startsWith("google_oauth")) {
+      clearOAuthTransientState();
+    }
     appendLog(`${name}: ${String(e)}`);
   }
 }
@@ -385,6 +389,7 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
 document.getElementById("btn-logout")!.addEventListener("click", () =>
   safe("logout", async () => {
     status = await invoke<UiStatus>("logout");
+    clearOAuthTransientState();
     devices = [];
     renderStatus();
     renderDevices();
@@ -397,21 +402,6 @@ document.getElementById("btn-restore")!.addEventListener("click", () =>
     status = await invoke<UiStatus>("restore_and_reconnect");
     renderStatus();
     syncInteractivity();
-    await refreshDevices();
-  }),
-);
-
-document.getElementById("btn-register")!.addEventListener("click", () =>
-  safe("register_device", async () => {
-    const device = await invoke<Device>("register_device", {
-      input: {
-        name: el("device_name").value,
-        publicKey: el("device_pub").value,
-      },
-    });
-    devices = [device, ...devices.filter((d) => d.id !== device.id)];
-    renderDevices();
-    await refreshStatus();
     await refreshDevices();
   }),
 );

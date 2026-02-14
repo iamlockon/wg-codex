@@ -1,6 +1,7 @@
 use crate::models::WireGuardClientConfig;
 use anyhow::{Context, Result};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -153,10 +154,50 @@ impl TunnelController for WireGuardWindowsController {
     }
 
     fn down(&self) -> Result<()> {
-        self.run_wireguard_command(&[
+        if !self.wireguard_exe.exists() {
+            // In dev/broken runtime setups we should not block logout when WireGuard binary is absent.
+            return Ok(());
+        }
+
+        let args = vec![
             "/uninstalltunnelservice".to_string(),
             self.tunnel_name.clone(),
-        ])
+        ];
+        let output = match Command::new(&self.wireguard_exe).args(&args).output() {
+            Ok(output) => output,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to execute WireGuard command {:?} {:?}",
+                        self.wireguard_exe, args
+                    )
+                });
+            }
+        };
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        if stderr.contains("service does not exist")
+            || stderr.contains("cannot find the file specified")
+            || stderr.contains("not installed")
+        {
+            // Treat missing tunnel service as already-disconnected.
+            return Ok(());
+        }
+
+        anyhow::bail!(
+            "WireGuard command failed with status {}: {}",
+            output
+                .status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string()),
+            stderr.trim()
+        );
     }
 }
 
