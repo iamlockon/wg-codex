@@ -39,6 +39,12 @@ pub struct WireGuardWindowsController {
     config_dir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub enum WindowsTunnelController {
+    Real(WireGuardWindowsController),
+    Noop(NoopTunnelController),
+}
+
 impl WireGuardWindowsController {
     pub fn new(
         tunnel_name: String,
@@ -102,6 +108,11 @@ impl WireGuardWindowsController {
             return Ok(());
         }
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_access_denied(stderr.as_ref()) {
+            anyhow::bail!(
+                "wireguard_permission_denied: WireGuard tunnel install requires Administrator rights. Run the app elevated (Run as administrator), or use WG_WINDOWS_NOOP_TUNNEL=1 for UI/API-only local testing."
+            );
+        }
         anyhow::bail!(
             "WireGuard command failed with status {}: {}",
             output
@@ -112,6 +123,11 @@ impl WireGuardWindowsController {
             stderr.trim()
         );
     }
+}
+
+fn is_access_denied(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("access is denied")
 }
 
 fn default_wireguard_exe_path() -> PathBuf {
@@ -204,6 +220,22 @@ impl TunnelController for WireGuardWindowsController {
                 .unwrap_or_else(|| "signal".to_string()),
             stderr.trim()
         );
+    }
+}
+
+impl TunnelController for WindowsTunnelController {
+    fn apply_and_up(&self, config: &WireGuardClientConfig) -> Result<()> {
+        match self {
+            Self::Real(controller) => controller.apply_and_up(config),
+            Self::Noop(controller) => controller.apply_and_up(config),
+        }
+    }
+
+    fn down(&self) -> Result<()> {
+        match self {
+            Self::Real(controller) => controller.down(),
+            Self::Noop(controller) => controller.down(),
+        }
     }
 }
 
@@ -306,6 +338,13 @@ mod tests {
         };
         let err = controller.render_config(&cfg).expect_err("must reject");
         assert!(err.to_string().contains("missing wireguard private key"));
+    }
+
+    #[test]
+    fn detect_access_denied_is_case_insensitive() {
+        assert!(is_access_denied("Error: Access is denied."));
+        assert!(is_access_denied("error:  access is denied."));
+        assert!(!is_access_denied("service does not exist"));
     }
 
     fn unique_tmp_dir(prefix: &str) -> PathBuf {

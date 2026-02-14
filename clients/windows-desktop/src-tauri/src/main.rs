@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 #[cfg(not(windows))]
 use wireguard::NoopTunnelController;
 #[cfg(windows)]
-use wireguard::WireGuardWindowsController;
+use wireguard::{NoopTunnelController, WireGuardWindowsController, WindowsTunnelController};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 #[derive(Clone)]
@@ -35,6 +35,8 @@ struct AppConfig {
     wireguard_exe: Option<std::path::PathBuf>,
     #[cfg(windows)]
     wireguard_config_dir: Option<std::path::PathBuf>,
+    #[cfg(windows)]
+    noop_tunnel: bool,
 }
 
 struct AppState {
@@ -103,7 +105,7 @@ fn state_file_path() -> std::path::PathBuf {
 
 #[cfg(windows)]
 type ClientType =
-    DesktopClient<storage_windows::DpapiFileSecureStorage, WireGuardWindowsController>;
+    DesktopClient<storage_windows::DpapiFileSecureStorage, WindowsTunnelController>;
 #[cfg(not(windows))]
 type ClientType = DesktopClient<FileSecureStorage, NoopTunnelController>;
 
@@ -118,11 +120,16 @@ fn build_client(config: &AppConfig) -> Result<ClientType, String> {
         FileSecureStorage::new(config.state_file_path.clone(), config.storage_key.clone());
 
     #[cfg(windows)]
-    let tunnel = WireGuardWindowsController::new(
-        config.tunnel_name.clone(),
-        config.wireguard_exe.clone(),
-        config.wireguard_config_dir.clone(),
-    );
+    let tunnel = if config.noop_tunnel {
+        tracing::warn!("WG_WINDOWS_NOOP_TUNNEL enabled; VPN tunnel actions are no-op");
+        WindowsTunnelController::Noop(NoopTunnelController::new(config.tunnel_name.clone()))
+    } else {
+        WindowsTunnelController::Real(WireGuardWindowsController::new(
+            config.tunnel_name.clone(),
+            config.wireguard_exe.clone(),
+            config.wireguard_config_dir.clone(),
+        ))
+    };
 
     #[cfg(not(windows))]
     let tunnel = NoopTunnelController::new("wg-client".to_string());
@@ -291,6 +298,14 @@ fn app_config() -> AppConfig {
         .ok()
         .map(std::path::PathBuf::from);
 
+    #[cfg(windows)]
+    let noop_tunnel = std::env::var("WG_WINDOWS_NOOP_TUNNEL")
+        .map(|v| {
+            let value = v.trim().to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes" || value == "on"
+        })
+        .unwrap_or(false);
+
     AppConfig {
         entry_base_url,
         state_file_path: state_file_path(),
@@ -302,6 +317,8 @@ fn app_config() -> AppConfig {
         wireguard_exe,
         #[cfg(windows)]
         wireguard_config_dir,
+        #[cfg(windows)]
+        noop_tunnel,
     }
 }
 
