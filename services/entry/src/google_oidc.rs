@@ -92,6 +92,7 @@ pub enum OidcError {
 
 #[derive(Deserialize)]
 struct GoogleTokenResponse {
+    #[serde(rename = "access_token")]
     _access_token: String,
     id_token: Option<String>,
 }
@@ -254,5 +255,18 @@ mod tests {
         };
         assert_eq!(cfg.token_url, DEFAULT_TOKEN_URL);
         assert_eq!(cfg.jwks_url, DEFAULT_JWKS_URL);
+    }
+
+    #[test]
+    fn token_response_deserializes_google_access_token_key() {
+        let json = r#"{
+            "access_token":"abc123",
+            "id_token":"header.payload.sig",
+            "expires_in":3599,
+            "token_type":"Bearer"
+        }"#;
+        let parsed: GoogleTokenResponse = serde_json::from_str(json).expect("valid token response");
+        assert_eq!(parsed._access_token, "abc123");
+        assert_eq!(parsed.id_token.as_deref(), Some("header.payload.sig"));
     }
 }
