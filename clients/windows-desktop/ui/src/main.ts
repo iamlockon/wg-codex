@@ -219,6 +219,21 @@ function clearOAuthTransientState(): void {
   cleanupOAuthQueryParams();
 }
 
+function isValidWireGuardPublicKey(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) {
+    return false;
+  }
+  try {
+    const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = atob(padded);
+    return decoded.length === 32;
+  } catch {
+    return false;
+  }
+}
+
 async function maybeCompleteOAuthFromReturnUrl() {
   const current = new URL(window.location.href);
   if (!current.searchParams.has("code")) {
@@ -301,14 +316,33 @@ async function ensureAutoSelectedDevice() {
     return;
   }
 
+  const validDevices = devices.filter((d) => isValidWireGuardPublicKey(d.public_key));
+  if (!validDevices.length) {
+    const created = await invoke<Device>("register_default_device");
+    appendLog(`register_default_device: ${created.id}`);
+    devices = [created, ...devices];
+    await refreshStatus();
+    renderDevices();
+    return ensureAutoSelectedDevice();
+  }
+
+  const selected = status.selected_device_id
+    ? devices.find((d) => d.id === status?.selected_device_id)
+    : undefined;
+  if (selected && !isValidWireGuardPublicKey(selected.public_key)) {
+    appendLog(`selected_device_invalid_key: ${selected.id}`);
+  }
+
   if (
+    selected &&
+    isValidWireGuardPublicKey(selected.public_key) &&
     status.selected_device_id &&
     devices.some((d) => d.id === status?.selected_device_id)
   ) {
     return;
   }
 
-  const preferred = [...devices].sort(
+  const preferred = [...validDevices].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
   )[0];
   status = await invoke<UiStatus>("select_device", {

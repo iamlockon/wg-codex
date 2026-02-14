@@ -237,7 +237,7 @@ impl DataPlane for LinuxShellDataPlane {
     async fn connect_peer(&self, peer: &PeerSpec) -> Result<(), String> {
         let uapi = self.uapi.clone();
         let public_key = peer.device_public_key.clone();
-        let allowed_ip = peer.assigned_ip.clone();
+        let allowed_ip = peer_allowed_ip(&peer.assigned_ip);
         task::spawn_blocking(move || uapi.set_peer(&public_key, Some(&allowed_ip), Some(25), false))
             .await
             .map_err(|err| format!("uapi connect join failure: {err}"))?
@@ -263,9 +263,10 @@ impl DataPlane for LinuxShellDataPlane {
 
             // Re-apply desired peer state (idempotent) to repair drift.
             for peer in &desired {
+                let allowed_ip = peer_allowed_ip(&peer.assigned_ip);
                 uapi.set_peer(
                     &peer.device_public_key,
-                    Some(&peer.assigned_ip),
+                    Some(&allowed_ip),
                     Some(25),
                     false,
                 )?;
@@ -281,6 +282,15 @@ impl DataPlane for LinuxShellDataPlane {
         })
         .await
         .map_err(|err| format!("uapi reconcile join failure: {err}"))?
+    }
+}
+
+fn peer_allowed_ip(assigned_ip: &str) -> String {
+    let ip = assigned_ip.split('/').next().unwrap_or(assigned_ip).trim();
+    if ip.contains(':') {
+        format!("{ip}/128")
+    } else {
+        format!("{ip}/32")
     }
 }
 
@@ -300,5 +310,12 @@ mod tests {
         rt.block_on(async move {
             dp.reconcile(&desired).await.expect("reconcile");
         });
+    }
+
+    #[test]
+    fn peer_allowed_ip_normalizes_to_host_prefix() {
+        assert_eq!(peer_allowed_ip("10.90.0.2/24"), "10.90.0.2/32");
+        assert_eq!(peer_allowed_ip("10.90.0.2"), "10.90.0.2/32");
+        assert_eq!(peer_allowed_ip("fd00::2/64"), "fd00::2/128");
     }
 }
