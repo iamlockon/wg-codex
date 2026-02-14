@@ -385,6 +385,11 @@ async function safe(name: string, fn: () => Promise<void>) {
     if (name === "connect" && msg.includes("missing wireguard private key")) {
       appendLog("hint: click 'Create New Device', then connect again");
     }
+    if (name === "connect" && msg.includes("wireguard_permission_denied")) {
+      appendLog(
+        "hint: run the app as Administrator for real VPN connect, or set WG_WINDOWS_NOOP_TUNNEL=1 for local UI/API testing",
+      );
+    }
   }
 }
 
@@ -455,7 +460,11 @@ document.getElementById("btn-connect")!.addEventListener("click", () =>
     });
     appendLog(`connected session=${result.session_key}`);
     await refreshStatus();
-    await refreshDevices();
+    try {
+      await refreshDevices();
+    } catch (e) {
+      appendLog(`post_connect_device_refresh: non_fatal ${String(e)}`);
+    }
   }),
 );
 
