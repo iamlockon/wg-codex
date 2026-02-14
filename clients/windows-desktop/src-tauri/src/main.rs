@@ -147,7 +147,8 @@ fn to_ui_status(client: &ClientType) -> UiStatus {
 #[tauri::command]
 async fn get_status(state: tauri::State<'_, AppState>) -> Result<UiStatus, String> {
     let _guard = state.op_lock.lock().await;
-    let client = build_client(&state.config)?;
+    let mut client = build_client(&state.config)?;
+    client.reconcile_auth().await.map_err(|e| e.to_string())?;
     Ok(to_ui_status(&client))
 }
 

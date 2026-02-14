@@ -51,6 +51,21 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
         &self.runtime
     }
 
+    pub async fn reconcile_auth(&mut self) -> Result<(), ClientError> {
+        let Some(token) = self.auth.as_ref().map(|a| a.access_token.clone()) else {
+            return Ok(());
+        };
+
+        match self.api.current_session(&token).await {
+            Ok(_) => Ok(()),
+            Err(err) if is_unauthorized_token_error(&err) => {
+                self.clear_local_auth_and_runtime()?;
+                Ok(())
+            }
+            Err(err) => Err(ClientError::Api(err)),
+        }
+    }
+
     pub fn select_device(&mut self, device_id: String) -> Result<(), ClientError> {
         self.runtime.selected_device_id = Some(device_id);
         self.storage
@@ -241,19 +256,10 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
         if let Some(auth) = &self.auth {
             let _ = self.api.logout(&auth.access_token).await;
         }
-        self.tunnel
-            .down()
-            .map_err(|e| ClientError::Tunnel(e.to_string()))?;
-        self.auth = None;
-        self.runtime.last_session_key = None;
-        self.runtime.last_region = None;
-        self.runtime.selected_device_id = None;
-        self.storage
-            .clear_auth_state()
-            .map_err(|e| ClientError::Storage(e.to_string()))?;
-        self.storage
-            .save_runtime_state(&self.runtime)
-            .map_err(|e| ClientError::Storage(e.to_string()))
+        if let Err(err) = self.tunnel.down() {
+            tracing::warn!("best-effort tunnel down failed during logout: {}", err);
+        }
+        self.clear_local_auth_and_runtime()
     }
 
     pub async fn restore_and_reconnect(&mut self) -> Result<Option<String>, ClientError> {
@@ -331,6 +337,29 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
             .map(|a| a.access_token.as_str())
             .ok_or(ClientError::NotAuthenticated)
     }
+
+    fn clear_local_auth_and_runtime(&mut self) -> Result<(), ClientError> {
+        self.auth = None;
+        self.runtime.last_session_key = None;
+        self.runtime.last_region = None;
+        self.runtime.selected_device_id = None;
+        self.storage
+            .clear_auth_state()
+            .map_err(|e| ClientError::Storage(e.to_string()))?;
+        self.storage
+            .save_runtime_state(&self.runtime)
+            .map_err(|e| ClientError::Storage(e.to_string()))
+    }
+}
+
+fn is_unauthorized_token_error(err: &EntryApiError) -> bool {
+    matches!(
+        err,
+        EntryApiError::Api { status: 401, code }
+            if code == "invalid_access_token"
+                || code == "revoked_access_token"
+                || code == "missing_bearer_token"
+    )
 }
 
 #[cfg(test)]
@@ -347,6 +376,7 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use anyhow::anyhow;
 
     #[derive(Debug, Clone)]
     struct MockState {
@@ -526,6 +556,62 @@ mod tests {
         client.disconnect().await.expect("disconnect must remain usable");
         assert!(client.runtime_state().last_session_key.is_none());
         assert!(tunnel_probe.events().iter().any(|e| e == "down"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_auth_clears_local_state_when_token_is_invalid() {
+        let (base_url, _guard) = run_mock_server().await;
+        let storage_path = unique_tmp_file("wg-desktop-reconcile-auth");
+        let storage = FileSecureStorage::new(storage_path, "k5".to_string());
+        let mut client = DesktopClient::new(
+            EntryApi::new(base_url),
+            storage,
+            RecordingTunnelController::default(),
+        )
+        .expect("client");
+
+        client
+            .login_oauth_callback("google", "ok-code", None, None)
+            .await
+            .expect("login");
+        client
+            .register_device("laptop", "pubkey")
+            .await
+            .expect("register");
+        client.auth.as_mut().expect("auth").access_token = "bad-token".to_string();
+
+        client.reconcile_auth().await.expect("reconcile");
+
+        assert!(client.auth_state().is_none());
+        assert!(client.runtime_state().selected_device_id.is_none());
+        assert!(client.runtime_state().last_session_key.is_none());
+    }
+
+    #[tokio::test]
+    async fn logout_clears_local_state_even_when_tunnel_down_fails() {
+        let (base_url, _guard) = run_mock_server().await;
+        let storage_path = unique_tmp_file("wg-desktop-logout-tunnel-failure");
+        let storage = FileSecureStorage::new(storage_path, "k6".to_string());
+        let mut client = DesktopClient::new(
+            EntryApi::new(base_url),
+            storage,
+            FailingTunnelController::default(),
+        )
+        .expect("client");
+
+        client
+            .login_oauth_callback("google", "ok-code", None, None)
+            .await
+            .expect("login");
+        client
+            .register_device("laptop", "pubkey")
+            .await
+            .expect("register");
+
+        client.logout().await.expect("logout");
+        assert!(client.auth_state().is_none());
+        assert!(client.runtime_state().selected_device_id.is_none());
+        assert!(client.runtime_state().last_session_key.is_none());
     }
 
     async fn run_mock_server() -> (String, MockState) {
@@ -772,5 +858,18 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{now}.json"))
+    }
+
+    #[derive(Default)]
+    struct FailingTunnelController;
+
+    impl TunnelController for FailingTunnelController {
+        fn apply_and_up(&self, _config: &crate::models::WireGuardClientConfig) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn down(&self) -> anyhow::Result<()> {
+            Err(anyhow!("access is denied"))
+        }
     }
 }
