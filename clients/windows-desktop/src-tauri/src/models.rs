@@ -18,6 +18,8 @@ pub struct WireGuardClientConfig {
     pub dns_servers: Vec<String>,
     pub persistent_keepalive_secs: i32,
     pub qr_payload: String,
+    #[serde(default)]
+    pub client_private_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

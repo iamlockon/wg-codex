@@ -57,13 +57,18 @@ impl WireGuardWindowsController {
         self.config_dir.join(format!("{}.conf", self.tunnel_name))
     }
 
-    fn render_config(&self, config: &WireGuardClientConfig) -> String {
+    fn render_config(&self, config: &WireGuardClientConfig) -> Result<String> {
         // Prefer backend-provided full client config when available.
         if config.qr_payload.contains("[Interface]") && config.qr_payload.contains("[Peer]") {
-            return config.qr_payload.clone();
+            return Ok(config.qr_payload.clone());
         }
         let mut lines = Vec::new();
         lines.push("[Interface]".to_string());
+        let private_key = config
+            .client_private_key
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("missing wireguard private key for generated config"))?;
+        lines.push(format!("PrivateKey = {private_key}"));
         lines.push(format!("Address = {}", config.assigned_ip));
         if !config.dns_servers.is_empty() {
             lines.push(format!("DNS = {}", config.dns_servers.join(", ")));
@@ -80,7 +85,7 @@ impl WireGuardWindowsController {
             "PersistentKeepalive = {}",
             config.persistent_keepalive_secs
         ));
-        lines.join("\n")
+        Ok(lines.join("\n"))
     }
 
     fn run_wireguard_command(&self, args: &[String]) -> Result<()> {
@@ -146,7 +151,8 @@ impl TunnelController for WireGuardWindowsController {
     fn apply_and_up(&self, config: &WireGuardClientConfig) -> Result<()> {
         fs::create_dir_all(&self.config_dir).context("create wireguard config dir failed")?;
         let path = self.config_path();
-        fs::write(&path, self.render_config(config)).context("write wireguard config failed")?;
+        let rendered = self.render_config(config)?;
+        fs::write(&path, rendered).context("write wireguard config failed")?;
         self.run_wireguard_command(&[
             "/installtunnelservice".to_string(),
             path.display().to_string(),
@@ -244,9 +250,11 @@ mod tests {
             dns_servers: vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()],
             persistent_keepalive_secs: 25,
             qr_payload: "qr".to_string(),
+            client_private_key: Some("private-key".to_string()),
         };
-        let text = controller.render_config(&cfg);
+        let text = controller.render_config(&cfg).expect("render");
         assert!(text.contains("[Interface]"));
+        assert!(text.contains("PrivateKey = private-key"));
         assert!(text.contains("Address = 10.8.0.2/24"));
         assert!(text.contains("DNS = 1.1.1.1, 8.8.8.8"));
         assert!(text.contains("[Peer]"));
@@ -278,8 +286,26 @@ mod tests {
             dns_servers: vec!["1.1.1.1".to_string()],
             persistent_keepalive_secs: 25,
             qr_payload: "[Interface]\nPrivateKey = abc\n[Peer]\nPublicKey = xyz".to_string(),
+            client_private_key: None,
         };
-        assert_eq!(controller.render_config(&cfg), cfg.qr_payload);
+        assert_eq!(controller.render_config(&cfg).expect("render"), cfg.qr_payload);
+    }
+
+    #[test]
+    fn render_config_requires_private_key_for_generated_config() {
+        let controller = WireGuardWindowsController::new("wg-test".to_string(), None, None);
+        let cfg = WireGuardClientConfig {
+            endpoint: "node.example:51820".to_string(),
+            server_public_key: "server-key".to_string(),
+            preshared_key: None,
+            assigned_ip: "10.8.0.2/24".to_string(),
+            dns_servers: vec!["1.1.1.1".to_string()],
+            persistent_keepalive_secs: 25,
+            qr_payload: "qr".to_string(),
+            client_private_key: None,
+        };
+        let err = controller.render_config(&cfg).expect_err("must reject");
+        assert!(err.to_string().contains("missing wireguard private key"));
     }
 
     fn unique_tmp_dir(prefix: &str) -> PathBuf {

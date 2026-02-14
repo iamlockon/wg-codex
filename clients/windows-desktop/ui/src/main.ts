@@ -44,10 +44,12 @@ app.innerHTML = `
 
       <fieldset id="device-section" class="step-fieldset">
         <h2 style="margin-top:14px">2. Device (Auto)</h2>
-        <p class="section-note">This app auto-registers and auto-selects the current device.</p>
+        <p class="section-note">This app auto-registers and auto-selects the current device. Use Create New Device if key migration is needed.</p>
         <div class="actions">
+          <button id="btn-create-device" class="ok">Create New Device</button>
           <button id="btn-list" class="secondary">Refresh Devices</button>
         </div>
+        <ul id="devices" class="device-list"></ul>
       </fieldset>
 
       <fieldset id="session-section" class="step-fieldset">
@@ -98,6 +100,7 @@ const sessionSection = document.getElementById("session-section") as HTMLFieldSe
 const googleStartBtn = document.getElementById("btn-google-start") as HTMLButtonElement;
 const restoreBtn = document.getElementById("btn-restore") as HTMLButtonElement;
 const logoutBtn = document.getElementById("btn-logout") as HTMLButtonElement;
+const createDeviceBtn = document.getElementById("btn-create-device") as HTMLButtonElement;
 const connectBtn = document.getElementById("btn-connect") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("btn-disconnect") as HTMLButtonElement;
 const connectionBanner = document.getElementById("connection-banner") as HTMLDivElement;
@@ -138,6 +141,7 @@ function syncInteractivity() {
   sessionSection.disabled = !hasAuth || !hasDevice;
   restoreBtn.disabled = !hasAuth;
   logoutBtn.disabled = !hasAuth;
+  createDeviceBtn.disabled = !hasAuth;
   connectBtn.disabled = !hasAuth || !hasDevice || hasSession;
   disconnectBtn.disabled = !hasSession;
   googleStartBtn.disabled = hasAuth;
@@ -377,6 +381,13 @@ async function refreshDevices() {
   renderDevices();
 }
 
+async function createAndSelectDefaultDevice() {
+  const created = await invoke<Device>("register_default_device");
+  appendLog(`register_default_device: ${created.id}`);
+  await refreshStatus();
+  await refreshDevices();
+}
+
 async function safe(name: string, fn: () => Promise<void>) {
   try {
     await fn();
@@ -385,7 +396,11 @@ async function safe(name: string, fn: () => Promise<void>) {
     if (name.startsWith("google_oauth")) {
       clearOAuthTransientState();
     }
-    appendLog(`${name}: ${String(e)}`);
+    const msg = String(e);
+    appendLog(`${name}: ${msg}`);
+    if (name === "connect" && msg.includes("missing wireguard private key")) {
+      appendLog("hint: click 'Create New Device', then connect again");
+    }
   }
 }
 
@@ -442,6 +457,10 @@ document.getElementById("btn-restore")!.addEventListener("click", () =>
 
 document.getElementById("btn-list")!.addEventListener("click", () =>
   safe("list_devices", async () => refreshDevices()),
+);
+
+document.getElementById("btn-create-device")!.addEventListener("click", () =>
+  safe("register_default_device", async () => createAndSelectDefaultDevice()),
 );
 
 document.getElementById("btn-connect")!.addEventListener("click", () =>

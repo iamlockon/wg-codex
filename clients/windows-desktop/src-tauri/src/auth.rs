@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthState {
@@ -11,4 +12,6 @@ pub struct RuntimeState {
     pub selected_device_id: Option<String>,
     pub last_region: Option<String>,
     pub last_session_key: Option<String>,
+    #[serde(default)]
+    pub device_private_keys: HashMap<String, String>,
 }
