@@ -8,7 +8,7 @@ mod storage_windows;
 mod wireguard;
 
 use api::EntryApi;
-use auth::AuthState;
+use auth::{AuthState, RuntimeState};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use models::Device;
 use rand_core::OsRng;
@@ -190,6 +190,14 @@ async fn register_device(
 async fn register_default_device(state: tauri::State<'_, AppState>) -> Result<Device, String> {
     let _guard = state.op_lock.lock().await;
     let mut client = build_client(&state.config)?;
+    let devices = client.list_devices().await.map_err(|e| e.to_string())?;
+    if let Some(existing) = pick_reusable_device(&devices, client.runtime_state()) {
+        client
+            .select_device(existing.id.clone())
+            .map_err(|e| e.to_string())?;
+        return Ok(existing);
+    }
+
     let name = default_device_name();
     let (private_key, public_key) = generate_wireguard_keypair();
     let device = client
@@ -297,6 +305,21 @@ fn default_device_name() -> String {
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "desktop".to_string());
     format!("desktop-{}", host.to_lowercase())
+}
+
+fn pick_reusable_device(devices: &[Device], runtime: &RuntimeState) -> Option<Device> {
+    if let Some(selected_id) = &runtime.selected_device_id
+        && runtime.device_private_keys.contains_key(selected_id)
+        && let Some(selected) = devices.iter().find(|d| &d.id == selected_id)
+    {
+        return Some(selected.clone());
+    }
+
+    devices
+        .iter()
+        .filter(|d| runtime.device_private_keys.contains_key(&d.id))
+        .max_by(|a, b| a.created_at.cmp(&b.created_at))
+        .cloned()
 }
 
 fn generate_wireguard_keypair() -> (String, String) {

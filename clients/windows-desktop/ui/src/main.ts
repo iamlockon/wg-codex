@@ -44,10 +44,10 @@ app.innerHTML = `
 
       <fieldset id="device-section" class="step-fieldset">
         <h2 style="margin-top:14px">2. Device (Auto)</h2>
-        <p class="section-note">This app auto-registers and auto-selects the current device. Use Create New Device if key migration is needed.</p>
+        <p class="section-note">This app keeps one active device and auto-selects it for you.</p>
         <div class="actions">
-          <button id="btn-create-device" class="ok">Create New Device</button>
-          <button id="btn-list" class="secondary">Refresh Devices</button>
+          <button id="btn-create-device" class="ok">Ensure Active Device</button>
+          <button id="btn-list" class="secondary">Refresh Device</button>
         </div>
         <ul id="devices" class="device-list"></ul>
       </fieldset>
@@ -223,21 +223,6 @@ function clearOAuthTransientState(): void {
   cleanupOAuthQueryParams();
 }
 
-function isValidWireGuardPublicKey(value: string): boolean {
-  const raw = value.trim();
-  if (!raw) {
-    return false;
-  }
-  try {
-    const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-    const decoded = atob(padded);
-    return decoded.length === 32;
-  } catch {
-    return false;
-  }
-}
-
 async function maybeCompleteOAuthFromReturnUrl() {
   const current = new URL(window.location.href);
   if (!current.searchParams.has("code")) {
@@ -299,63 +284,51 @@ function renderDevices() {
     devicesEl.appendChild(li);
     return;
   }
-  for (const d of devices) {
-    const li = document.createElement("li");
-    li.className = "device-item";
-    const selected = status?.selected_device_id === d.id;
-    const created = new Date(d.created_at).toLocaleString();
-    li.innerHTML = `
-      <div class="device-main">
-        <strong>${d.name}</strong>
-        <span class="device-meta">${selected ? "Auto-selected" : created}</span>
-      </div>
-      <div class="device-id">${d.id}</div>
-    `;
-    devicesEl.appendChild(li);
-  }
+  const d = devices[0];
+  const li = document.createElement("li");
+  li.className = "device-item";
+  const created = new Date(d.created_at).toLocaleString();
+  li.innerHTML = `
+    <div class="device-main">
+      <strong>${d.name}</strong>
+      <span class="device-meta">Active device (${created})</span>
+    </div>
+    <div class="device-id">${d.id}</div>
+  `;
+  devicesEl.appendChild(li);
 }
 
 async function ensureAutoSelectedDevice() {
-  if (!status?.authenticated || !devices.length) {
+  if (!status?.authenticated) {
     return;
   }
 
-  const validDevices = devices.filter((d) => isValidWireGuardPublicKey(d.public_key));
-  if (!validDevices.length) {
+  if (!devices.length) {
     const created = await invoke<Device>("register_default_device");
     appendLog(`register_default_device: ${created.id}`);
-    devices = [created, ...devices];
+    devices = [created];
     await refreshStatus();
-    renderDevices();
-    return ensureAutoSelectedDevice();
+    return;
   }
 
   const selected = status.selected_device_id
     ? devices.find((d) => d.id === status?.selected_device_id)
     : undefined;
-  if (selected && !isValidWireGuardPublicKey(selected.public_key)) {
-    appendLog(`selected_device_invalid_key: ${selected.id}`);
-  }
-
-  if (
-    selected &&
-    isValidWireGuardPublicKey(selected.public_key) &&
-    status.selected_device_id &&
-    devices.some((d) => d.id === status?.selected_device_id)
-  ) {
+  if (selected) {
+    devices = [selected];
     return;
   }
 
-  const preferred = [...validDevices].sort(
+  const preferred = [...devices].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
   )[0];
   status = await invoke<UiStatus>("select_device", {
     input: { deviceId: preferred.id },
   });
   appendLog(`auto_selected_device: ${preferred.id}`);
+  devices = [preferred];
   renderStatus();
   syncInteractivity();
-  renderDevices();
 }
 
 async function refreshStatus() {
