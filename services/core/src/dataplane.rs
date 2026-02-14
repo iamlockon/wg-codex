@@ -61,6 +61,7 @@ impl DataPlane for NoopDataPlane {
     }
 }
 
+#[derive(Clone)]
 pub struct LinuxShellDataPlane {
     cfg: LinuxDataPlaneConfig,
     uapi: WireGuardUapiClient,
@@ -195,6 +196,24 @@ impl LinuxShellDataPlane {
             "masquerade",
         ])
     }
+
+    fn set_peer_with_fallback(
+        &self,
+        public_key: &str,
+        allowed_ip: Option<&str>,
+        remove: bool,
+    ) -> Result<(), String> {
+        match self
+            .uapi
+            .set_peer(public_key, allowed_ip, Some(25), remove)
+        {
+            Ok(()) => Ok(()),
+            Err(err) if err.contains("Operation not supported (os error 95)") => {
+                wg_set_peer_cli(&self.cfg.iface, public_key, allowed_ip, remove)
+            }
+            Err(err) => Err(err),
+        }
+    }
 }
 
 #[async_trait]
@@ -235,18 +254,18 @@ impl DataPlane for LinuxShellDataPlane {
     }
 
     async fn connect_peer(&self, peer: &PeerSpec) -> Result<(), String> {
-        let uapi = self.uapi.clone();
         let public_key = peer.device_public_key.clone();
         let allowed_ip = peer_allowed_ip(&peer.assigned_ip);
-        task::spawn_blocking(move || uapi.set_peer(&public_key, Some(&allowed_ip), Some(25), false))
+        let this = self.clone();
+        task::spawn_blocking(move || this.set_peer_with_fallback(&public_key, Some(&allowed_ip), false))
             .await
             .map_err(|err| format!("uapi connect join failure: {err}"))?
     }
 
     async fn disconnect_peer(&self, peer: &PeerSpec) -> Result<(), String> {
-        let uapi = self.uapi.clone();
         let public_key = peer.device_public_key.clone();
-        task::spawn_blocking(move || uapi.set_peer(&public_key, None, None, true))
+        let this = self.clone();
+        task::spawn_blocking(move || this.set_peer_with_fallback(&public_key, None, true))
             .await
             .map_err(|err| format!("uapi disconnect join failure: {err}"))?
     }
@@ -254,8 +273,13 @@ impl DataPlane for LinuxShellDataPlane {
     async fn reconcile(&self, _desired_peers: &[PeerSpec]) -> Result<(), String> {
         let uapi = self.uapi.clone();
         let desired = _desired_peers.to_vec();
+        let iface = self.cfg.iface.clone();
         task::spawn_blocking(move || {
-            let live = uapi.list_peer_public_keys()?;
+            let live = match uapi.list_peer_public_keys() {
+                Ok(v) => v,
+                Err(err) if err.contains("Operation not supported (os error 95)") => Vec::new(),
+                Err(err) => return Err(err),
+            };
             let desired_keys: std::collections::HashSet<String> = desired
                 .iter()
                 .map(|p| p.device_public_key.clone())
@@ -264,24 +288,60 @@ impl DataPlane for LinuxShellDataPlane {
             // Re-apply desired peer state (idempotent) to repair drift.
             for peer in &desired {
                 let allowed_ip = peer_allowed_ip(&peer.assigned_ip);
-                uapi.set_peer(
+                match uapi.set_peer(
                     &peer.device_public_key,
                     Some(&allowed_ip),
                     Some(25),
                     false,
-                )?;
+                ) {
+                    Ok(()) => {}
+                    Err(err) if err.contains("Operation not supported (os error 95)") => {
+                        wg_set_peer_cli(&iface, &peer.device_public_key, Some(&allowed_ip), false)?
+                    }
+                    Err(err) => return Err(err),
+                }
             }
 
             // Remove peers not present in desired state.
             for public_key in live {
                 if !desired_keys.contains(&public_key) {
-                    uapi.set_peer(&public_key, None, None, true)?;
+                    match uapi.set_peer(&public_key, None, None, true) {
+                        Ok(()) => {}
+                        Err(err) if err.contains("Operation not supported (os error 95)") => {
+                            wg_set_peer_cli(&iface, &public_key, None, true)?
+                        }
+                        Err(err) => return Err(err),
+                    }
                 }
             }
             Ok(())
         })
         .await
         .map_err(|err| format!("uapi reconcile join failure: {err}"))?
+    }
+}
+
+fn wg_set_peer_cli(
+    iface: &str,
+    public_key: &str,
+    allowed_ip: Option<&str>,
+    remove: bool,
+) -> Result<(), String> {
+    let mut args: Vec<&str> = vec!["set", iface, "peer", public_key];
+    if remove {
+        args.push("remove");
+    } else if let Some(ip) = allowed_ip {
+        args.extend(["allowed-ips", ip, "persistent-keepalive", "25"]);
+    }
+
+    let status = Command::new("wg")
+        .args(args)
+        .status()
+        .map_err(|err| format!("wg exec failed: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("wg failed with status {status}"))
     }
 }
 
