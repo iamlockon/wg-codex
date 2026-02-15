@@ -37,6 +37,11 @@ Config env vars:
 - `WG_WINDOWS_WIREGUARD_EXE` (optional override; otherwise uses bundled `<app dir>/wg-tools/wireguard.exe`)
 - `WG_WINDOWS_CONFIG_DIR` (optional config file directory)
 - `WG_WINDOWS_TUNNEL_NAME` (optional tunnel service name)
+- `VITE_GOOGLE_OIDC_CLIENT_ID` / `VITE_GOOGLE_OIDC_REDIRECT_URI` (Google OAuth UI config)
+
+Runtime config packaging:
+- `npm run tauri:dev` and `npm run tauri:build` auto-generate `src-tauri/app.env` from current shell env and local env files (`clients/windows-desktop/.env`, `clients/windows-desktop/ui/src/.env`).
+- Bundles include `app.env` as a resource so installed builds can start without requiring machine-level environment variables.
 
 Bundling expectation:
 - package `wireguard.exe` and required companion files under `wg-tools/` beside your app executable.

@@ -24,8 +24,13 @@ type PendingOAuth = {
   state: string;
 };
 
-const GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_OIDC_CLIENT_ID as string | undefined) ?? "";
-const GOOGLE_REDIRECT_URI =
+type UiPublicConfig = {
+  google_oidc_client_id: string;
+  google_oidc_redirect_uri: string;
+};
+
+let googleClientId = (import.meta.env.VITE_GOOGLE_OIDC_CLIENT_ID as string | undefined) ?? "";
+let googleRedirectUri =
   (import.meta.env.VITE_GOOGLE_OIDC_REDIRECT_URI as string | undefined) ?? "";
 const PENDING_OAUTH_STORAGE_KEY = "wg.pendingOAuth";
 
@@ -340,9 +345,20 @@ async function safe(name: string, fn: () => Promise<void>) {
   }
 }
 
+async function loadPublicConfig() {
+  const cfg = await invoke<UiPublicConfig>("get_public_config");
+  if (cfg.google_oidc_client_id) {
+    googleClientId = cfg.google_oidc_client_id;
+  }
+  if (cfg.google_oidc_redirect_uri) {
+    googleRedirectUri = cfg.google_oidc_redirect_uri;
+  }
+}
+
 document.getElementById("btn-google-start")!.addEventListener("click", () =>
   safe("google_oauth_start", async () => {
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
+    await loadPublicConfig();
+    if (!googleClientId || !googleRedirectUri) {
       throw new Error(
         "missing_google_oauth_ui_config (set VITE_GOOGLE_OIDC_CLIENT_ID and VITE_GOOGLE_OIDC_REDIRECT_URI)",
       );
@@ -355,8 +371,8 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     savePendingOAuthToStorage(pendingOAuth);
 
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
-    authUrl.searchParams.set("redirect_uri", GOOGLE_REDIRECT_URI);
+    authUrl.searchParams.set("client_id", googleClientId);
+    authUrl.searchParams.set("redirect_uri", googleRedirectUri);
     authUrl.searchParams.set("response_type", "code");
     authUrl.searchParams.set("scope", "openid email profile");
     authUrl.searchParams.set("code_challenge", codeChallenge);
@@ -415,6 +431,7 @@ document.getElementById("btn-disconnect")!.addEventListener("click", () =>
 );
 
 safe("init", async () => {
+  await loadPublicConfig();
   await refreshStatus();
   await maybeCompleteOAuthFromReturnUrl();
   await refreshDevices();

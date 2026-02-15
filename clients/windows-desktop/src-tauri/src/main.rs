@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod api;
 mod auth;
 mod models;
@@ -13,6 +15,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use models::Device;
 use rand_core::OsRng;
 use session::DesktopClient;
+use std::collections::HashMap;
 #[cfg(not(windows))]
 use storage::FileSecureStorage;
 use tauri::Manager;
@@ -56,6 +59,13 @@ struct UiStatus {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UiPublicConfig {
+    google_oidc_client_id: String,
+    google_oidc_redirect_uri: String,
+}
+
+#[derive(serde::Serialize)]
 struct ConnectResult {
     session_key: String,
 }
@@ -86,6 +96,97 @@ struct SelectDeviceInput {
 #[serde(rename_all = "camelCase")]
 struct ConnectInput {
     region: String,
+}
+
+fn parse_dotenv(content: &str) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let without_export = line.strip_prefix("export ").unwrap_or(line).trim();
+        let Some((key, value)) = without_export.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let mut value = value.trim().to_string();
+        if (value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\''))
+        {
+            value = value[1..value.len() - 1].to_string();
+        }
+        if value.trim().is_empty() {
+            continue;
+        }
+        vars.insert(key.to_string(), value);
+    }
+    vars
+}
+
+fn read_dotenv_from_candidates() -> HashMap<String, String> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(".env"));
+        candidates.push(cwd.join("src-tauri").join("app.env"));
+        candidates.push(cwd.join("ui").join(".env"));
+        candidates.push(cwd.join("ui").join("src").join(".env"));
+        candidates.push(
+            cwd.join("clients")
+                .join("windows-desktop")
+                .join("src-tauri")
+                .join("app.env"),
+        );
+        candidates.push(
+            cwd.join("clients")
+                .join("windows-desktop")
+                .join("ui")
+                .join("src")
+                .join(".env"),
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(app_dir) = exe.parent()
+    {
+        candidates.push(app_dir.join(".env"));
+        candidates.push(app_dir.join("app.env"));
+        candidates.push(app_dir.join("ui").join("src").join(".env"));
+        candidates.push(app_dir.join("resources").join("app.env"));
+        candidates.push(app_dir.join("resources").join("ui").join("src").join(".env"));
+        if let Some(parent) = app_dir.parent() {
+            candidates.push(parent.join("app.env"));
+            candidates.push(parent.join("resources").join("app.env"));
+        }
+    }
+
+    let mut merged = HashMap::new();
+    for candidate in candidates {
+        if let Ok(content) = std::fs::read_to_string(&candidate) {
+            for (k, v) in parse_dotenv(&content) {
+                merged.insert(k, v);
+            }
+        }
+    }
+
+    merged
+}
+
+fn config_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| {
+            if v.trim().is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        })
+        .or_else(|| read_dotenv_from_candidates().get(name).cloned())
 }
 
 fn state_file_path() -> std::path::PathBuf {
@@ -277,29 +378,24 @@ async fn restore_and_reconnect(state: tauri::State<'_, AppState>) -> Result<UiSt
 }
 
 fn app_config() -> AppConfig {
-    let entry_base_url =
-        std::env::var("ENTRY_API_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+    let entry_base_url = config_var("ENTRY_API_BASE_URL")
+        .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
 
     #[cfg(not(windows))]
     let storage_key = std::env::var("WG_WINDOWS_CLIENT_STORAGE_KEY")
         .unwrap_or_else(|_| "wg-local-obfuscation-key".to_string());
 
     #[cfg(windows)]
-    let tunnel_name =
-        std::env::var("WG_WINDOWS_TUNNEL_NAME").unwrap_or_else(|_| "wg-client".to_string());
+    let tunnel_name = config_var("WG_WINDOWS_TUNNEL_NAME").unwrap_or_else(|| "wg-client".to_string());
 
     #[cfg(windows)]
-    let wireguard_exe = std::env::var("WG_WINDOWS_WIREGUARD_EXE")
-        .ok()
-        .map(std::path::PathBuf::from);
+    let wireguard_exe = config_var("WG_WINDOWS_WIREGUARD_EXE").map(std::path::PathBuf::from);
 
     #[cfg(windows)]
-    let wireguard_config_dir = std::env::var("WG_WINDOWS_CONFIG_DIR")
-        .ok()
-        .map(std::path::PathBuf::from);
+    let wireguard_config_dir = config_var("WG_WINDOWS_CONFIG_DIR").map(std::path::PathBuf::from);
 
     #[cfg(windows)]
-    let noop_tunnel = std::env::var("WG_WINDOWS_NOOP_TUNNEL")
+    let noop_tunnel = config_var("WG_WINDOWS_NOOP_TUNNEL")
         .map(|v| {
             let value = v.trim().to_ascii_lowercase();
             value == "1" || value == "true" || value == "yes" || value == "on"
@@ -320,6 +416,14 @@ fn app_config() -> AppConfig {
         #[cfg(windows)]
         noop_tunnel,
     }
+}
+
+#[tauri::command]
+async fn get_public_config() -> Result<UiPublicConfig, String> {
+    Ok(UiPublicConfig {
+        google_oidc_client_id: config_var("VITE_GOOGLE_OIDC_CLIENT_ID").unwrap_or_default(),
+        google_oidc_redirect_uri: config_var("VITE_GOOGLE_OIDC_REDIRECT_URI").unwrap_or_default(),
+    })
 }
 
 fn default_device_name() -> String {
@@ -369,6 +473,7 @@ fn main() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             get_status,
+            get_public_config,
             oauth_login,
             list_devices,
             register_device,

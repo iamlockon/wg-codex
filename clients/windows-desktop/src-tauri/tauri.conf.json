@@ -23,6 +23,6 @@
     "active": true,
     "icon": ["icons/icon.ico"],
     "targets": ["msi", "nsis"],
-    "resources": ["../wg-tools"]
+    "resources": ["../wg-tools", "app.env"]
   }
 }
