@@ -33,7 +33,7 @@ const app = document.getElementById("app")!;
 
 app.innerHTML = `
   <h1>WG Desktop VPN</h1>
-  <p class="subtitle">Sign in with Google, select device, choose location, then connect and disconnect VPN.</p>
+  <p class="subtitle">Sign in with Google, choose location, then connect and disconnect VPN.</p>
   <div class="layout">
     <section class="card">
       <h2>1. Google Login</h2>
@@ -45,18 +45,8 @@ app.innerHTML = `
         <button id="btn-logout" class="danger">Logout</button>
       </div>
 
-      <fieldset id="device-section" class="step-fieldset">
-        <h2 style="margin-top:14px">2. Device (Auto)</h2>
-        <p class="section-note">This app keeps one active device and auto-selects it for you.</p>
-        <div class="actions">
-          <button id="btn-create-device" class="ok">Ensure Active Device</button>
-          <button id="btn-list" class="secondary">Refresh Device</button>
-        </div>
-        <ul id="devices" class="device-list"></ul>
-      </fieldset>
-
       <fieldset id="session-section" class="step-fieldset">
-        <h2 style="margin-top:14px">3. Location & Connection</h2>
+        <h2 style="margin-top:14px">2. Location & Connection</h2>
         <p class="section-note">Choose VPN location and connect.</p>
         <div id="connection-banner" class="connection-banner disconnected">Disconnected</div>
         <div class="grid">
@@ -70,7 +60,6 @@ app.innerHTML = `
               <option value="asia-east1">Asia East</option>
             </select>
           </div>
-          <div><label>Selected device ID</label><input id="selected_device" readonly /></div>
         </div>
         <div class="actions">
           <button id="btn-connect" class="ok">Connect</button>
@@ -91,20 +80,17 @@ app.innerHTML = `
 
 const logEl = document.getElementById("log")!;
 const statusEl = document.getElementById("status")!;
-const devicesEl = document.getElementById("devices");
 
 let devices: Device[] = [];
 let status: UiStatus | null = null;
 let pendingOAuth: PendingOAuth | null = null;
 
 const el = (id: string) => document.getElementById(id) as HTMLInputElement;
-const deviceSection = document.getElementById("device-section") as HTMLFieldSetElement;
 const sessionSection = document.getElementById("session-section") as HTMLFieldSetElement;
 const googleStartBtn = document.getElementById("btn-google-start") as HTMLButtonElement;
 const restoreBtn = document.getElementById("btn-restore") as HTMLButtonElement;
 const logoutBtn = document.getElementById("btn-logout") as HTMLButtonElement;
 const googleLoginIdentityEl = document.getElementById("google-login-identity") as HTMLDivElement;
-const createDeviceBtn = document.getElementById("btn-create-device") as HTMLButtonElement;
 const connectBtn = document.getElementById("btn-connect") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("btn-disconnect") as HTMLButtonElement;
 const connectionBanner = document.getElementById("connection-banner") as HTMLDivElement;
@@ -131,8 +117,6 @@ function renderStatus() {
   statusEl.innerHTML = `
     <div class="status-row"><span class="key">auth</span><span>${authState}</span></div>
     <div class="status-row"><span class="key">connection</span><span>${connectionState}</span></div>
-    <div class="status-row"><span class="key">customer_id</span><span>${status.customer_id ?? "-"}</span></div>
-    <div class="status-row"><span class="key">selected_device_id</span><span>${status.selected_device_id ?? "-"}</span></div>
     <div class="status-row"><span class="key">session_key</span><span>${status.active_session_key ?? "-"}</span></div>
     <div class="status-row"><span class="key">last_region</span><span>${status.last_region ?? "-"}</span></div>
   `;
@@ -148,15 +132,12 @@ function syncInteractivity() {
   const hasAuth = Boolean(status?.authenticated);
   const hasDevice = Boolean(status?.selected_device_id);
   const hasSession = Boolean(status?.active_session_key);
-  deviceSection.disabled = !hasAuth;
   sessionSection.disabled = !hasAuth || !hasDevice;
   restoreBtn.disabled = !hasAuth;
   logoutBtn.disabled = !hasAuth;
-  createDeviceBtn.disabled = !hasAuth;
   connectBtn.disabled = !hasAuth || !hasDevice || hasSession;
   disconnectBtn.disabled = !hasSession;
   googleStartBtn.disabled = hasAuth;
-  el("selected_device").value = status?.selected_device_id ?? "";
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -284,31 +265,6 @@ async function maybeCompleteOAuthFromReturnUrl() {
   await refreshDevices();
 }
 
-function renderDevices() {
-  if (!devicesEl) {
-    return;
-  }
-  devicesEl.innerHTML = "";
-  if (!devices.length) {
-    const li = document.createElement("li");
-    li.textContent = "No registered devices yet.";
-    devicesEl.appendChild(li);
-    return;
-  }
-  const d = devices[0];
-  const li = document.createElement("li");
-  li.className = "device-item";
-  const created = new Date(d.created_at).toLocaleString();
-  li.innerHTML = `
-    <div class="device-main">
-      <strong>${d.name}</strong>
-      <span class="device-meta">Active device (${created})</span>
-    </div>
-    <div class="device-id">${d.id}</div>
-  `;
-  devicesEl.appendChild(li);
-}
-
 async function ensureAutoSelectedDevice() {
   if (!status?.authenticated) {
     return;
@@ -351,7 +307,6 @@ async function refreshStatus() {
 async function refreshDevices() {
   if (!status?.authenticated) {
     devices = [];
-    renderDevices();
     return;
   }
   devices = await invoke<Device[]>("list_devices");
@@ -362,14 +317,6 @@ async function refreshDevices() {
     await refreshStatus();
   }
   await ensureAutoSelectedDevice();
-  renderDevices();
-}
-
-async function createAndSelectDefaultDevice() {
-  const created = await invoke<Device>("register_default_device");
-  appendLog(`register_default_device: ${created.id}`);
-  await refreshStatus();
-  await refreshDevices();
 }
 
 async function safe(name: string, fn: () => Promise<void>) {
@@ -383,7 +330,7 @@ async function safe(name: string, fn: () => Promise<void>) {
     const msg = String(e);
     appendLog(`${name}: ${msg}`);
     if (name === "connect" && msg.includes("missing wireguard private key")) {
-      appendLog("hint: click 'Create New Device', then connect again");
+      appendLog("hint: retry connect to auto-register the default device, then connect again");
     }
     if (name === "connect" && msg.includes("wireguard_permission_denied")) {
       appendLog(
@@ -431,7 +378,6 @@ document.getElementById("btn-logout")!.addEventListener("click", () =>
     clearOAuthTransientState();
     devices = [];
     renderStatus();
-    renderDevices();
     syncInteractivity();
   }),
 );
@@ -443,14 +389,6 @@ document.getElementById("btn-restore")!.addEventListener("click", () =>
     syncInteractivity();
     await refreshDevices();
   }),
-);
-
-document.getElementById("btn-list")!.addEventListener("click", () =>
-  safe("list_devices", async () => refreshDevices()),
-);
-
-document.getElementById("btn-create-device")!.addEventListener("click", () =>
-  safe("register_default_device", async () => createAndSelectDefaultDevice()),
 );
 
 document.getElementById("btn-connect")!.addEventListener("click", () =>
