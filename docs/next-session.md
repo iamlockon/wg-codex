@@ -20,7 +20,7 @@
   - `entry` now requires nonce and PKCE verifier by default in production (`APP_REQUIRE_OAUTH_NONCE=true`, `APP_REQUIRE_OAUTH_PKCE=true`).
   - readiness report includes both policy checks.
 - Privacy retention policy hardening:
-  - production startup now fails if configured retention exceeds policy caps (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`).
+  - production startup now fails if configured retention exceeds policy caps (`APP_TERMINATED_SESSION_RETENTION_DAYS`, `APP_AUDIT_RETENTION_DAYS`, optionally bounded by `APP_MAX_TERMINATED_SESSION_RETENTION_DAYS` and `APP_MAX_AUDIT_RETENTION_DAYS`).
   - privacy policy and readiness endpoints report against configured policy caps rather than hardcoded thresholds.
 - Audit event persistence wiring added:
   - OAuth login success/logout and session lifecycle events (start/reconnect/conflict/terminate) now persist `audit_events` records in Postgres when privacy store is configured.
@@ -204,7 +204,7 @@
 2. Run production canary validation for `WG_NAT_DRIVER=native` with `deploy/k8s/canary-validate.sh` in-cluster and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
-5. Implement Windows UI shell and run end-to-end Windows host validation (real WireGuard for Windows + DPAPI behavior) on top of the desktop-core in `clients/windows-desktop/src-tauri`.
+5. Run end-to-end Windows host validation (real WireGuard for Windows + DPAPI behavior), then harden packaging and signing for the shipped Tauri UI.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.
@@ -220,12 +220,13 @@
    - `crates/control-plane/src/lib.rs`
    - `services/core/src/main.rs`
    - `services/entry/src/main.rs`
-3. Review consumer-focused architecture targets and convert them to concrete schema/API migrations.
-4. Start implementing subscription/entitlement enforcement in `entry` session start path.
+3. Check the current deployment target you are continuing (`deploy/k8s/README.md`, `docs/deployment-checklist.md`, or `deploy/terraform/README.md`).
+4. If continuing desktop work, inspect `clients/windows-desktop/src-tauri/src/main.rs` and `clients/windows-desktop/ui/src/main.ts` before changing behavior.
 
 ## Commands to Run Next Session
 ```bash
 cargo fmt --all
 cargo check --workspace
+scripts/run-db-integration-tests.sh
 ```
-Note: in restricted/sandboxed environments you may hit `Invalid cross-device link (os error 18)` during Rust `.rmeta` writes; if that occurs, run in the dev container shell/session where `scripts/run-db-integration-tests.sh` currently passes.
+Note: in restricted/sandboxed environments you may hit `Invalid cross-device link (os error 18)` during Rust `.rmeta` writes; if that occurs, rerun in the dev container or a local shell where the DB-backed test suite already passes.

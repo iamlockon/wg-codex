@@ -11,6 +11,7 @@ This directory contains the Windows desktop client MVP core for integration with
 
 - OAuth callback token handoff.
 - Device registration/list.
+- Auto-registration and reuse of a local default device keypair.
 - Session start/current/terminate.
 - Logout with token revocation behavior.
 - Tauri desktop UI flow for all above actions.
@@ -37,6 +38,7 @@ Config env vars:
 - `WG_WINDOWS_WIREGUARD_EXE` (optional override; otherwise uses bundled `<app dir>/wg-tools/wireguard.exe`)
 - `WG_WINDOWS_CONFIG_DIR` (optional config file directory)
 - `WG_WINDOWS_TUNNEL_NAME` (optional tunnel service name)
+- `WG_WINDOWS_NOOP_TUNNEL` (optional no-op tunnel mode for UI/API testing)
 - `VITE_GOOGLE_OIDC_CLIENT_ID` / `VITE_GOOGLE_OIDC_REDIRECT_URI` (Google OAuth UI config)
 
 Runtime config packaging:
@@ -96,7 +98,7 @@ npm run tauri:dev
 
 3. Use the in-app flow:
 - click `Sign Up / Log In With Google` and complete Google auth; app returns as logged in,
-- register/select device,
+- the app auto-registers or reuses a local device,
 - connect/disconnect,
 - logout or restore+reconnect.
 

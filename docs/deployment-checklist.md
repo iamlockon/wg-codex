@@ -26,6 +26,7 @@
    - `docker build -f services/core/Dockerfile -t <registry>/wg-core:<tag> .`
 2. Push both images to registry.
 3. Update image tags in Kubernetes manifests.
+4. Current preferred automation for the full backend flow is `scripts/deploy-backends-k8s.sh --overlay <overlay>` (build, push, apply, rollout, migrations).
 
 ## Cluster apply order
 0. Validate manifests:
@@ -41,7 +42,7 @@
 4. Prod with GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm`
 5. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
 6. Native canary + GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary`
-7. Apply migration ConfigMap and run `deploy/k8s/migrate-job.yaml` (one-time per environment).
+7. Apply or refresh the migration ConfigMap and run `deploy/k8s/migrate-job.yaml`.
 8. Prefer automated canary gate for native rollout:
    - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary`
    - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-gcp-sm-native-canary`
@@ -54,7 +55,8 @@
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_REQUIRE_OAUTH_NONCE=true`
   - `APP_REQUIRE_OAUTH_PKCE=true`
-  - `APP_MAX_TERMINATED_SESSION_RETENTION_DAYS` and `APP_MAX_AUDIT_RETENTION_DAYS` configured to policy limits
+  - `APP_TERMINATED_SESSION_RETENTION_DAYS` and `APP_AUDIT_RETENTION_DAYS` configured within policy limits
+  - Optional policy cap overrides (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`) remain greater than or equal to the configured values
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - `APP_LOG_REDACTION_MODE=strict` (or omitted; production defaults to strict)
   - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)

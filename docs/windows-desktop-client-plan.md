@@ -1,10 +1,10 @@
-# Windows Desktop Client MVP Plan
+# Windows Desktop Client MVP Implementation Status
 
 ## Goal
-Ship a Windows desktop client (internal/beta quality) that authenticates users, manages devices, starts/stops VPN sessions, and applies WireGuard tunnel config from `entry`.
+The Windows desktop MVP is implemented: it authenticates with Google, manages a selected device, starts/stops sessions against `entry`, and applies WireGuard tunnel config through the Tauri host.
 
-## Current Backend Readiness
-The backend is ready for MVP client integration on these public APIs:
+## Current Backend Integration
+The desktop client is wired to these public APIs:
 - `POST /v1/auth/oauth/{provider}/callback`
 - `POST /v1/auth/logout`
 - `POST /v1/devices`
@@ -19,7 +19,7 @@ Constraints to honor:
 - subscription gating can reject session start (`subscription_inactive`),
 - bearer token revocation is enforced after logout.
 
-## Recommended Client Stack
+## Implemented Client Stack
 - App shell: `Tauri` (Rust + WebView) for Windows packaging, updater support, and native OS access.
 - UI: React + TypeScript (small surface, fast iteration).
 - Local secret storage:
@@ -29,20 +29,22 @@ Constraints to honor:
   - invoke WireGuard for Windows tunnel import/up/down via controlled command wrapper,
   - keep adapter naming deterministic (for reconnect/recovery).
 
-## MVP Features
+## Current Client Behavior
 1. Login + Token Session
-- Browser-based OAuth launch.
-- Exchange callback code via backend and store returned access token.
-- Token refresh approach for MVP: re-login on expiry (no refresh token flow yet).
+- Browser-based Google OAuth launch from the UI.
+- PKCE + nonce are generated client-side and returned to `entry` on callback.
+- Returned access token is stored through the Tauri secure storage layer.
+- Token refresh is not implemented; expiry still requires re-login.
 
 2. Device Management
-- Register current machine as a device (`POST /v1/devices`).
-- Cache selected `device_id` locally and validate with `GET /v1/devices`.
+- The UI auto-registers a default device when none exists.
+- The Tauri host generates and persists the local WireGuard private key for that device.
+- The selected `device_id` is restored from local runtime state.
 
 3. Connect/Disconnect
-- Connect calls `POST /v1/sessions/start` with `device_id`, `region`, optional `reconnect_session_key`.
+- Connect calls `POST /v1/sessions/start` with `device_id`, `region`, and optional `reconnect_session_key`.
 - Handle `active` vs `conflict` response shapes.
-- On `active`, apply returned WireGuard config and raise tunnel.
+- On `active`, the host prefers full config from `qr_payload` when present and otherwise builds the client config from the response fields.
 - Disconnect calls `POST /v1/sessions/{session_key}/terminate` then brings tunnel down.
 
 4. Session Recovery
@@ -55,11 +57,11 @@ Constraints to honor:
 - On `401` with revoked/invalid token, clear local auth and force re-login.
 - Logout calls `POST /v1/auth/logout`, clears local secure storage, and tears down tunnel.
 
-## Non-MVP (defer)
-- In-app admin tooling (readiness/privacy/subscriptions).
-- Multi-profile routing UX (fastest/streaming/privacy presets beyond simple region).
-- Auto-update channels, code-signing pipeline hardening, installer telemetry funnels.
-- Background service for always-on behavior.
+## Current UI Scope
+- Google-only sign-in flow.
+- Fixed region presets in the UI (`us-west1`, `us-central1`, `us-east1`, `europe-west1`, `asia-east1`).
+- Restore-and-reconnect action on startup or user request.
+- Logout clears persisted auth/runtime state and tears down the tunnel.
 
 ## API Contract Notes for Client
 - `POST /v1/sessions/start`:
@@ -83,7 +85,7 @@ Constraints to honor:
   - `storage.rs`: DPAPI-backed secret persistence.
   - `session.rs`: connect/disconnect/reconnect orchestration.
 
-State model:
+The client state model remains:
 - `Unauthenticated`
 - `AuthenticatedIdle`
 - `Connecting`
@@ -91,21 +93,11 @@ State model:
 - `Disconnecting`
 - `ErrorRecoverable`
 
-## Delivery Phases
-1. Skeleton App
-- Create Tauri workspace, typed API client, secure storage abstraction.
-
-2. Auth + Device
-- Implement login callback handling and device registration/list.
-
-3. Connect/Disconnect
-- Implement session start/terminate and WireGuard import/up/down.
-
-4. Recovery + Polish
-- Startup session reconciliation, conflict handling UI, error mapping.
-
-5. Internal Beta Hardening
-- Logging redaction checks, crash recovery paths, installer/uninstaller verification.
+## Remaining Gaps
+1. No in-app admin tooling yet.
+2. No advanced geo/pool selector beyond the fixed region dropdown.
+3. No token refresh flow.
+4. Real Windows host validation, packaging, and signing still need production-level verification.
 
 ## Test Plan
 - Unit tests:

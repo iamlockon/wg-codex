@@ -184,7 +184,8 @@ Notes:
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_REQUIRE_OAUTH_NONCE=true`
   - `APP_REQUIRE_OAUTH_PKCE=true`
-  - retention caps configured (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`)
+  - configured retention must use `APP_TERMINATED_SESSION_RETENTION_DAYS` and `APP_AUDIT_RETENTION_DAYS`
+  - optional policy caps (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`) must not be lower than the configured retention values
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - non-default JWT signing keys required
   - `ADMIN_API_TOKEN` required

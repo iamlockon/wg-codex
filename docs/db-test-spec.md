@@ -1,6 +1,6 @@
 # DB Test Spec (Session Invariant)
 
-This file defines the expected Postgres repository behavior before wiring `sqlx`.
+This file captures the session-invariant contract that the current `sqlx`-backed repository must continue to satisfy.
 
 ## Invariant
 - A customer can have at most one active session.
@@ -26,7 +26,7 @@ This file defines the expected Postgres repository behavior before wiring `sqlx`
 
 ## Current Executable Spec
 - Implemented as unit tests in `services/entry/src/session_repo.rs`.
-- This should be treated as the behavior contract for the future Postgres-backed repository.
+- This remains the behavior contract for both the in-memory and Postgres-backed repositories.
 
 ## Current DB-backed Implementation
 - Implemented repository module: `services/entry/src/postgres_session_repo.rs`.

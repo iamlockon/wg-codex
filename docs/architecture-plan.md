@@ -1,9 +1,9 @@
-# Consumer Privacy / Geo-Unblocking VPN Architecture and Delivery Plan
+# Consumer Privacy / Geo-Unblocking VPN Architecture and Implementation Snapshot
 
 ## Scope and Decisions Locked
 - Deployment model: `entry` and `core` are separate deployable services.
 - Data store: Postgres.
-- Customer authentication: OAuth (Google for v1, provider-agnostic model to extend later).
+- Customer authentication: OAuth (Google is implemented for v1; provider dispatch remains extensible).
 - Inter-service protocol: gRPC (`entry` to `core`) for low overhead and strict contracts.
 - Cloud target: GCP.
 - Topology: multi-region with node selection.
@@ -17,7 +17,7 @@
 - Scalable session orchestration across many users and nodes.
 - Minimized and controlled metadata retention.
 
-## Service Responsibilities
+## Service Responsibilities (Current)
 
 ### `entry` service
 - Public APIs for OAuth login, device management, and session lifecycle.
@@ -59,7 +59,7 @@
 5. `entry` marks session terminated and emits audit event.
 
 ## Data Model (Postgres)
-Current core tables (already present):
+Current implemented tables:
 - `customers`
 - `oauth_identities`
 - `devices`
@@ -67,13 +67,17 @@ Current core tables (already present):
 - `sessions`
 - `audit_events`
 - `revoked_tokens`
+- `plans`
+- `customer_subscriptions`
 
-Needed additions for consumer VPN:
-- `plans` and `customer_subscriptions`
-- `plan_entitlements` (device limits and regional feature gates)
-- `node_pools` and `node_pool_membership` (general, low-latency, streaming-optimized)
-- `session_events` (connect/disconnect/reconnect/fail with bounded retention)
-- optional `egress_ips` mapping for managed pool observability
+Currently encoded in existing tables/runtime logic rather than separate schema:
+- plan entitlements (`max_devices`, `allowed_regions`) are stored on `plans`
+- node selection metadata (`country_code`, `city_code`, `pool`, `capacity_peers`) is stored on `vpn_nodes`
+
+Not implemented yet as dedicated schema:
+- `node_pools` / `node_pool_membership`
+- `session_events`
+- `egress_ips`
 
 Session states:
 - `requested`, `provisioning`, `active`, `terminating`, `terminated`, `failed`
@@ -114,7 +118,7 @@ Session states:
 - Strict RBAC for admin/internal endpoints.
 - Security telemetry for abuse, auth anomalies, and suspicious session churn.
 
-## API Contract Direction
+## Current API Surface
 Public (`entry`):
 - `POST /v1/auth/oauth/{provider}/callback`
 - `POST /v1/auth/logout`
@@ -157,14 +161,19 @@ What must change:
 - Tighten privacy controls and retention defaults as first-class requirements.
 - Add anti-abuse controls (rate limits, fraud signals, noisy-tenant isolation).
 
-## Delivery Phases (Updated)
-1. Product model migration: subscription and entitlement schema + APIs.
-2. Node pool model: region/country/city and profile-based selection.
-3. Session policy lock: keep strict one-customer-one-active-session semantics while applying plan device/region controls.
-4. Privacy hardening: retention, redaction, and audit policy enforcement.
-5. Security hardening: mTLS rollout, secret manager integration, admin auth hardening.
-6. Dataplane maturity: nft-native firewall path and capacity guardrails.
-7. Integration/load/failure testing and production readiness checklist.
+## Current Implementation Status
+Implemented:
+1. Subscription and entitlement schema + admin APIs.
+2. Region/country/city/pool-aware node selection using `vpn_nodes`.
+3. Strict one-customer-one-active-session handling with reconnect reuse and plan gating.
+4. Privacy retention, audit persistence/export, and log redaction controls.
+5. Production guardrails for TLS, admin auth, OIDC, and secret loading.
+6. Dataplane support for `WG_NAT_DRIVER=cli|native` plus readiness/core status reporting.
+
+Still open:
+1. Dedicated pool membership schema and richer selection policy beyond the current `pool` column.
+2. Broader anti-abuse controls and subscription reporting/export depth.
+3. More production validation for native NAT and GCP Secret Manager rollouts.
 
 ## Testing Strategy
 - Unit tests for policy enforcement (plan limits, geo eligibility, conflict behavior).
