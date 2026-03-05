@@ -22,7 +22,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Build check
-        run: cargo check --workspace
+        run: cargo check --workspace --exclude wg-windows-client
 
       - name: Install native-nft build dependencies
         run: |
@@ -33,7 +33,7 @@ jobs:
         run: cargo check -p core --features native-nft
 
       - name: Unit tests
-        run: cargo test --workspace --lib
+        run: cargo test --workspace --lib --exclude wg-windows-client
 
   deploy-spec:
     runs-on: ubuntu-latest
