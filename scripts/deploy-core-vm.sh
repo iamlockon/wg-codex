@@ -225,6 +225,13 @@ while [[ $# -gt 0 ]]; do
     --core-bind-addr) CORE_BIND_ADDR="$2"; shift 2 ;;
     --core-require-tls) CORE_REQUIRE_TLS="$2"; shift 2 ;;
     --core-require-client-cert) CORE_REQUIRE_CLIENT_CERT="$2"; shift 2 ;;
+    --register-node-in-entry) REGISTER_NODE_IN_ENTRY="$2"; shift 2 ;;
+    --entry-admin-url) ENTRY_ADMIN_URL="$2"; shift 2 ;;
+    --entry-node-region) ENTRY_NODE_REGION="$2"; shift 2 ;;
+    --entry-node-country-code) ENTRY_NODE_COUNTRY_CODE="$2"; shift 2 ;;
+    --entry-node-city-code) ENTRY_NODE_CITY_CODE="$2"; shift 2 ;;
+    --entry-node-pool) ENTRY_NODE_POOL="$2"; shift 2 ;;
+    --entry-node-provider) ENTRY_NODE_PROVIDER="$2"; shift 2 ;;
     --wg-interface) WG_INTERFACE="$2"; shift 2 ;;
     --wg-interface-cidr) WG_INTERFACE_CIDR="$2"; shift 2 ;;
     --wg-listen-port) WG_LISTEN_PORT="$2"; shift 2 ;;
