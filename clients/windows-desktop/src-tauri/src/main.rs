@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 #[cfg(not(windows))]
 use wireguard::NoopTunnelController;
 #[cfg(windows)]
-use wireguard::{NoopTunnelController, WireGuardWindowsController, WindowsTunnelController};
+use wireguard::{NoopTunnelController, WindowsTunnelController, WireGuardWindowsController};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 #[derive(Clone)]
@@ -157,7 +157,13 @@ fn read_dotenv_from_candidates() -> HashMap<String, String> {
         candidates.push(app_dir.join("app.env"));
         candidates.push(app_dir.join("ui").join("src").join(".env"));
         candidates.push(app_dir.join("resources").join("app.env"));
-        candidates.push(app_dir.join("resources").join("ui").join("src").join(".env"));
+        candidates.push(
+            app_dir
+                .join("resources")
+                .join("ui")
+                .join("src")
+                .join(".env"),
+        );
         if let Some(parent) = app_dir.parent() {
             candidates.push(parent.join("app.env"));
             candidates.push(parent.join("resources").join("app.env"));
@@ -179,13 +185,7 @@ fn read_dotenv_from_candidates() -> HashMap<String, String> {
 fn config_var(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
-        .and_then(|v| {
-            if v.trim().is_empty() {
-                None
-            } else {
-                Some(v)
-            }
-        })
+        .and_then(|v| if v.trim().is_empty() { None } else { Some(v) })
         .or_else(|| read_dotenv_from_candidates().get(name).cloned())
 }
 
@@ -205,8 +205,7 @@ fn state_file_path() -> std::path::PathBuf {
 }
 
 #[cfg(windows)]
-type ClientType =
-    DesktopClient<storage_windows::DpapiFileSecureStorage, WindowsTunnelController>;
+type ClientType = DesktopClient<storage_windows::DpapiFileSecureStorage, WindowsTunnelController>;
 #[cfg(not(windows))]
 type ClientType = DesktopClient<FileSecureStorage, NoopTunnelController>;
 
@@ -378,15 +377,16 @@ async fn restore_and_reconnect(state: tauri::State<'_, AppState>) -> Result<UiSt
 }
 
 fn app_config() -> AppConfig {
-    let entry_base_url = config_var("ENTRY_API_BASE_URL")
-        .unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
+    let entry_base_url =
+        config_var("ENTRY_API_BASE_URL").unwrap_or_else(|| "http://127.0.0.1:8080".to_string());
 
     #[cfg(not(windows))]
     let storage_key = std::env::var("WG_WINDOWS_CLIENT_STORAGE_KEY")
         .unwrap_or_else(|_| "wg-local-obfuscation-key".to_string());
 
     #[cfg(windows)]
-    let tunnel_name = config_var("WG_WINDOWS_TUNNEL_NAME").unwrap_or_else(|| "wg-client".to_string());
+    let tunnel_name =
+        config_var("WG_WINDOWS_TUNNEL_NAME").unwrap_or_else(|| "wg-client".to_string());
 
     #[cfg(windows)]
     let wireguard_exe = config_var("WG_WINDOWS_WIREGUARD_EXE").map(std::path::PathBuf::from);

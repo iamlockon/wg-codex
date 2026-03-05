@@ -203,10 +203,7 @@ impl LinuxShellDataPlane {
         allowed_ip: Option<&str>,
         remove: bool,
     ) -> Result<(), String> {
-        match self
-            .uapi
-            .set_peer(public_key, allowed_ip, Some(25), remove)
-        {
+        match self.uapi.set_peer(public_key, allowed_ip, Some(25), remove) {
             Ok(()) => Ok(()),
             Err(err) if err.contains("Operation not supported (os error 95)") => {
                 wg_set_peer_cli(&self.cfg.iface, public_key, allowed_ip, remove)
@@ -257,9 +254,11 @@ impl DataPlane for LinuxShellDataPlane {
         let public_key = peer.device_public_key.clone();
         let allowed_ip = peer_allowed_ip(&peer.assigned_ip);
         let this = self.clone();
-        task::spawn_blocking(move || this.set_peer_with_fallback(&public_key, Some(&allowed_ip), false))
-            .await
-            .map_err(|err| format!("uapi connect join failure: {err}"))?
+        task::spawn_blocking(move || {
+            this.set_peer_with_fallback(&public_key, Some(&allowed_ip), false)
+        })
+        .await
+        .map_err(|err| format!("uapi connect join failure: {err}"))?
     }
 
     async fn disconnect_peer(&self, peer: &PeerSpec) -> Result<(), String> {
@@ -288,12 +287,7 @@ impl DataPlane for LinuxShellDataPlane {
             // Re-apply desired peer state (idempotent) to repair drift.
             for peer in &desired {
                 let allowed_ip = peer_allowed_ip(&peer.assigned_ip);
-                match uapi.set_peer(
-                    &peer.device_public_key,
-                    Some(&allowed_ip),
-                    Some(25),
-                    false,
-                ) {
+                match uapi.set_peer(&peer.device_public_key, Some(&allowed_ip), Some(25), false) {
                     Ok(()) => {}
                     Err(err) if err.contains("Operation not supported (os error 95)") => {
                         wg_set_peer_cli(&iface, &peer.device_public_key, Some(&allowed_ip), false)?

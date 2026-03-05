@@ -160,11 +160,7 @@ async fn exchange_code(
         params.push(("code_verifier", code_verifier.to_string()));
     }
 
-    let response = http
-        .post(&config.token_url)
-        .form(&params)
-        .send()
-        .await?;
+    let response = http.post(&config.token_url).form(&params).send().await?;
 
     if !response.status().is_success() {
         let status = response.status().as_u16();
