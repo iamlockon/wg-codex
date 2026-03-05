@@ -1,0 +1,61 @@
+name: Infra Terraform
+
+on:
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: "Terraform stack path"
+        required: true
+        default: "deploy/terraform"
+        type: choice
+        options:
+          - deploy/terraform
+          - deploy/terraform/stacks/core-vm
+      action:
+        description: "Terraform action"
+        required: true
+        default: "plan"
+        type: choice
+        options: [plan, apply, destroy]
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TERRAFORM_SA }}
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        working-directory: ${{ inputs.stack }}
+        run: terraform init
+
+      - name: Terraform validate
+        working-directory: ${{ inputs.stack }}
+        run: terraform validate
+
+      - name: Terraform plan
+        if: inputs.action == 'plan'
+        working-directory: ${{ inputs.stack }}
+        run: terraform plan
+
+      - name: Terraform apply
+        if: inputs.action == 'apply'
+        working-directory: ${{ inputs.stack }}
+        run: terraform apply -auto-approve
+
+      - name: Terraform destroy
+        if: inputs.action == 'destroy'
+        working-directory: ${{ inputs.stack }}
+        run: terraform destroy -auto-approve

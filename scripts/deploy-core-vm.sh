@@ -71,6 +71,13 @@ Optional options:
   --wg-egress-iface <name|auto>     WG_EGRESS_IFACE (default: auto)
   --app-env <env>                   APP_ENV (default: production)
   --core-require-tls <bool>         CORE_REQUIRE_TLS (default: true)
+  --register-node-in-entry <bool>    Upsert this core node into a remote entry admin API (default: false)
+  --entry-admin-url <url>            Entry admin base URL used for node registration
+  --entry-node-region <region>       Region stored in entry node registry (default: derived from zone)
+  --entry-node-country-code <code>   Optional country code metadata for node selection
+  --entry-node-city-code <code>      Optional city code metadata for node selection
+  --entry-node-pool <name>           Node pool metadata (default: standard)
+  --entry-node-provider <name>       Node provider metadata (default: gcp-vm)
   --create-only                      Only create VM + cloud-init; skip upload/install
 
 Example:
@@ -148,6 +155,13 @@ GOOGLE_OIDC_CLIENT_ID=""
 GOOGLE_OIDC_CLIENT_SECRET=""
 GOOGLE_OIDC_REDIRECT_URI=""
 VM_IP=""
+REGISTER_NODE_IN_ENTRY="false"
+ENTRY_ADMIN_URL=""
+ENTRY_NODE_REGION=""
+ENTRY_NODE_COUNTRY_CODE=""
+ENTRY_NODE_CITY_CODE=""
+ENTRY_NODE_POOL="standard"
+ENTRY_NODE_PROVIDER="gcp-vm"
 
 WG_PRIVATE_KEY_FILE="./secrets/private.key"
 TLS_SERVER_CRT_FILE="./secrets/server.crt"
@@ -267,6 +281,21 @@ case "$ENSURE_FIREWALL" in
     exit 1
     ;;
 esac
+
+case "$REGISTER_NODE_IN_ENTRY" in
+  1|0|true|false|TRUE|FALSE) ;;
+  *)
+    echo "invalid --register-node-in-entry: $REGISTER_NODE_IN_ENTRY (expected true/false)" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "$REGISTER_NODE_IN_ENTRY" == "1" || "$REGISTER_NODE_IN_ENTRY" == "true" || "$REGISTER_NODE_IN_ENTRY" == "TRUE" ]]; then
+  if [[ -z "$ENTRY_ADMIN_URL" ]]; then
+    echo "--entry-admin-url is required when --register-node-in-entry=true" >&2
+    exit 1
+  fi
+fi
 
 if [[ -n "$GOOGLE_OIDC_CLIENT_ID" || -n "$GOOGLE_OIDC_CLIENT_SECRET" || -n "$GOOGLE_OIDC_REDIRECT_URI" ]]; then
   if [[ -z "$GOOGLE_OIDC_CLIENT_ID" || -z "$GOOGLE_OIDC_CLIENT_SECRET" || -z "$GOOGLE_OIDC_REDIRECT_URI" ]]; then
@@ -945,6 +974,25 @@ echo "Quick on-VM smoke checks:"
 echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'curl -fsS http://127.0.0.1:8080/healthz'"
 echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command \"curl -fsS -H 'x-admin-token: ${ENTRY_ADMIN_API_TOKEN}' http://127.0.0.1:8080/v1/admin/core/status | jq .\""
 echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'set -e; C=\$(uuidgen | tr \"[:upper:]\" \"[:lower:]\"); N=\$(uuidgen | tr \"[:upper:]\" \"[:lower:]\"); K=\$(wg genkey); P=\$(printf \"%s\" \"\$K\" | wg pubkey); D=\$(curl -fsS -X POST http://127.0.0.1:8080/v1/devices -H \"content-type: application/json\" -H \"x-customer-id: \$C\" -d \"{\\\"name\\\":\\\"vm-test\\\",\\\"public_key\\\":\\\"\$P\\\"}\" | jq -r .id); for i in 1 2 3 4 5; do if RES=\$(curl -fsS -X POST http://127.0.0.1:8080/v1/sessions/start -H \"content-type: application/json\" -H \"x-customer-id: \$C\" -d \"{\\\"device_id\\\":\\\"\$D\\\",\\\"region\\\":\\\"us-west\\\",\\\"node_hint\\\":\\\"\$N\\\"}\" 2>/dev/null); then echo \"\$RES\" | jq .; exit 0; fi; sleep 1; done; echo \"session start failed after retries\" >&2; exit 1'"
+echo
+if [[ "$REGISTER_NODE_IN_ENTRY" == "1" || "$REGISTER_NODE_IN_ENTRY" == "true" || "$REGISTER_NODE_IN_ENTRY" == "TRUE" ]]; then
+  if [[ -z "$VM_IP" ]]; then
+    echo "Unable to register node in entry because VM public IP is empty." >&2
+    exit 1
+  fi
+  if [[ -z "$ENTRY_NODE_REGION" ]]; then
+    ENTRY_NODE_REGION="${ZONE%-*}"
+  fi
+  require_cmd curl
+  require_cmd jq
+  payload="$(jq -nc     --arg id "$(cat /proc/sys/kernel/random/uuid)"     --arg region "$ENTRY_NODE_REGION"     --arg provider "$ENTRY_NODE_PROVIDER"     --arg endpoint_host "$VM_IP"     --argjson endpoint_port "$WG_LISTEN_PORT"     --arg country_code "$ENTRY_NODE_COUNTRY_CODE"     --arg city_code "$ENTRY_NODE_CITY_CODE"     --arg pool "$ENTRY_NODE_POOL"     '{id:$id,region:$region,provider:$provider,endpoint_host:$endpoint_host,endpoint_port:$endpoint_port,healthy:true,active_peer_count:0,capacity_peers:200,pool:$pool}
+      + (if $country_code=="" then {} else {country_code:$country_code} end)
+      + (if $city_code=="" then {} else {city_code:$city_code} end)')"
+  echo "Registering core node in entry: ${ENTRY_ADMIN_URL%/}/v1/admin/nodes"
+  curl -fsS -X POST "${ENTRY_ADMIN_URL%/}/v1/admin/nodes"     -H 'content-type: application/json'     -H "x-admin-token: ${ENTRY_ADMIN_API_TOKEN}"     -d "$payload" >/dev/null
+  echo "Core node registered in entry for region=${ENTRY_NODE_REGION} endpoint=${VM_IP}:${WG_LISTEN_PORT}"
+fi
+
 echo
 if [[ -n "$VM_IP" ]]; then
   echo "If firewall allows tcp:8080, you can test from your machine:"
