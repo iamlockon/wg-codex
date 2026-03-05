@@ -8,6 +8,7 @@ spec:
     spec:
       serviceAccountName: entry-wi
       volumes:
+        - $patch: replace
         - name: entry-sensitive
           csi:
             driver: secrets-store.csi.k8s.io

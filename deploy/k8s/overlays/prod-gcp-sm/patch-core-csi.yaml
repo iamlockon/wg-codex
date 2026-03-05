@@ -8,6 +8,7 @@ spec:
     spec:
       serviceAccountName: core-wi
       volumes:
+        - $patch: replace
         - name: core-sensitive
           csi:
             driver: secrets-store.csi.k8s.io

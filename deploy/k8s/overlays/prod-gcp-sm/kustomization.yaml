@@ -5,6 +5,12 @@ namespace: wg-vpn
 resources:
   - ../prod
 
-patchesStrategicMerge:
-  - patch-entry-csi.yaml
-  - patch-core-csi.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: entry
+    path: patch-entry-csi.yaml
+  - target:
+      kind: DaemonSet
+      name: core
+    path: patch-core-csi.yaml
