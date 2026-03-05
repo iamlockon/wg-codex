@@ -26,9 +26,7 @@ resource "google_compute_instance" "core" {
     }
   }
 
-  metadata = merge(var.metadata, {
-    enable-oslogin = "TRUE"
-  })
+  metadata = var.metadata
 
   service_account {
     email  = var.service_account_email
