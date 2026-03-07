@@ -2257,7 +2257,9 @@ fn map_oidc_error(err: OidcError) -> ApiError {
                     ApiError::unauthorized("oauth_redirect_uri_mismatch")
                 }
                 (401, "invalid_client") => ApiError::service_unavailable("oauth_invalid_client"),
-                _ if (400..500).contains(&status) => ApiError::unauthorized("oauth_invalid_identity"),
+                _ if (400..500).contains(&status) => {
+                    ApiError::unauthorized("oauth_invalid_identity")
+                }
                 _ => ApiError::service_unavailable("oauth_provider_unreachable"),
             }
         }

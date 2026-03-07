@@ -53,3 +53,11 @@ If you do not want to seed additional secret values in Terraform state, leave `s
   - `APIs & Services` -> `Credentials` -> `Create Credentials` -> `OAuth client ID` (`Web application`)
   - add callback URI: `https://<entry-host>/v1/auth/oauth/google/callback`
   - set `google_oauth_client_id` and `google_oauth_client_secret` in `terraform.tfvars`
+
+
+## GitHub Actions automation
+
+- `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform` and `deploy/terraform/stacks/core-vm`.
+- `.github/workflows/core-vm-cicd.yml`: creates/tears down a regional core VM stack and deploys the services via `scripts/deploy-core-vm.sh`.
+
+The `deploy/terraform/stacks/core-vm` stack consumes the reusable module at `deploy/terraform/modules/core_vm`.

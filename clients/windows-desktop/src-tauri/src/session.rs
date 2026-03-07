@@ -78,7 +78,9 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
         device_id: String,
         private_key: String,
     ) -> Result<(), ClientError> {
-        self.runtime.device_private_keys.insert(device_id, private_key);
+        self.runtime
+            .device_private_keys
+            .insert(device_id, private_key);
         self.storage
             .save_runtime_state(&self.runtime)
             .map_err(|e| ClientError::Storage(e.to_string()))
@@ -168,7 +170,8 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
                 region,
                 mut config,
             } => {
-                if let Some(private_key) = self.runtime.device_private_keys.get(&device_id).cloned() {
+                if let Some(private_key) = self.runtime.device_private_keys.get(&device_id).cloned()
+                {
                     config.client_private_key = Some(private_key);
                 }
                 self.tunnel
@@ -208,7 +211,8 @@ impl<S: SecureStorage, T: TunnelController> DesktopClient<S, T> {
                 region,
                 mut config,
             } => {
-                if let Some(private_key) = self.runtime.device_private_keys.get(&device_id).cloned() {
+                if let Some(private_key) = self.runtime.device_private_keys.get(&device_id).cloned()
+                {
                     config.client_private_key = Some(private_key);
                 }
                 self.tunnel
@@ -368,6 +372,7 @@ mod tests {
     use crate::api::EntryApi;
     use crate::storage::FileSecureStorage;
     use crate::wireguard::RecordingTunnelController;
+    use anyhow::anyhow;
     use axum::extract::{Path, State};
     use axum::http::{HeaderMap, StatusCode};
     use axum::routing::{get, post};
@@ -376,7 +381,6 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use anyhow::anyhow;
 
     #[derive(Debug, Clone)]
     struct MockState {
@@ -540,7 +544,8 @@ mod tests {
         let storage = FileSecureStorage::new(storage_path, "k4".to_string());
         let tunnel = RecordingTunnelController::default();
         let tunnel_probe = tunnel.clone();
-        let mut client = DesktopClient::new(EntryApi::new(base_url), storage, tunnel).expect("client");
+        let mut client =
+            DesktopClient::new(EntryApi::new(base_url), storage, tunnel).expect("client");
 
         client
             .login_oauth_callback("google", "ok-code", None, None)
@@ -553,7 +558,10 @@ mod tests {
         let _ = client.connect("us-west1").await.expect("connect");
 
         client.auth.as_mut().expect("auth").access_token = "bad-token".to_string();
-        client.disconnect().await.expect("disconnect must remain usable");
+        client
+            .disconnect()
+            .await
+            .expect("disconnect must remain usable");
         assert!(client.runtime_state().last_session_key.is_none());
         assert!(tunnel_probe.events().iter().any(|e| e == "down"));
     }
@@ -864,7 +872,10 @@ mod tests {
     struct FailingTunnelController;
 
     impl TunnelController for FailingTunnelController {
-        fn apply_and_up(&self, _config: &crate::models::WireGuardClientConfig) -> anyhow::Result<()> {
+        fn apply_and_up(
+            &self,
+            _config: &crate::models::WireGuardClientConfig,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
 

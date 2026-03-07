@@ -320,7 +320,10 @@ mod tests {
             qr_payload: "[Interface]\nPrivateKey = abc\n[Peer]\nPublicKey = xyz".to_string(),
             client_private_key: None,
         };
-        assert_eq!(controller.render_config(&cfg).expect("render"), cfg.qr_payload);
+        assert_eq!(
+            controller.render_config(&cfg).expect("render"),
+            cfg.qr_payload
+        );
     }
 
     #[test]

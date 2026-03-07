@@ -10,8 +10,9 @@
   - Runs the DB-backed integration suites against `TEST_DATABASE_URL`.
 
 - `scripts/deploy-core-vm.sh`
-  - Legacy VM-oriented deployment helper for a non-Kubernetes core host.
-  - Keep this only for VM experiments; current production deployment docs assume the Kubernetes flow.
+  - VM deployment helper for a non-Kubernetes core host.
+  - Supports optional `--register-node-in-entry true` to upsert the newly created core node into a remote entry admin API.
+  - Used by `.github/workflows/core-vm-cicd.yml` for region-aware core rollout automation.
 
 ## Useful manual diagnostics
 
