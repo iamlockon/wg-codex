@@ -6,6 +6,7 @@ on:
       project_id:
         description: "GCP project id"
         required: true
+        default: "wg-stg"
       github_repository:
         description: "GitHub repository (owner/name). Leave empty for current repo."
         required: false
