@@ -34,6 +34,7 @@ Use `.github/workflows/bootstrap-gcp-oidc.yml` and provide:
 - `GH_ADMIN_TOKEN` repository secret for `apply`/`destroy` runs. `GITHUB_TOKEN` is not sufficient for managing repository Actions secrets.
 
 Workflow behavior:
+- `action=plan` first attempts best-effort `terraform import` for existing resources (Workload Identity Pool/Provider, required APIs, and IAM bindings) so reruns do not fail with already-exists errors.
 - `action=plan` runs `terraform plan -out=tfplan` and uploads `tfplan` as artifact `bootstrap-oidc-tfplan`.
 - `action=apply` requires `plan_run_id` (the workflow run id from the earlier `plan`) and applies that exact saved plan file.
 - `action=destroy` runs a direct `terraform destroy -auto-approve`.

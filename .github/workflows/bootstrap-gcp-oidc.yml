@@ -82,6 +82,74 @@ jobs:
         working-directory: deploy/terraform/stacks/bootstrap-oidc
         run: terraform init
 
+      - name: Import existing resources (plan only)
+        if: inputs.action == 'plan'
+        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        env:
+          PROJECT_ID: ${{ inputs.project_id }}
+          WORKLOAD_IDENTITY_POOL_ID: ${{ inputs.workload_identity_pool_id }}
+          WORKLOAD_IDENTITY_PROVIDER_ID: ${{ inputs.workload_identity_provider_id }}
+          TERRAFORM_SERVICE_ACCOUNT_ID: ${{ inputs.terraform_service_account_id }}
+          GITHUB_REPOSITORY_FULL: ${{ inputs.github_repository != '' && inputs.github_repository || github.repository }}
+        run: |
+          set +e
+
+          try_import() {
+            local address="$1"
+            local import_id="$2"
+            if terraform import -no-color "$address" "$import_id"; then
+              echo "Imported: $address"
+            else
+              echo "Skipped import: $address"
+            fi
+          }
+
+          PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null)"
+          SA_EMAIL="${TERRAFORM_SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+          if [ -n "$PROJECT_NUMBER" ]; then
+            try_import \
+              google_iam_workload_identity_pool.github \
+              "projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}"
+            try_import \
+              google_iam_workload_identity_pool_provider.github \
+              "projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/providers/${WORKLOAD_IDENTITY_PROVIDER_ID}"
+
+            GITHUB_REPO_MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/attribute.repository/${GITHUB_REPOSITORY_FULL}"
+            try_import \
+              google_service_account_iam_member.github_oidc_impersonation \
+              "projects/${PROJECT_ID}/serviceAccounts/${SA_EMAIL} roles/iam.workloadIdentityUser ${GITHUB_REPO_MEMBER}"
+          else
+            # Fallback IDs for pool/provider if project number lookup is unavailable.
+            try_import \
+              google_iam_workload_identity_pool.github \
+              "${PROJECT_ID}/${WORKLOAD_IDENTITY_POOL_ID}"
+            try_import \
+              google_iam_workload_identity_pool_provider.github \
+              "${PROJECT_ID}/${WORKLOAD_IDENTITY_POOL_ID}/${WORKLOAD_IDENTITY_PROVIDER_ID}"
+            echo "Skipped import: google_service_account_iam_member.github_oidc_impersonation (project number unavailable)"
+          fi
+
+          try_import "google_project_service.iamcredentials[0]" "${PROJECT_ID}/iamcredentials.googleapis.com"
+          try_import "google_project_service.sts[0]" "${PROJECT_ID}/sts.googleapis.com"
+
+          for role in \
+            roles/compute.admin \
+            roles/container.admin \
+            roles/cloudsql.admin \
+            roles/secretmanager.admin \
+            roles/serviceusage.serviceUsageAdmin \
+            roles/iam.serviceAccountAdmin \
+            roles/iam.serviceAccountUser \
+            roles/resourcemanager.projectIamAdmin
+          do
+            try_import \
+              "google_project_iam_member.terraform_sa_roles[\"${role}\"]" \
+              "${PROJECT_ID} ${role} serviceAccount:${SA_EMAIL}"
+          done
+
+          exit 0
+
       - name: Terraform validate
         working-directory: deploy/terraform/stacks/bootstrap-oidc
         run: terraform validate
