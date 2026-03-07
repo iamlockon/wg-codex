@@ -59,7 +59,11 @@ fi
 terraform -chdir="${TFSTATE_STACK_DIR}" init -backend=false -input=false
 
 # Best-effort import so bucket can be managed whether it already exists or not.
-terraform -chdir="${TFSTATE_STACK_DIR}" import -input=false google_storage_bucket.terraform_state "${STATE_BUCKET}" >/dev/null 2>&1 || true
+terraform -chdir="${TFSTATE_STACK_DIR}" import -input=false \
+  -var="project_id=${PROJECT_ID}" \
+  -var="bucket_name=${STATE_BUCKET}" \
+  -var="location=${STATE_BUCKET_LOCATION}" \
+  google_storage_bucket.terraform_state "${STATE_BUCKET}" >/dev/null 2>&1 || true
 
 terraform -chdir="${TFSTATE_STACK_DIR}" apply -input=false -auto-approve \
   -var="project_id=${PROJECT_ID}" \
