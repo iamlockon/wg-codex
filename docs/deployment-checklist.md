@@ -1,102 +1,60 @@
-# Deployment Checklist (GCP/GKE)
+# Deployment Checklist (VM-based)
 
 ## Preconditions
-- If `deploy/terraform` is used with `manage_gke=true`, GKE cluster/node pools are provisioned by Terraform.
-- If `manage_gke=false`, an existing GKE cluster with node pools for control-plane (`entry`) and dataplane (`core`) is required.
-- Managed Postgres reachable from cluster (Cloud SQL or equivalent).
-- TLS assets issued for mTLS between `entry` and `core`.
-- Google OAuth client configured.
-- Secret objects provisioned:
-  - `entry-secrets`
-  - `core-secrets`
-  - `core-tls`
-  - `core-grpc-client-tls`
-  - `wireguard-keys`
-- Optional alternative for `entry-secrets` and `core-secrets`:
-  - GCP Secret Manager CSI via `deploy/k8s/overlays/prod-gcp-sm` (requires Workload Identity and CSI driver).
-  - Provision Workload Identity service accounts, Secret Manager secrets, and SecretProviderClass resources via Terraform in `deploy/terraform`.
-  - CSI driver and GCP provider can also be installed by Terraform with `install_secrets_store_csi_driver=true`.
+- Provision infra with Terraform:
+  - `deploy/terraform/stacks/bootstrap-oidc` (if GitHub OIDC is not bootstrapped yet)
+  - `deploy/terraform/stacks/core-vm`
 - Environment templates available:
   - `deploy/env/entry.env.example`
   - `deploy/env/core.env.example`
+- Google OAuth client configured for `entry`.
+- TLS material available for `entry` <-> `core` gRPC.
+- WireGuard private key available for `core`.
 
-## Build and publish
-1. Build images:
-   - `docker build -f services/entry/Dockerfile -t <registry>/wg-entry:<tag> .`
-   - `docker build -f services/core/Dockerfile -t <registry>/wg-core:<tag> .`
-2. Push both images to registry.
-3. Update image tags in Kubernetes manifests.
-4. Current preferred automation for the full backend flow is `scripts/deploy-backends-k8s.sh --overlay <overlay>` (build, push, apply, rollout, migrations).
+## Deploy
+1. Deploy `entry` VM:
+   - `scripts/deploy-entry-vm.sh --project <project-id> --vm-name <entry-vm-name> --zone <zone>`
+2. For entry production settings, pass explicit flags/secrets as needed:
+   - `--entry-app-env production`
+   - `--entry-admin-token <token>`
+   - `--entry-jwt-signing-keys <kid:secret>`
+   - `--google-oidc-client-id <id>`
+   - `--google-oidc-client-secret <secret>`
+   - `--google-oidc-redirect-uri <uri>`
+3. Deploy `core` VM on demand:
+   - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <core-vm-name> --zone <zone> --entry-admin-url <entry-admin-base-url> --entry-admin-token <token>`
+4. Optional for core deploy:
+   - Register node in entry control plane: `--register-node-in-entry true --entry-node-region <region>`
+   - If entry should route to discovered nodes on a non-default gRPC port, set `APP_CORE_NODE_GRPC_PORT` on entry.
+5. GitHub Actions path (`.github/workflows/entry-vm-cicd.yml`):
+   - Deploys only the entry VM using `scripts/deploy-entry-vm.sh`.
+   - Add VM without touching Terraform stack state: `action=apply`, `provisioner=script`, unique `vm_name`.
+   - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
 
-## Cluster apply order
-0. Validate manifests:
-   - `deploy/k8s/preflight.sh dev`
-   - `deploy/k8s/preflight.sh prod`
-   - `deploy/k8s/preflight.sh prod-gcp-sm`
-   - `deploy/k8s/preflight.sh prod-gcp-sm-native-canary`
-1. For GCP Secret Manager overlays, provision infra first:
-   - `cd deploy/terraform`
-   - `terraform init && terraform apply`
-2. Dev: `kubectl apply -k deploy/k8s/overlays/dev`
-3. Prod: `kubectl apply -k deploy/k8s/overlays/prod`
-4. Prod with GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm`
-5. Native canary (optional): `kubectl apply -k deploy/k8s/overlays/prod-native-canary`
-6. Native canary + GCP Secret Manager CSI (optional): `kubectl apply -k deploy/k8s/overlays/prod-gcp-sm-native-canary`
-7. Apply or refresh the migration ConfigMap and run `deploy/k8s/migrate-job.yaml`.
-8. Prefer automated canary gate for native rollout:
-   - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary`
-   - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-gcp-sm-native-canary`
-   - For GCP Secret Manager environments, set `ROLLBACK_OVERLAY=prod-gcp-sm` so rollback keeps CSI wiring.
-
-## Required production env policy
-- `APP_ENV=production`
+## Required production policy
 - `entry`:
-  - `DATABASE_URL` (or `DATABASE_URL_FILE`) present
+  - `APP_ENV=production`
   - `APP_REQUIRE_CORE_TLS=true`
   - `APP_REQUIRE_OAUTH_NONCE=true`
   - `APP_REQUIRE_OAUTH_PKCE=true`
-  - `APP_TERMINATED_SESSION_RETENTION_DAYS` and `APP_AUDIT_RETENTION_DAYS` configured within policy limits
-  - Optional policy cap overrides (`APP_MAX_TERMINATED_SESSION_RETENTION_DAYS`, `APP_MAX_AUDIT_RETENTION_DAYS`) remain greater than or equal to the configured values
   - `APP_ALLOW_LEGACY_CUSTOMER_HEADER=false`
   - `APP_LOG_REDACTION_MODE=strict` (or omitted; production defaults to strict)
-  - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)
   - `ADMIN_API_TOKEN` set
-  - File-backed secret paths mounted and readable (`ADMIN_API_TOKEN_FILE`, `APP_JWT_SIGNING_KEYS_FILE`, OIDC `*_FILE`)
-  - Pod/container security context enforces `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`
+  - `APP_JWT_SIGNING_KEYS` or `APP_JWT_SIGNING_KEY` set (non-default)
 - `core`:
+  - `APP_ENV=production`
   - `CORE_DATAPLANE_NOOP=false`
   - `CORE_REQUIRE_TLS=true`
-  - `WG_SERVER_PUBLIC_KEY` set (non-placeholder)
-  - File-backed secret paths mounted and readable (`WG_SERVER_PUBLIC_KEY_FILE`, `ADMIN_API_TOKEN_FILE`)
-  - `/etc/wireguard/private.key` exists via `wireguard-keys` secret
-  - `/etc/core-tls/{server.crt,server.key,ca.pem}` exists via `core-tls` secret
-  - Pod/container security context enforces `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`
+  - `WG_SERVER_PUBLIC_KEY` set
 
 ## Smoke checks
-Preferred:
-- `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> cli`
-- Native canary: `deploy/k8s/smoke-check.sh https://<entry-host> <admin-token> native`
-- Automated canary gate with rollback:
-  - `deploy/k8s/canary-validate.sh https://<entry-host> <admin-token> prod-native-canary`
-
-Manual fallback:
-1. `kubectl -n wg-vpn get pods`
-2. `kubectl -n wg-vpn logs deploy/entry --tail=100`
-3. `kubectl -n wg-vpn logs ds/core --tail=100`
-4. `curl http://<entry-service>/healthz`
-5. Verify admin API:
-   - `POST /v1/admin/nodes`
-   - `GET /v1/admin/privacy/policy`
-   - `GET /v1/admin/privacy/audit-events`
-   - `GET /v1/admin/core/status`
+1. Check service health:
+   - `curl http://<entry-host>/healthz`
+2. Verify admin API:
    - `GET /v1/admin/readiness` should report `production_ready=true`
-   - `POST /v1/admin/subscriptions`
-   - `GET /v1/admin/subscriptions`
-   - `GET /v1/admin/subscriptions/{customer_id}`
-   - `GET /v1/admin/subscriptions/{customer_id}/history`
-6. Verify core gRPC status:
-   - `GetNodeStatus` returns expected `nat_driver`, `dataplane_mode`, and health metadata.
-
-## Known non-blocking follow-ups
-- Complete production canary/rollout validation for `WG_NAT_DRIVER=native` and then promote native mode as default.
-- Tune redaction policy by environment (`APP_LOG_REDACTION_MODE`) once production observability needs are finalized.
+   - `GET /v1/admin/core/status`
+   - `GET /v1/admin/privacy/policy`
+   - `GET /v1/admin/nodes` should show healthy nodes with recent `updated_at`
+3. Verify logs on VM:
+   - `gcloud compute ssh <entry-vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-entry -n 200 --no-pager"`
+   - `gcloud compute ssh <core-vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-core -n 200 --no-pager"`

@@ -135,39 +135,12 @@
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`
-  - `deploy/k8s/*` manifests (namespace, configmaps, secrets examples, entry deployment, core daemonset, migration job)
-  - `deploy/k8s/base` + `deploy/k8s/overlays/{dev,prod}` kustomize structure for one-command deploy per env
-  - prod SealedSecret placeholders in `deploy/k8s/overlays/prod`
-  - optional GCP Secret Manager CSI overlay (`deploy/k8s/overlays/prod-gcp-sm`) with Terraform-managed Workload Identity and SecretProviderClass resources (`deploy/terraform`)
-  - optional combined GCP Secret Manager CSI + native NAT canary overlay (`deploy/k8s/overlays/prod-gcp-sm-native-canary`)
-  - `deploy/k8s/smoke-check.sh` automated post-deploy gate using health/privacy/core/readiness endpoints
-    - supports optional NAT driver assertion (`cli` or `native`) for rollout validation.
+  - `deploy/terraform/stacks/core-vm` stack and reusable `deploy/terraform/modules/core_vm` module for VM-based rollout.
   - `docs/deployment-checklist.md`
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
   - includes explicit `cargo check -p core --features native-nft` gate.
-  - preflight validation for `dev`, `prod`, and `prod-native-canary` overlays via `deploy/k8s/preflight.sh`
-- Deployment preflight script added:
-  - `deploy/k8s/preflight.sh <overlay>` renders kustomize output and validates required secret mounts/env wiring.
-  - For non-dev overlays, it fails if SealedSecret placeholders (`AgReplaceMe`) remain.
-  - It also enforces NAT rollout policy (`prod=cli`, `prod-native-canary=native`).
-  - It now enforces production security config invariants (core TLS required, legacy auth header off, strict redaction, OAuth nonce/PKCE required).
-- Kubernetes security context hardening added:
-  - `entry` and `core` pods use `RuntimeDefault` seccomp and `allowPrivilegeEscalation=false`.
-  - migration job now has bounded retries and TTL cleanup.
-- Kubernetes manifests now mount sensitive materials from secrets:
-  - `entry` reads admin/JWT/OIDC via `*_FILE` paths and mounts `core-grpc-client-tls`.
-  - `core` mounts `core-tls` and `wireguard-keys`, and reads admin/WG public key via `*_FILE`.
-  - prod overlay now includes sealed-secret placeholders for `core-tls`, `core-grpc-client-tls`, and `wireguard-keys`.
-- `prod-gcp-sm` secret wiring has been expanded toward Secret Manager-only runtime mounts:
-  - `entry` now mounts both `entry-sensitive` and `core-grpc-client-tls` via CSI (`entry-gcp-secrets`).
-  - `core` now mounts `core-sensitive`, `core-tls`, and `wireguard-keys` via CSI (`core-gcp-secrets`).
-  - `core` health reporter now supports `CORE_NODE_ID_FILE`, and k8s wiring uses file-backed `CORE_NODE_ID_FILE`.
-  - Terraform in `deploy/terraform` now manages SecretProviderClass resources, including node id, core TLS, WireGuard private key, and entry client mTLS mappings.
-  - preflight now fails `prod-gcp-sm*` if direct secret volumes remain for sensitive service mounts.
-- Native NAT canary validation automation added:
-  - `deploy/k8s/canary-validate.sh` runs preflight, applies canary overlay, waits for rollout, runs smoke checks expecting `nat_driver=native`, and auto-rolls back on failure by default.
-  - supports `prod-native-canary` and `prod-gcp-sm-native-canary` overlays plus configurable rollback target via `ROLLBACK_OVERLAY`.
+  - VM rollout validation remains a manual checklist path (`docs/deployment-checklist.md` + `scripts/deploy-entry-vm.sh` / `scripts/deploy-core-vm.sh`).
 - Windows desktop client MVP scaffolding added:
   - `clients/windows-desktop/ui` contains typed backend contracts, API client, and initial session state model.
   - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.
@@ -195,13 +168,11 @@
 - Native NAT milestone completed:
   - `WG_NAT_DRIVER=native` selects a feature-gated path backed by `native-nft`,
   - native path ensures nft table/chain/masquerade rule setup via netlink under the feature gate.
-- Canary rollout assets added for native NAT:
-  - `deploy/k8s/overlays/prod-native-canary` switches `WG_NAT_DRIVER=native` and canary image tag,
-  - rollback path is `kubectl apply -k deploy/k8s/overlays/prod`.
+- Native NAT rollout still requires environment validation before promoting it as the default runtime mode.
 
 ## Priority Next Steps
-1. Validate `prod-gcp-sm` in-cluster (Workload Identity + Secret Manager access) with the expanded CSI-only service secret mounts.
-2. Run production canary validation for `WG_NAT_DRIVER=native` with `deploy/k8s/canary-validate.sh` in-cluster and, once stable, switch production default from `cli` to `native`.
+1. Run VM deployment validation end-to-end with `scripts/deploy-entry-vm.sh` (entry) and `scripts/deploy-core-vm.sh` (core) and confirm readiness/admin API behavior.
+2. Validate `WG_NAT_DRIVER=native` in VM environments and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
 5. Run end-to-end Windows host validation (real WireGuard for Windows + DPAPI behavior), then harden packaging and signing for the shipped Tauri UI.
@@ -220,7 +191,7 @@
    - `crates/control-plane/src/lib.rs`
    - `services/core/src/main.rs`
    - `services/entry/src/main.rs`
-3. Check the current deployment target you are continuing (`deploy/k8s/README.md`, `docs/deployment-checklist.md`, or `deploy/terraform/README.md`).
+3. Check the current deployment target you are continuing (`docs/deployment-checklist.md` or `deploy/terraform/README.md`).
 4. If continuing desktop work, inspect `clients/windows-desktop/src-tauri/src/main.rs` and `clients/windows-desktop/ui/src/main.ts` before changing behavior.
 
 ## Commands to Run Next Session

@@ -20,7 +20,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest};
-use control_plane::{ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_rfc3339};
+use control_plane::{
+    ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_optional_uuid, parse_rfc3339,
+};
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
 use jsonwebtoken::{
@@ -398,6 +400,16 @@ impl NodeStore {
         }
     }
 
+    async fn get_node(&self, node_id: Uuid) -> Result<Option<NodeRecord>, ApiError> {
+        match self {
+            NodeStore::InMemory(store) => {
+                let store = store.lock().await;
+                Ok(store.get(&node_id).cloned())
+            }
+            NodeStore::Postgres(repo) => repo.get_node(node_id).await.map_err(map_node_repo_error),
+        }
+    }
+
     async fn upsert_node(&self, input: UpsertNodeInput) -> Result<NodeRecord, ApiError> {
         match self {
             NodeStore::InMemory(store) => {
@@ -510,6 +522,25 @@ impl SessionStore {
             }
             SessionStore::Postgres(repo) => repo
                 .get_active_session(customer_id)
+                .await
+                .map_err(map_pg_repo_error),
+        }
+    }
+
+    async fn set_active_session_node_id(
+        &self,
+        customer_id: Uuid,
+        session_key: &str,
+        node_id: Option<Uuid>,
+    ) -> Result<(), ApiError> {
+        match self {
+            SessionStore::InMemory(repo) => {
+                let mut repo = repo.lock().await;
+                repo.set_active_session_node_id(customer_id, session_key, node_id)
+                    .map_err(map_repo_error)
+            }
+            SessionStore::Postgres(repo) => repo
+                .set_active_session_node_id(customer_id, session_key, node_id)
                 .await
                 .map_err(map_pg_repo_error),
         }
@@ -730,6 +761,159 @@ async fn privacy_cleanup_loop(
     }
 }
 
+fn core_node_grpc_port() -> u16 {
+    std::env::var("APP_CORE_NODE_GRPC_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(50051)
+}
+
+fn core_target_for_node(node: &NodeRecord) -> Result<String, ApiError> {
+    let host = node.endpoint_host.trim();
+    if host.is_empty() {
+        return Err(ApiError::bad_request("node_missing_endpoint_host"));
+    }
+    let scheme = if env_flag("APP_REQUIRE_CORE_TLS", false) {
+        "https"
+    } else {
+        "http"
+    };
+    Ok(format!("{scheme}://{host}:{}", core_node_grpc_port()))
+}
+
+async fn resolve_node_by_id(
+    state: &Arc<AppState>,
+    node_id: Option<Uuid>,
+) -> Result<Option<NodeRecord>, ApiError> {
+    let Some(node_id) = node_id else {
+        return Ok(None);
+    };
+    state.node_store.get_node(node_id).await
+}
+
+async fn connect_device_with_discovery(
+    state: &Arc<AppState>,
+    node: Option<&NodeRecord>,
+    request: ConnectRequest,
+) -> Result<control_plane::proto::ConnectResponse, ApiError> {
+    if let Some(node) = node {
+        if node.endpoint_host.trim().is_empty() {
+            let mut client = state.core_client.lock().await;
+            return client
+                .connect_device(request)
+                .await
+                .map(|v| v.into_inner())
+                .map_err(|err| {
+                    warn!(error = %err, "entry->core connect_device failed");
+                    ApiError::service_unavailable("core_connect_failed")
+                });
+        }
+        let target = core_target_for_node(node)?;
+        let mut client = build_core_client(&target).await.map_err(|err| {
+            warn!(node_id=%node.id, target=%target, error=%err, "failed to connect to discovered core node");
+            ApiError::service_unavailable("core_connect_failed")
+        })?;
+        return client
+            .connect_device(request)
+            .await
+            .map(|v| v.into_inner())
+            .map_err(|err| {
+                warn!(node_id=%node.id, target=%target, error=%err, "entry->core connect_device failed");
+                ApiError::service_unavailable("core_connect_failed")
+            });
+    }
+
+    let mut client = state.core_client.lock().await;
+    client
+        .connect_device(request)
+        .await
+        .map(|v| v.into_inner())
+        .map_err(|err| {
+            warn!(error = %err, "entry->core connect_device failed");
+            ApiError::service_unavailable("core_connect_failed")
+        })
+}
+
+async fn get_session_with_discovery(
+    state: &Arc<AppState>,
+    node: Option<&NodeRecord>,
+    customer_id: Uuid,
+) -> Result<control_plane::proto::GetSessionResponse, ApiError> {
+    let request = GetSessionRequest {
+        customer_id: customer_id.to_string(),
+    };
+    if let Some(node) = node {
+        if node.endpoint_host.trim().is_empty() {
+            let mut client = state.core_client.lock().await;
+            return client
+                .get_session(request)
+                .await
+                .map(|v| v.into_inner())
+                .map_err(|_| ApiError::service_unavailable("core_session_lookup_failed"));
+        }
+        let target = core_target_for_node(node)?;
+        let mut client = build_core_client(&target).await.map_err(|err| {
+            warn!(node_id=%node.id, target=%target, error=%err, "failed to connect to discovered core node");
+            ApiError::service_unavailable("core_session_lookup_failed")
+        })?;
+        return client
+            .get_session(request)
+            .await
+            .map(|v| v.into_inner())
+            .map_err(|err| {
+                warn!(node_id=%node.id, target=%target, error=%err, "entry->core get_session failed");
+                ApiError::service_unavailable("core_session_lookup_failed")
+            });
+    }
+
+    let mut client = state.core_client.lock().await;
+    client
+        .get_session(request)
+        .await
+        .map(|v| v.into_inner())
+        .map_err(|_| ApiError::service_unavailable("core_session_lookup_failed"))
+}
+
+async fn disconnect_with_discovery(
+    state: &Arc<AppState>,
+    node: Option<&NodeRecord>,
+    session_key: &str,
+    customer_id: Uuid,
+) -> Result<(), ApiError> {
+    let request = DisconnectRequest {
+        request_id: Uuid::new_v4().to_string(),
+        session_key: session_key.to_string(),
+        customer_id: customer_id.to_string(),
+    };
+    if let Some(node) = node {
+        if node.endpoint_host.trim().is_empty() {
+            let mut client = state.core_client.lock().await;
+            client
+                .disconnect_device(request)
+                .await
+                .map_err(|_| ApiError::service_unavailable("core_disconnect_failed"))?;
+            return Ok(());
+        }
+        let target = core_target_for_node(node)?;
+        let mut client = build_core_client(&target).await.map_err(|err| {
+            warn!(node_id=%node.id, target=%target, error=%err, "failed to connect to discovered core node");
+            ApiError::service_unavailable("core_disconnect_failed")
+        })?;
+        client.disconnect_device(request).await.map_err(|err| {
+            warn!(node_id=%node.id, target=%target, error=%err, "entry->core disconnect_device failed");
+            ApiError::service_unavailable("core_disconnect_failed")
+        })?;
+        return Ok(());
+    }
+
+    let mut client = state.core_client.lock().await;
+    client
+        .disconnect_device(request)
+        .await
+        .map_err(|_| ApiError::service_unavailable("core_disconnect_failed"))?;
+    Ok(())
+}
+
 async fn build_core_client(grpc_target: &str) -> anyhow::Result<ControlPlaneClient<Channel>> {
     let mut endpoint = Endpoint::from_shared(grpc_target.to_string())?;
     let require_tls = std::env::var("APP_REQUIRE_CORE_TLS")
@@ -744,7 +928,7 @@ async fn build_core_client(grpc_target: &str) -> anyhow::Result<ControlPlaneClie
         ));
     }
 
-    let channel = endpoint.connect().await?;
+    let channel = endpoint.connect_lazy();
     Ok(ControlPlaneClient::new(channel))
 }
 
@@ -1794,23 +1978,29 @@ async fn start_session(
                 device_id: device.id.to_string(),
                 device_public_key: device.public_key,
                 region: existing_row.region.clone(),
-                node_hint: maybe_uuid_to_string(selected_node.map(|n| n.id)),
+                node_hint: maybe_uuid_to_string(selected_node.as_ref().map(|n| n.id)),
             };
-            let connect_response = {
-                let mut client = state.core_client.lock().await;
-                client
-                    .connect_device(request)
-                    .await
-                    .map_err(|err| {
-                        warn!(error = %err, "entry->core connect_device failed");
-                        ApiError::service_unavailable("core_connect_failed")
-                    })?
-                    .into_inner()
-            };
+            let connect_response =
+                connect_device_with_discovery(&state, selected_node.as_ref(), request).await?;
             let config = connect_response
                 .config
                 .map(config_from_proto)
                 .ok_or_else(|| ApiError::service_unavailable("core_missing_config"))?;
+            let connected_node_id = parse_optional_uuid(&connect_response.node_id, "node_id")
+                .ok()
+                .flatten()
+                .or_else(|| selected_node.as_ref().map(|n| n.id));
+            if let Err(err) = state
+                .session_store
+                .set_active_session_node_id(
+                    customer_id,
+                    &existing_row.session_key,
+                    connected_node_id,
+                )
+                .await
+            {
+                warn!(error = err.code, "failed to persist active session node id");
+            }
 
             state.runtime_sessions_by_customer.write().await.insert(
                 customer_id,
@@ -1860,25 +2050,31 @@ async fn start_session(
                 device_id: device.id.to_string(),
                 device_public_key: device.public_key,
                 region: effective_region.clone(),
-                node_hint: maybe_uuid_to_string(selected_node.map(|n| n.id)),
+                node_hint: maybe_uuid_to_string(selected_node.as_ref().map(|n| n.id)),
             };
 
-            let connect_response = {
-                let mut client = state.core_client.lock().await;
-                client
-                    .connect_device(request)
-                    .await
-                    .map_err(|err| {
-                        warn!(error = %err, "entry->core connect_device failed");
-                        ApiError::service_unavailable("core_connect_failed")
-                    })?
-                    .into_inner()
-            };
+            let connect_response =
+                connect_device_with_discovery(&state, selected_node.as_ref(), request).await?;
 
             let config = connect_response
                 .config
                 .map(config_from_proto)
                 .ok_or_else(|| ApiError::service_unavailable("core_missing_config"))?;
+            let connected_node_id = parse_optional_uuid(&connect_response.node_id, "node_id")
+                .ok()
+                .flatten()
+                .or_else(|| selected_node.as_ref().map(|n| n.id));
+            if let Err(err) = state
+                .session_store
+                .set_active_session_node_id(
+                    customer_id,
+                    &created_row.session_key,
+                    connected_node_id,
+                )
+                .await
+            {
+                warn!(error = err.code, "failed to persist active session node id");
+            }
 
             state.runtime_sessions_by_customer.write().await.insert(
                 customer_id,
@@ -1930,34 +2126,30 @@ async fn current_session(
     headers: HeaderMap,
 ) -> Result<Json<CurrentSessionResponse>, ApiError> {
     let customer_id = customer_id_from_request(&state, &headers).await?;
-
-    let response = {
-        let mut client = state.core_client.lock().await;
-        client
-            .get_session(GetSessionRequest {
-                customer_id: customer_id.to_string(),
-            })
-            .await
-            .map_err(|_| ApiError::service_unavailable("core_session_lookup_failed"))?
-            .into_inner()
+    let active_session = state.session_store.get_active_session(customer_id).await?;
+    let Some(active_session) = active_session else {
+        return Ok(Json(CurrentSessionResponse {
+            active: false,
+            session_key: None,
+            region: None,
+            device_id: None,
+            connected_at: None,
+        }));
     };
+    let selected_node = resolve_node_by_id(&state, active_session.node_id).await?;
+
+    let response = get_session_with_discovery(&state, selected_node.as_ref(), customer_id).await?;
 
     if let Some(session) = response.session {
         let connected_at = parse_rfc3339(&session.connected_at, "connected_at")
             .map(|ts| ts.to_rfc3339())
             .ok();
 
-        let device_id = state
-            .session_store
-            .get_active_session(customer_id)
-            .await?
-            .map(|s| s.device_id);
-
         return Ok(Json(CurrentSessionResponse {
             active: true,
             session_key: Some(session.session_key),
             region: Some(session.region),
-            device_id,
+            device_id: Some(active_session.device_id),
             connected_at,
         }));
     }
@@ -1977,23 +2169,21 @@ async fn terminate_session(
     Path(session_key): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let customer_id = customer_id_from_request(&state, &headers).await?;
+    let active_session = state
+        .session_store
+        .get_active_session(customer_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no_active_session"))?;
+    if active_session.session_key != session_key {
+        return Err(ApiError::bad_request("session_key_mismatch"));
+    }
+    let selected_node = resolve_node_by_id(&state, active_session.node_id).await?;
 
+    disconnect_with_discovery(&state, selected_node.as_ref(), &session_key, customer_id).await?;
     state
         .session_store
         .terminate_session(customer_id, &session_key)
         .await?;
-
-    {
-        let mut client = state.core_client.lock().await;
-        client
-            .disconnect_device(DisconnectRequest {
-                request_id: Uuid::new_v4().to_string(),
-                session_key: session_key.clone(),
-                customer_id: customer_id.to_string(),
-            })
-            .await
-            .map_err(|_| ApiError::service_unavailable("core_disconnect_failed"))?;
-    }
 
     state
         .runtime_sessions_by_customer
@@ -2169,6 +2359,9 @@ async fn resolve_node_selection(
 ) -> Result<Option<NodeRecord>, ApiError> {
     let requested_hint = payload.node_hint;
     if let Some(hint) = requested_hint {
+        if let Some(node) = state.node_store.get_node(hint).await? {
+            return Ok(Some(node));
+        }
         let region = payload
             .region
             .clone()

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
+  cat <<'USAGE'
 Usage:
   scripts/deploy-core-vm.sh [options]
 
@@ -14,7 +14,6 @@ Defaults are free-tier oriented:
   image-project=debian-cloud
   network-tags=wg-core
   core-binary=target/release/core
-  entry-binary=target/release/entry
   wg-private-key-file=./secrets/private.key
   tls-server-crt-file=./secrets/server.crt
   tls-server-key-file=./secrets/server.key
@@ -32,7 +31,6 @@ Optional options:
   --network-tags <csv>              Comma-separated network tags (default: wg-core)
   --ensure-firewall <bool>          Create ingress firewall rules for VM tags (default: true)
   --firewall-network <name|auto>    VPC network for firewall rules (default: auto from VM NIC)
-  --allow-entry-cidrs <csv>         Source CIDRs for entry tcp/8080 (default: 0.0.0.0/0)
   --allow-wg-cidrs <csv>            Source CIDRs for wireguard udp/51820 (default: 0.0.0.0/0)
   --allow-core-grpc-cidrs <csv>     Optional source CIDRs for core grpc tcp/50051 (default: disabled)
   --wg-key-mode <generate|upload>   WG key handling (default: generate)
@@ -44,46 +42,34 @@ Optional options:
   --tls-ca-file <path>              Local CA cert (required if --tls-mode upload)
   --tls-common-name <name>          CN for self-signed cert (default: vm-name)
   --core-binary <path>              Prebuilt core binary path (default: target/release/core)
-  --entry-binary <path>             Prebuilt entry binary path (default: target/release/entry)
   --binary <path>                   Alias for --core-binary (backward-compatible)
   --core-cargo-features <csv>       Cargo features for core build (default: none)
   --wg-nat-driver <cli|native>      WG_NAT_DRIVER runtime mode (default: cli)
-  --native-nft                       Convenience: --core-cargo-features native-nft + --wg-nat-driver native
-  --skip-build                       Skip cargo build step
-  --entry-app-env <env>             Entry APP_ENV (default: development)
-  --entry-bind-addr <addr>          ENTRY_BIND_ADDR (default: 0.0.0.0:8080)
-  --entry-admin-token <token>       ADMIN_API_TOKEN for entry admin routes
-  --entry-jwt-signing-keys <value>  APP_JWT_SIGNING_KEYS for entry JWT issuance
-  --google-oidc-client-id <id>      GOOGLE_OIDC_CLIENT_ID for entry OAuth
-  --google-oidc-client-secret <v>   GOOGLE_OIDC_CLIENT_SECRET for entry OAuth
-  --google-oidc-redirect-uri <uri>  GOOGLE_OIDC_REDIRECT_URI for entry OAuth
-  --entry-allow-legacy-customer-header <bool>
-                                    APP_ALLOW_LEGACY_CUSTOMER_HEADER (default: true)
-  --entry-require-core-tls <bool>   APP_REQUIRE_CORE_TLS in entry (default: true)
-  --entry-core-grpc-url <url>       CORE_GRPC_URL from entry to core (default: https://127.0.0.1:50051)
-  --entry-core-tls-domain <name>    CORE_GRPC_TLS_DOMAIN (default: tls-common-name)
+  --native-nft                      Convenience: --core-cargo-features native-nft + --wg-nat-driver native
+  --skip-build                      Skip cargo build step
+  --create-only                     Only create VM + cloud-init; skip upload/install
+  --app-env <env>                   APP_ENV (default: production)
   --core-bind-addr <addr>           CORE_BIND_ADDR (default: 0.0.0.0:50051)
+  --core-require-tls <bool>         CORE_REQUIRE_TLS (default: true)
   --core-require-client-cert <bool> Require client cert for core gRPC (default: false)
+  --entry-admin-token <token>       Admin token used for node health/report registration in entry
+  --register-node-in-entry <bool>   Upsert this core node into remote entry admin API (default: true)
+  --entry-admin-url <url>           Entry admin base URL used for health + node registration
+  --entry-node-region <region>      Region stored in entry node registry (default: derived from zone)
+  --entry-node-country-code <code>  Optional country code metadata for node selection
+  --entry-node-city-code <code>     Optional city code metadata for node selection
+  --entry-node-pool <name>          Node pool metadata (default: standard)
+  --entry-node-provider <name>      Node provider metadata (default: gcp-vm)
+  --core-node-id <uuid>             Stable CORE_NODE_ID used for entry health reporting
   --wg-interface <name>             WG_INTERFACE (default: wg0)
   --wg-interface-cidr <cidr>        WG_INTERFACE_CIDR (default: 10.90.0.1/24)
   --wg-listen-port <port>           WG_LISTEN_PORT (default: 51820)
-  --wg-endpoint-template <v|auto>   WG_ENDPOINT_TEMPLATE for client endpoint (default: auto -> <vm-public-ip>:wg-listen-port)
+  --wg-endpoint-template <v|auto>   WG_ENDPOINT_TEMPLATE (default: auto -> <vm-public-ip>:wg-listen-port)
   --wg-egress-iface <name|auto>     WG_EGRESS_IFACE (default: auto)
-  --app-env <env>                   APP_ENV (default: production)
-  --core-require-tls <bool>         CORE_REQUIRE_TLS (default: true)
-  --register-node-in-entry <bool>    Upsert this core node into a remote entry admin API (default: false)
-  --entry-admin-url <url>            Entry admin base URL used for node registration
-  --entry-node-region <region>       Region stored in entry node registry (default: derived from zone)
-  --entry-node-country-code <code>   Optional country code metadata for node selection
-  --entry-node-city-code <code>      Optional city code metadata for node selection
-  --entry-node-pool <name>           Node pool metadata (default: standard)
-  --entry-node-provider <name>       Node provider metadata (default: gcp-vm)
-  --create-only                      Only create VM + cloud-init; skip upload/install
 
 Example:
-  scripts/deploy-core-vm.sh \
-    --project my-project
-EOF
+  scripts/deploy-core-vm.sh --project my-project --entry-admin-url https://entry.example.com
+USAGE
 }
 
 require_cmd() {
@@ -110,6 +96,11 @@ require_pkg_config_lib() {
   fi
 }
 
+is_true() {
+  local value="${1:-}"
+  [[ "$value" == "1" || "$value" == "true" || "$value" == "TRUE" ]]
+}
+
 CONFIG_FILE="scripts/deploy-core-vm.env"
 VM_NAME="wg-core-free"
 ZONE="us-west1-b"
@@ -120,11 +111,9 @@ IMAGE_PROJECT="debian-cloud"
 NETWORK_TAGS="wg-core"
 ENSURE_FIREWALL="true"
 FIREWALL_NETWORK="auto"
-ALLOW_ENTRY_CIDRS="0.0.0.0/0"
 ALLOW_WG_CIDRS="0.0.0.0/0"
 ALLOW_CORE_GRPC_CIDRS=""
 CORE_BINARY_PATH="target/release/core"
-ENTRY_BINARY_PATH="target/release/entry"
 CORE_CARGO_FEATURES=""
 WG_NAT_DRIVER="cli"
 SKIP_BUILD=0
@@ -134,14 +123,6 @@ APP_ENV="production"
 CORE_BIND_ADDR="0.0.0.0:50051"
 CORE_REQUIRE_TLS="true"
 CORE_REQUIRE_CLIENT_CERT="false"
-ENTRY_APP_ENV="development"
-ENTRY_BIND_ADDR="0.0.0.0:8080"
-ENTRY_ADMIN_API_TOKEN="dev-admin-token"
-ENTRY_JWT_SIGNING_KEYS="v1:dev-only-signing-key-change-me"
-ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER="true"
-ENTRY_REQUIRE_CORE_TLS="true"
-ENTRY_CORE_GRPC_URL="https://127.0.0.1:50051"
-ENTRY_CORE_TLS_DOMAIN=""
 WG_INTERFACE="wg0"
 WG_INTERFACE_CIDR="10.90.0.1/24"
 WG_LISTEN_PORT="51820"
@@ -151,17 +132,17 @@ WG_SERVER_PUBLIC_KEY=""
 WG_KEY_MODE="generate"
 TLS_MODE="self-signed"
 TLS_COMMON_NAME=""
-GOOGLE_OIDC_CLIENT_ID=""
-GOOGLE_OIDC_CLIENT_SECRET=""
-GOOGLE_OIDC_REDIRECT_URI=""
-VM_IP=""
-REGISTER_NODE_IN_ENTRY="false"
+
+ENTRY_ADMIN_API_TOKEN=""
+REGISTER_NODE_IN_ENTRY="true"
 ENTRY_ADMIN_URL=""
 ENTRY_NODE_REGION=""
 ENTRY_NODE_COUNTRY_CODE=""
 ENTRY_NODE_CITY_CODE=""
 ENTRY_NODE_POOL="standard"
 ENTRY_NODE_PROVIDER="gcp-vm"
+CORE_NODE_ID=""
+CORE_ENTRY_HEALTH_URL=""
 
 WG_PRIVATE_KEY_FILE="./secrets/private.key"
 TLS_SERVER_CRT_FILE="./secrets/server.crt"
@@ -191,12 +172,10 @@ while [[ $# -gt 0 ]]; do
     --network-tags) NETWORK_TAGS="$2"; shift 2 ;;
     --ensure-firewall) ENSURE_FIREWALL="$2"; shift 2 ;;
     --firewall-network) FIREWALL_NETWORK="$2"; shift 2 ;;
-    --allow-entry-cidrs) ALLOW_ENTRY_CIDRS="$2"; shift 2 ;;
     --allow-wg-cidrs) ALLOW_WG_CIDRS="$2"; shift 2 ;;
     --allow-core-grpc-cidrs) ALLOW_CORE_GRPC_CIDRS="$2"; shift 2 ;;
     --wg-key-mode) WG_KEY_MODE="$2"; shift 2 ;;
     --core-binary|--binary) CORE_BINARY_PATH="$2"; shift 2 ;;
-    --entry-binary) ENTRY_BINARY_PATH="$2"; shift 2 ;;
     --core-cargo-features) CORE_CARGO_FEATURES="$2"; shift 2 ;;
     --wg-nat-driver) WG_NAT_DRIVER="$2"; shift 2 ;;
     --native-nft)
@@ -211,20 +190,10 @@ while [[ $# -gt 0 ]]; do
     --skip-build) SKIP_BUILD=1; shift ;;
     --create-only) CREATE_ONLY=1; shift ;;
     --app-env) APP_ENV="$2"; shift 2 ;;
-    --entry-app-env) ENTRY_APP_ENV="$2"; shift 2 ;;
-    --entry-bind-addr) ENTRY_BIND_ADDR="$2"; shift 2 ;;
-    --entry-admin-token) ENTRY_ADMIN_API_TOKEN="$2"; shift 2 ;;
-    --entry-jwt-signing-keys) ENTRY_JWT_SIGNING_KEYS="$2"; shift 2 ;;
-    --google-oidc-client-id) GOOGLE_OIDC_CLIENT_ID="$2"; shift 2 ;;
-    --google-oidc-client-secret) GOOGLE_OIDC_CLIENT_SECRET="$2"; shift 2 ;;
-    --google-oidc-redirect-uri) GOOGLE_OIDC_REDIRECT_URI="$2"; shift 2 ;;
-    --entry-allow-legacy-customer-header) ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER="$2"; shift 2 ;;
-    --entry-require-core-tls) ENTRY_REQUIRE_CORE_TLS="$2"; shift 2 ;;
-    --entry-core-grpc-url) ENTRY_CORE_GRPC_URL="$2"; shift 2 ;;
-    --entry-core-tls-domain) ENTRY_CORE_TLS_DOMAIN="$2"; shift 2 ;;
     --core-bind-addr) CORE_BIND_ADDR="$2"; shift 2 ;;
     --core-require-tls) CORE_REQUIRE_TLS="$2"; shift 2 ;;
     --core-require-client-cert) CORE_REQUIRE_CLIENT_CERT="$2"; shift 2 ;;
+    --entry-admin-token) ENTRY_ADMIN_API_TOKEN="$2"; shift 2 ;;
     --register-node-in-entry) REGISTER_NODE_IN_ENTRY="$2"; shift 2 ;;
     --entry-admin-url) ENTRY_ADMIN_URL="$2"; shift 2 ;;
     --entry-node-region) ENTRY_NODE_REGION="$2"; shift 2 ;;
@@ -232,6 +201,7 @@ while [[ $# -gt 0 ]]; do
     --entry-node-city-code) ENTRY_NODE_CITY_CODE="$2"; shift 2 ;;
     --entry-node-pool) ENTRY_NODE_POOL="$2"; shift 2 ;;
     --entry-node-provider) ENTRY_NODE_PROVIDER="$2"; shift 2 ;;
+    --core-node-id) CORE_NODE_ID="$2"; shift 2 ;;
     --wg-interface) WG_INTERFACE="$2"; shift 2 ;;
     --wg-interface-cidr) WG_INTERFACE_CIDR="$2"; shift 2 ;;
     --wg-listen-port) WG_LISTEN_PORT="$2"; shift 2 ;;
@@ -297,25 +267,16 @@ case "$REGISTER_NODE_IN_ENTRY" in
     ;;
 esac
 
-if [[ "$REGISTER_NODE_IN_ENTRY" == "1" || "$REGISTER_NODE_IN_ENTRY" == "true" || "$REGISTER_NODE_IN_ENTRY" == "TRUE" ]]; then
-  if [[ -z "$ENTRY_ADMIN_URL" ]]; then
-    echo "--entry-admin-url is required when --register-node-in-entry=true" >&2
+case "$CORE_REQUIRE_CLIENT_CERT" in
+  1|0|true|false|TRUE|FALSE) ;;
+  *)
+    echo "invalid --core-require-client-cert: $CORE_REQUIRE_CLIENT_CERT (expected true/false)" >&2
     exit 1
-  fi
-fi
-
-if [[ -n "$GOOGLE_OIDC_CLIENT_ID" || -n "$GOOGLE_OIDC_CLIENT_SECRET" || -n "$GOOGLE_OIDC_REDIRECT_URI" ]]; then
-  if [[ -z "$GOOGLE_OIDC_CLIENT_ID" || -z "$GOOGLE_OIDC_CLIENT_SECRET" || -z "$GOOGLE_OIDC_REDIRECT_URI" ]]; then
-    echo "when configuring Google OIDC, provide all of: --google-oidc-client-id, --google-oidc-client-secret, --google-oidc-redirect-uri" >&2
-    exit 1
-  fi
-fi
+    ;;
+esac
 
 if [[ -z "$TLS_COMMON_NAME" ]]; then
   TLS_COMMON_NAME="$VM_NAME"
-fi
-if [[ -z "$ENTRY_CORE_TLS_DOMAIN" ]]; then
-  ENTRY_CORE_TLS_DOMAIN="$TLS_COMMON_NAME"
 fi
 
 if [[ -z "$PROJECT" ]]; then
@@ -323,6 +284,39 @@ if [[ -z "$PROJECT" ]]; then
 fi
 if [[ -z "$PROJECT" ]]; then
   echo "project is required (use --project or configure gcloud default project)" >&2
+  exit 1
+fi
+
+health_reporting_enabled="false"
+if [[ -n "$ENTRY_ADMIN_URL" && -n "$ENTRY_ADMIN_API_TOKEN" ]]; then
+  health_reporting_enabled="true"
+  CORE_ENTRY_HEALTH_URL="${ENTRY_ADMIN_URL%/}/v1/internal/nodes/health"
+fi
+
+if is_true "$REGISTER_NODE_IN_ENTRY"; then
+  if [[ -z "$ENTRY_ADMIN_URL" ]]; then
+    echo "--entry-admin-url is required when --register-node-in-entry=true" >&2
+    exit 1
+  fi
+  if [[ -z "$ENTRY_ADMIN_API_TOKEN" ]]; then
+    echo "--entry-admin-token is required when --register-node-in-entry=true" >&2
+    exit 1
+  fi
+  health_reporting_enabled="true"
+  CORE_ENTRY_HEALTH_URL="${ENTRY_ADMIN_URL%/}/v1/internal/nodes/health"
+fi
+
+if [[ -z "$CORE_NODE_ID" && "$health_reporting_enabled" == "true" ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    node_seed="${PROJECT}:${ZONE}:${VM_NAME}"
+    node_hash="$(printf '%s' "$node_seed" | sha256sum | awk '{print $1}')"
+    CORE_NODE_ID="${node_hash:0:8}-${node_hash:8:4}-${node_hash:12:4}-${node_hash:16:4}-${node_hash:20:12}"
+  else
+    CORE_NODE_ID="$(cat /proc/sys/kernel/random/uuid)"
+  fi
+fi
+if [[ -n "$CORE_NODE_ID" && ! "$CORE_NODE_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  echo "invalid --core-node-id: $CORE_NODE_ID (expected UUID format)" >&2
   exit 1
 fi
 
@@ -348,18 +342,16 @@ if [[ "$CREATE_ONLY" -eq 0 ]]; then
 fi
 
 if [[ "$SKIP_BUILD" -eq 0 ]]; then
-  echo "Building core and entry binaries..."
+  echo "Building core binary..."
   core_build_cmd=(cargo build --release -p core)
   if [[ -n "$CORE_CARGO_FEATURES" ]]; then
     core_build_cmd+=(--features "$CORE_CARGO_FEATURES")
   fi
   "${core_build_cmd[@]}"
-  cargo build --release -p entry
 fi
 
 if [[ "$CREATE_ONLY" -eq 0 ]]; then
   require_file "$CORE_BINARY_PATH"
-  require_file "$ENTRY_BINARY_PATH"
 fi
 
 tmpdir="$(mktemp -d)"
@@ -375,7 +367,7 @@ if [[ "$TLS_MODE" == "upload" ]]; then
 fi
 
 cloud_init_file="${tmpdir}/cloud-init.yaml"
-cat >"$cloud_init_file" <<'EOF'
+cat >"$cloud_init_file" <<'EOF_CLOUD'
 #cloud-config
 package_update: true
 package_upgrade: false
@@ -407,44 +399,23 @@ write_files:
 
       [Install]
       WantedBy=multi-user.target
-  - path: /etc/systemd/system/wg-entry.service
-    permissions: "0644"
-    owner: root:root
-    content: |
-      [Unit]
-      Description=WG Entry Service
-      After=network-online.target wg-core.service
-      Requires=wg-core.service
-      Wants=network-online.target
-
-      [Service]
-      Type=simple
-      EnvironmentFile=/etc/default/wg-entry
-      ExecStart=/usr/local/bin/entry
-      Restart=always
-      RestartSec=2
-      User=root
-
-      [Install]
-      WantedBy=multi-user.target
 
 runcmd:
   - modprobe wireguard
   - mkdir -p /etc/wireguard /etc/core-tls
   - chmod 700 /etc/wireguard /etc/core-tls
   - touch /etc/default/wg-core
-  - touch /etc/default/wg-entry
   - chmod 600 /etc/default/wg-core
-  - chmod 600 /etc/default/wg-entry
   - systemctl daemon-reload
-EOF
+EOF_CLOUD
 
 env_file="${tmpdir}/wg-core.env"
 wg_server_public_key_value="$WG_SERVER_PUBLIC_KEY"
 if [[ -z "$wg_server_public_key_value" ]]; then
   wg_server_public_key_value="__AUTO_WG_SERVER_PUBLIC_KEY__"
 fi
-cat >"$env_file" <<EOF
+
+cat >"$env_file" <<EOF_ENV
 APP_ENV=${APP_ENV}
 CORE_BIND_ADDR=${CORE_BIND_ADDR}
 CORE_DATAPLANE_NOOP=false
@@ -461,37 +432,17 @@ WG_SERVER_PUBLIC_KEY=${wg_server_public_key_value}
 
 CORE_TLS_CERT_PATH=/etc/core-tls/server.crt
 CORE_TLS_KEY_PATH=/etc/core-tls/server.key
-EOF
-if [[ "$CORE_REQUIRE_CLIENT_CERT" == "1" || "$CORE_REQUIRE_CLIENT_CERT" == "true" || "$CORE_REQUIRE_CLIENT_CERT" == "TRUE" ]]; then
+EOF_ENV
+
+if is_true "$CORE_REQUIRE_CLIENT_CERT"; then
   echo "CORE_TLS_CLIENT_CA_CERT_PATH=/etc/core-tls/ca.pem" >>"$env_file"
 fi
-
-entry_env_file="${tmpdir}/wg-entry.env"
-cat >"$entry_env_file" <<EOF
-APP_ENV=${ENTRY_APP_ENV}
-ENTRY_BIND_ADDR=${ENTRY_BIND_ADDR}
-CORE_GRPC_URL=${ENTRY_CORE_GRPC_URL}
-CORE_GRPC_TLS_DOMAIN=${ENTRY_CORE_TLS_DOMAIN}
-CORE_GRPC_TLS_CA_CERT_PATH=/etc/core-tls/ca.pem
-
-APP_REQUIRE_CORE_TLS=${ENTRY_REQUIRE_CORE_TLS}
-APP_ALLOW_LEGACY_CUSTOMER_HEADER=${ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER}
-APP_JWT_SIGNING_KEYS=${ENTRY_JWT_SIGNING_KEYS}
-APP_JWT_ACTIVE_KID=v1
+if [[ "$health_reporting_enabled" == "true" ]]; then
+  cat >>"$env_file" <<EOF_HEALTH
+CORE_NODE_ID=${CORE_NODE_ID}
+CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}
 ADMIN_API_TOKEN=${ENTRY_ADMIN_API_TOKEN}
-EOF
-if [[ -n "$GOOGLE_OIDC_CLIENT_ID" ]]; then
-  cat >>"$entry_env_file" <<EOF
-GOOGLE_OIDC_CLIENT_ID=${GOOGLE_OIDC_CLIENT_ID}
-GOOGLE_OIDC_CLIENT_SECRET=${GOOGLE_OIDC_CLIENT_SECRET}
-GOOGLE_OIDC_REDIRECT_URI=${GOOGLE_OIDC_REDIRECT_URI}
-EOF
-fi
-if [[ "$CORE_REQUIRE_CLIENT_CERT" == "1" || "$CORE_REQUIRE_CLIENT_CERT" == "true" || "$CORE_REQUIRE_CLIENT_CERT" == "TRUE" ]]; then
-  cat >>"$entry_env_file" <<EOF
-CORE_GRPC_TLS_CLIENT_CERT_PATH=/etc/core-tls/server.crt
-CORE_GRPC_TLS_CLIENT_KEY_PATH=/etc/core-tls/server.key
-EOF
+EOF_HEALTH
 fi
 
 GCLOUD_BASE=(gcloud --project "$PROJECT")
@@ -532,7 +483,7 @@ else
   echo "VM ${VM_NAME} already exists; skipping create."
 fi
 
-if [[ "$ENSURE_FIREWALL" == "1" || "$ENSURE_FIREWALL" == "true" || "$ENSURE_FIREWALL" == "TRUE" ]]; then
+if is_true "$ENSURE_FIREWALL"; then
   firewall_network_value="$FIREWALL_NETWORK"
   if [[ "$firewall_network_value" == "auto" ]]; then
     network_uri="$("${GCLOUD_BASE[@]}" compute instances describe "$VM_NAME" --zone "$ZONE" --format='get(networkInterfaces[0].network)')"
@@ -548,7 +499,6 @@ if [[ "$ENSURE_FIREWALL" == "1" || "$ENSURE_FIREWALL" == "true" || "$ENSURE_FIRE
     rule_prefix="wg-core"
   fi
 
-  ensure_firewall_rule "${rule_prefix}-entry-8080" "tcp:8080" "$ALLOW_ENTRY_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
   ensure_firewall_rule "${rule_prefix}-wg-51820-udp" "udp:51820" "$ALLOW_WG_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
   if [[ -n "$ALLOW_CORE_GRPC_CIDRS" ]]; then
     ensure_firewall_rule "${rule_prefix}-core-50051" "tcp:50051" "$ALLOW_CORE_GRPC_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
@@ -586,8 +536,8 @@ if [[ "$CREATE_ONLY" -eq 1 ]]; then
   exit 0
 fi
 
-echo "Uploading core+entry binaries and runtime files..."
-scp_inputs=("$CORE_BINARY_PATH" "$ENTRY_BINARY_PATH" "$env_file" "$entry_env_file")
+echo "Uploading core binary and runtime files..."
+scp_inputs=("$CORE_BINARY_PATH" "$env_file")
 if [[ "$WG_KEY_MODE" == "upload" ]]; then
   scp_inputs+=("${tmpdir}/private.key")
 fi
@@ -597,7 +547,7 @@ fi
 "${GCLOUD_BASE[@]}" compute scp --zone "$ZONE" "${scp_inputs[@]}" "${VM_NAME}:/tmp/"
 
 remote_install_script="${tmpdir}/remote-install.sh"
-cat >"$remote_install_script" <<EOF
+cat >"$remote_install_script" <<EOF_REMOTE
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -605,12 +555,9 @@ WG_KEY_MODE="${WG_KEY_MODE}"
 TLS_MODE="${TLS_MODE}"
 TLS_COMMON_NAME="${TLS_COMMON_NAME}"
 WG_SERVER_PUBLIC_KEY_VALUE="${wg_server_public_key_value}"
-ENTRY_ADMIN_API_TOKEN="${ENTRY_ADMIN_API_TOKEN}"
 
 sudo install -m 0755 /tmp/core /usr/local/bin/core
-sudo install -m 0755 /tmp/entry /usr/local/bin/entry
 sudo install -m 0600 /tmp/wg-core.env /etc/default/wg-core
-sudo install -m 0600 /tmp/wg-entry.env /etc/default/wg-entry
 cat <<'UNIT' | sudo tee /etc/systemd/system/wg-core.service >/dev/null
 [Unit]
 Description=WG Core Service
@@ -628,24 +575,7 @@ User=root
 [Install]
 WantedBy=multi-user.target
 UNIT
-cat <<'UNIT' | sudo tee /etc/systemd/system/wg-entry.service >/dev/null
-[Unit]
-Description=WG Entry Service
-After=network-online.target wg-core.service
-Requires=wg-core.service
-Wants=network-online.target
 
-[Service]
-Type=simple
-EnvironmentFile=/etc/default/wg-entry
-ExecStart=/usr/local/bin/entry
-Restart=always
-RestartSec=2
-User=root
-
-[Install]
-WantedBy=multi-user.target
-UNIT
 sudo mkdir -p /etc/wireguard /etc/core-tls
 sudo chmod 700 /etc/wireguard /etc/core-tls
 
@@ -687,7 +617,7 @@ if [[ "\$WG_SERVER_PUBLIC_KEY_VALUE" == "__AUTO_WG_SERVER_PUBLIC_KEY__" ]]; then
 else
   wg_pub="\$WG_SERVER_PUBLIC_KEY_VALUE"
 fi
-wg_pub_escaped="\${wg_pub//&/\\\\&}"
+wg_pub_escaped="\${wg_pub//&/\\&}"
 sudo sed -i "s|^WG_SERVER_PUBLIC_KEY=.*$|WG_SERVER_PUBLIC_KEY=\${wg_pub_escaped}|" /etc/default/wg-core
 
 egress_iface_value="\$(sudo awk -F= '/^WG_EGRESS_IFACE=/{print \$2}' /etc/default/wg-core | tr -d '\r\n')"
@@ -700,7 +630,6 @@ if [[ -z "\$egress_iface_value" || "\$egress_iface_value" == "auto" ]]; then
     echo "failed to detect default egress interface; set --wg-egress-iface explicitly" >&2
     exit 1
   fi
-  echo "Detected egress interface: \$detected_iface"
   egress_iface_value="\$detected_iface"
 fi
 sudo awk -v iface="\$egress_iface_value" '
@@ -718,13 +647,6 @@ sudo awk -v iface="\$egress_iface_value" '
   }
 ' /etc/default/wg-core | sudo tee /etc/default/wg-core.tmp >/dev/null
 sudo mv /etc/default/wg-core.tmp /etc/default/wg-core
-final_egress_iface="\$(sudo awk -F= '/^WG_EGRESS_IFACE=/{print \$2}' /etc/default/wg-core | tr -d '\r\n')"
-echo "Using WG_EGRESS_IFACE=\$final_egress_iface"
-if [[ -z "\$final_egress_iface" || "\$final_egress_iface" == "auto" ]]; then
-  echo "failed to persist WG_EGRESS_IFACE in /etc/default/wg-core" >&2
-  sudo cat /etc/default/wg-core >&2
-  exit 1
-fi
 
 if [[ "\$TLS_MODE" == "upload" ]]; then
   sudo install -m 0644 /tmp/server.crt /etc/core-tls/server.crt
@@ -801,21 +723,16 @@ fi
 sudo modprobe wireguard
 sudo systemctl daemon-reload
 sudo systemctl enable wg-core
-sudo systemctl enable wg-entry
 sudo systemctl reset-failed wg-core || true
-sudo systemctl reset-failed wg-entry || true
+sudo systemctl restart wg-core
 
 wait_for_active() {
   local unit="\$1"
   local timeout_secs="\$2"
   local waited=0
-  echo "Waiting for \$unit to become active (timeout: \${timeout_secs}s)..."
   while ! sudo systemctl is-active --quiet "\$unit"; do
     sleep 1
     waited=\$((waited + 1))
-    if (( waited % 10 == 0 )); then
-      echo "  still waiting for \$unit... \${waited}s"
-    fi
     if [[ "\$waited" -ge "\$timeout_secs" ]]; then
       echo "Timed out waiting for \$unit to become active" >&2
       sudo systemctl --no-pager --full status "\$unit" || true
@@ -826,38 +743,17 @@ wait_for_active() {
 }
 
 wait_for_port() {
-  local host="\$1"
-  local port="\$2"
-  local timeout_secs="\$3"
+  local port="\$1"
+  local timeout_secs="\$2"
   local waited=0
-  echo "Waiting for TCP listener on \${host}:\${port} (timeout: \${timeout_secs}s)..."
   while ! sudo ss -ltn | grep -Eq "LISTEN.+(:|\.)\${port}[[:space:]]"; do
     sleep 1
     waited=\$((waited + 1))
-    if (( waited % 10 == 0 )); then
-      echo "  still waiting for \${host}:\${port}... \${waited}s"
-    fi
     if [[ "\$waited" -ge "\$timeout_secs" ]]; then
-      echo "Timed out waiting for \$host:\$port to accept TCP connections" >&2
+      echo "Timed out waiting for port \$port" >&2
       sudo ss -ltn || true
       return 1
     fi
-  done
-}
-
-# Confirm core remains active for a short period after startup.
-wait_for_stable_active() {
-  local unit="\$1"
-  local stable_secs="\$2"
-  local i=0
-  echo "Verifying \$unit remains active for \${stable_secs}s..."
-  while [[ "\$i" -lt "\$stable_secs" ]]; do
-    if ! sudo systemctl is-active --quiet "\$unit"; then
-      echo "\$unit became inactive during stability check" >&2
-      return 1
-    fi
-    sleep 1
-    i=\$((i + 1))
   done
 }
 
@@ -880,8 +776,6 @@ set_core_nat_driver() {
   sudo mv /etc/default/wg-core.tmp /etc/default/wg-core
 }
 
-# Start core first and wait until it is healthy before starting entry.
-sudo systemctl restart wg-core
 wait_for_active wg-core 120
 core_bind_addr="\$(sudo awk -F= '/^CORE_BIND_ADDR=/{print \$2}' /etc/default/wg-core | tr -d '\r\n')"
 core_bind_port="\${core_bind_addr##*:}"
@@ -892,15 +786,15 @@ core_nat_driver="\$(sudo awk -F= '/^WG_NAT_DRIVER=/{print \$2}' /etc/default/wg-
 if [[ -z "\$core_nat_driver" ]]; then
   core_nat_driver="cli"
 fi
-echo "Waiting for core listener on configured port: \$core_bind_port"
-if ! wait_for_port 127.0.0.1 "\$core_bind_port" 120; then
+
+if ! wait_for_port "\$core_bind_port" 120; then
   if [[ "\$core_nat_driver" == "native" ]]; then
     echo "core did not open gRPC port with WG_NAT_DRIVER=native; falling back to WG_NAT_DRIVER=cli"
     set_core_nat_driver cli
     sudo systemctl reset-failed wg-core || true
     sudo systemctl restart wg-core
     wait_for_active wg-core 120
-    wait_for_port 127.0.0.1 "\$core_bind_port" 120 || {
+    wait_for_port "\$core_bind_port" 120 || {
       sudo systemctl --no-pager --full status wg-core || true
       sudo journalctl -u wg-core -n 200 --no-pager || true
       exit 1
@@ -911,50 +805,10 @@ if ! wait_for_port 127.0.0.1 "\$core_bind_port" 120; then
     exit 1
   fi
 fi
-wait_for_stable_active wg-core 5 || {
-  sudo systemctl --no-pager --full status wg-core || true
-  sudo journalctl -u wg-core -n 160 --no-pager || true
-  exit 1
-}
-
-sudo systemctl restart wg-entry
-wait_for_active wg-entry 120
-
-if ! curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
-  echo "entry healthz check failed" >&2
-  sudo systemctl --no-pager --full status wg-core || true
-  sudo journalctl -u wg-core -n 120 --no-pager || true
-  sudo systemctl --no-pager --full status wg-entry || true
-  sudo journalctl -u wg-entry -n 120 --no-pager || true
-  exit 1
-fi
-
-wait_for_core_bridge() {
-  local timeout_secs="\$1"
-  local waited=0
-  while ! curl -fsS -H "x-admin-token: \$ENTRY_ADMIN_API_TOKEN" \
-    http://127.0.0.1:8080/v1/admin/core/status >/dev/null; do
-    sleep 1
-    waited=\$((waited + 1))
-    if [[ "\$waited" -ge "\$timeout_secs" ]]; then
-      echo "Timed out waiting for entry->core bridge (/v1/admin/core/status)" >&2
-      sudo systemctl --no-pager --full status wg-core || true
-      sudo systemctl --no-pager --full status wg-entry || true
-      sudo journalctl -u wg-core -u wg-entry -n 160 --no-pager || true
-      return 1
-    fi
-  done
-}
-
-wait_for_core_bridge 60
 
 sudo systemctl --no-pager --full status wg-core
-sudo systemctl --no-pager --full status wg-entry
-
-echo "Smoke test hints:"
-echo "  curl -fsS http://127.0.0.1:8080/healthz"
-echo "  curl -fsS -H 'x-admin-token: \$ENTRY_ADMIN_API_TOKEN' http://127.0.0.1:8080/v1/admin/core/status | jq ."
-EOF
+echo "Smoke test hint: sudo ss -ltn | grep :\$core_bind_port"
+EOF_REMOTE
 
 "${GCLOUD_BASE[@]}" compute scp --zone "$ZONE" "$remote_install_script" "${VM_NAME}:/tmp/remote-install.sh"
 "${GCLOUD_BASE[@]}" compute ssh "$VM_NAME" --zone "$ZONE" --command "bash /tmp/remote-install.sh"
@@ -966,23 +820,23 @@ EFFECTIVE_NAT_DRIVER="$("${GCLOUD_BASE[@]}" compute ssh "$VM_NAME" --zone "$ZONE
 EFFECTIVE_WG_ENDPOINT_TEMPLATE="$("${GCLOUD_BASE[@]}" compute ssh "$VM_NAME" --zone "$ZONE" --command "sudo awk -F= '/^WG_ENDPOINT_TEMPLATE=/{print \$2}' /etc/default/wg-core | tr -d '\r\n'" 2>/dev/null || true)"
 
 echo "Done. Check live logs with:"
-echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'sudo journalctl -u wg-core -u wg-entry -f'"
+echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'sudo journalctl -u wg-core -f'"
 if [[ -n "$EFFECTIVE_NAT_DRIVER" ]]; then
   echo "Effective WG_NAT_DRIVER=${EFFECTIVE_NAT_DRIVER}"
 fi
 if [[ -n "$EFFECTIVE_WG_ENDPOINT_TEMPLATE" ]]; then
   echo "Effective WG_ENDPOINT_TEMPLATE=${EFFECTIVE_WG_ENDPOINT_TEMPLATE}"
 fi
-if [[ -n "$GOOGLE_OIDC_CLIENT_ID" ]]; then
-  echo "Google OIDC configured for entry (client id provided)."
+if [[ "$health_reporting_enabled" == "true" ]]; then
+  echo "CORE_NODE_ID=${CORE_NODE_ID}"
+  echo "CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}"
 fi
+
 echo
-echo "Quick on-VM smoke checks:"
-echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'curl -fsS http://127.0.0.1:8080/healthz'"
-echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command \"curl -fsS -H 'x-admin-token: ${ENTRY_ADMIN_API_TOKEN}' http://127.0.0.1:8080/v1/admin/core/status | jq .\""
-echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'set -e; C=\$(uuidgen | tr \"[:upper:]\" \"[:lower:]\"); N=\$(uuidgen | tr \"[:upper:]\" \"[:lower:]\"); K=\$(wg genkey); P=\$(printf \"%s\" \"\$K\" | wg pubkey); D=\$(curl -fsS -X POST http://127.0.0.1:8080/v1/devices -H \"content-type: application/json\" -H \"x-customer-id: \$C\" -d \"{\\\"name\\\":\\\"vm-test\\\",\\\"public_key\\\":\\\"\$P\\\"}\" | jq -r .id); for i in 1 2 3 4 5; do if RES=\$(curl -fsS -X POST http://127.0.0.1:8080/v1/sessions/start -H \"content-type: application/json\" -H \"x-customer-id: \$C\" -d \"{\\\"device_id\\\":\\\"\$D\\\",\\\"region\\\":\\\"us-west\\\",\\\"node_hint\\\":\\\"\$N\\\"}\" 2>/dev/null); then echo \"\$RES\" | jq .; exit 0; fi; sleep 1; done; echo \"session start failed after retries\" >&2; exit 1'"
-echo
-if [[ "$REGISTER_NODE_IN_ENTRY" == "1" || "$REGISTER_NODE_IN_ENTRY" == "true" || "$REGISTER_NODE_IN_ENTRY" == "TRUE" ]]; then
+echo "Quick on-VM checks:"
+echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'sudo systemctl status wg-core --no-pager'"
+
+if is_true "$REGISTER_NODE_IN_ENTRY"; then
   if [[ -z "$VM_IP" ]]; then
     echo "Unable to register node in entry because VM public IP is empty." >&2
     exit 1
@@ -992,18 +846,23 @@ if [[ "$REGISTER_NODE_IN_ENTRY" == "1" || "$REGISTER_NODE_IN_ENTRY" == "true" ||
   fi
   require_cmd curl
   require_cmd jq
-  payload="$(jq -nc     --arg id "$(cat /proc/sys/kernel/random/uuid)"     --arg region "$ENTRY_NODE_REGION"     --arg provider "$ENTRY_NODE_PROVIDER"     --arg endpoint_host "$VM_IP"     --argjson endpoint_port "$WG_LISTEN_PORT"     --arg country_code "$ENTRY_NODE_COUNTRY_CODE"     --arg city_code "$ENTRY_NODE_CITY_CODE"     --arg pool "$ENTRY_NODE_POOL"     '{id:$id,region:$region,provider:$provider,endpoint_host:$endpoint_host,endpoint_port:$endpoint_port,healthy:true,active_peer_count:0,capacity_peers:200,pool:$pool}
+  payload="$(jq -nc \
+    --arg id "$CORE_NODE_ID" \
+    --arg region "$ENTRY_NODE_REGION" \
+    --arg provider "$ENTRY_NODE_PROVIDER" \
+    --arg endpoint_host "$VM_IP" \
+    --argjson endpoint_port "$WG_LISTEN_PORT" \
+    --arg country_code "$ENTRY_NODE_COUNTRY_CODE" \
+    --arg city_code "$ENTRY_NODE_CITY_CODE" \
+    --arg pool "$ENTRY_NODE_POOL" \
+    '{id:$id,region:$region,provider:$provider,endpoint_host:$endpoint_host,endpoint_port:$endpoint_port,healthy:true,active_peer_count:0,capacity_peers:200,pool:$pool}
       + (if $country_code=="" then {} else {country_code:$country_code} end)
       + (if $city_code=="" then {} else {city_code:$city_code} end)')"
-  echo "Registering core node in entry: ${ENTRY_ADMIN_URL%/}/v1/admin/nodes"
-  curl -fsS -X POST "${ENTRY_ADMIN_URL%/}/v1/admin/nodes"     -H 'content-type: application/json'     -H "x-admin-token: ${ENTRY_ADMIN_API_TOKEN}"     -d "$payload" >/dev/null
-  echo "Core node registered in entry for region=${ENTRY_NODE_REGION} endpoint=${VM_IP}:${WG_LISTEN_PORT}"
-fi
 
-echo
-if [[ -n "$VM_IP" ]]; then
-  echo "If firewall allows tcp:8080, you can test from your machine:"
-  echo "  curl -fsS http://${VM_IP}:8080/healthz"
-  echo "Client app base URL:"
-  echo "  ENTRY_API_BASE_URL=http://${VM_IP}:8080"
+  echo "Registering core node in entry: ${ENTRY_ADMIN_URL%/}/v1/admin/nodes"
+  curl -fsS -X POST "${ENTRY_ADMIN_URL%/}/v1/admin/nodes" \
+    -H 'content-type: application/json' \
+    -H "x-admin-token: ${ENTRY_ADMIN_API_TOKEN}" \
+    -d "$payload" >/dev/null
+  echo "Core node registered in entry for region=${ENTRY_NODE_REGION} endpoint=${VM_IP}:${WG_LISTEN_PORT}"
 fi

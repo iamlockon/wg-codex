@@ -6,11 +6,11 @@ on:
       stack:
         description: "Terraform stack path"
         required: true
-        default: "deploy/terraform"
+        default: "deploy/terraform/stacks/core-vm"
         type: choice
         options:
-          - deploy/terraform
           - deploy/terraform/stacks/core-vm
+          - deploy/terraform/stacks/bootstrap-oidc
       action:
         description: "Terraform action"
         required: true

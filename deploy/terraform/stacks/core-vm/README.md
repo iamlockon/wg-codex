@@ -11,4 +11,4 @@ terraform init
 terraform apply
 ```
 
-Use this with the `core-vm-cicd.yml` GitHub Actions workflow for automated apply/destroy + entry node registration.
+Use this with the `entry-vm-cicd.yml` GitHub Actions workflow for automated apply/destroy of the VM footprint used by entry deployment.

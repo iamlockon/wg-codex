@@ -8,6 +8,9 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -15,8 +18,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -34,35 +42,3 @@ jobs:
 
       - name: Unit tests
         run: cargo test --workspace --lib --exclude wg-windows-client
-
-  deploy-spec:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Validate smoke-check script
-        run: bash -n deploy/k8s/smoke-check.sh
-
-      - name: Validate preflight script
-        run: bash -n deploy/k8s/preflight.sh
-
-      - name: Install kubectl
-        uses: azure/setup-kubectl@v4
-        with:
-          version: v1.30.0
-
-      - name: Preflight dev overlay
-        run: deploy/k8s/preflight.sh dev
-
-      - name: Preflight prod overlay
-        run: deploy/k8s/preflight.sh prod
-
-      - name: Preflight prod gcp secret-manager overlay
-        run: deploy/k8s/preflight.sh prod-gcp-sm
-
-      - name: Preflight prod native canary overlay
-        run: deploy/k8s/preflight.sh prod-native-canary
-
-      - name: Preflight prod gcp secret-manager native canary overlay
-        run: deploy/k8s/preflight.sh prod-gcp-sm-native-canary
