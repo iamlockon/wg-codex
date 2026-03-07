@@ -44,8 +44,9 @@ jobs:
       TF_VAR_workload_identity_pool_id: ${{ inputs.workload_identity_pool_id }}
       TF_VAR_workload_identity_provider_id: ${{ inputs.workload_identity_provider_id }}
       TF_VAR_terraform_service_account_id: ${{ inputs.terraform_service_account_id }}
-      TF_VAR_github_token: ${{ secrets.GH_ADMIN_TOKEN != '' && secrets.GH_ADMIN_TOKEN || secrets.GITHUB_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TF_VAR_github_token: ${{ secrets.GH_ADMIN_TOKEN != '' && secrets.GH_ADMIN_TOKEN || github.token }}
+      GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +55,21 @@ jobs:
           credentials_json: ${{ secrets.GCP_BOOTSTRAP_SA_KEY }}
 
       - uses: hashicorp/setup-terraform@v3
+
+      - name: Validate GitHub token for Actions secrets
+        if: inputs.action != 'plan'
+        env:
+          REPO: ${{ inputs.github_repository != '' && inputs.github_repository || github.repository }}
+        run: |
+          if [ -z "$GH_ADMIN_TOKEN" ]; then
+            echo "::error::GH_ADMIN_TOKEN is required for apply/destroy. GITHUB_TOKEN cannot manage repository Actions secrets."
+            exit 1
+          fi
+
+          curl --fail --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GH_ADMIN_TOKEN" \
+            "https://api.github.com/repos/$REPO/actions/secrets/public-key" > /dev/null
 
       - name: Terraform init
         working-directory: deploy/terraform/stacks/bootstrap-oidc

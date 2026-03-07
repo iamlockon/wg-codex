@@ -29,9 +29,13 @@ After apply, your other workflows can authenticate with:
 
 Use `.github/workflows/bootstrap-gcp-oidc.yml` and provide:
 - `GCP_BOOTSTRAP_SA_KEY` repository secret containing JSON credentials for a bootstrap admin service account.
-- Optional `GH_ADMIN_TOKEN` repository secret (PAT with repo/admin scope) if your org does not allow `GITHUB_TOKEN` to manage Actions secrets.
+- `GH_ADMIN_TOKEN` repository secret for `apply`/`destroy` runs. `GITHUB_TOKEN` is not sufficient for managing repository Actions secrets.
 
 This key is only needed to create/update bootstrap resources. Once OIDC is working, keep it restricted or remove it if you no longer need bootstrap updates.
+
+Recommended `GH_ADMIN_TOKEN` permissions:
+- Classic PAT: `repo`.
+- Fine-grained PAT: repository `Actions` set to `Read and write` and access to the target repository.
 
 ## Create `GCP_BOOTSTRAP_SA_KEY`
 
