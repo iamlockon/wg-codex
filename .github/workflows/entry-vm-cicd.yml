@@ -102,8 +102,8 @@ jobs:
           {
             echo "## Terraform plan (vm stack)"
             echo ""
-            echo "- plan_run_id: `${{ github.run_id }}`"
-            echo "- Run URL: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`"
+            echo "- plan_run_id: ${{ github.run_id }}"
+            echo "- Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             if [ -n "$plan_summary" ]; then
               echo "- $plan_summary"
             elif [ -n "$no_changes_summary" ]; then
