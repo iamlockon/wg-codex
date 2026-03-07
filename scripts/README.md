@@ -2,10 +2,6 @@
 
 ## Current primary scripts
 
-- `scripts/deploy-backends-k8s.sh`
-  - Preferred backend deployment path for Kubernetes.
-  - Builds and pushes `entry`/`core`, runs `deploy/k8s/preflight.sh`, applies the selected overlay, waits for rollout, and refreshes DB migrations.
-
 - `scripts/run-db-integration-tests.sh`
   - Runs the DB-backed integration suites against `TEST_DATABASE_URL`.
 
