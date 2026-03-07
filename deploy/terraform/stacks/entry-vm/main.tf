@@ -4,8 +4,8 @@ provider "google" {
   zone    = var.zone
 }
 
-module "core_vm" {
-  source = "../../modules/core_vm"
+module "entry_vm" {
+  source = "../../modules/entry_vm"
 
   project_id           = var.project_id
   name                 = var.name

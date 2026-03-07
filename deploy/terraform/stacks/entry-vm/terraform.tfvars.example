@@ -1,4 +1,4 @@
 project_id = "my-gcp-project"
 region     = "us-central1"
 zone       = "us-central1-a"
-name       = "wg-core-us-central1"
+name       = "wg-entry-us-central1"

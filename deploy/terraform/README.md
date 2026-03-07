@@ -2,8 +2,8 @@
 
 Kubernetes/GKE Terraform assets were removed. The remaining Terraform deployment paths are stack-based:
 
-- `deploy/terraform/stacks/core-vm`
-  - Creates infrastructure for VM-based deployment via `modules/core_vm`.
+- `deploy/terraform/stacks/entry-vm`
+  - Creates infrastructure for VM-based deployment via `modules/entry_vm`.
 - `deploy/terraform/stacks/bootstrap-oidc`
   - Bootstraps GitHub Actions -> GCP Workload Identity Federation and writes required repository secrets.
 - `deploy/terraform/stacks/tfstate-bucket`
@@ -11,13 +11,13 @@ Kubernetes/GKE Terraform assets were removed. The remaining Terraform deployment
 
 ## Usage
 
-Core VM stack:
+Entry VM stack:
 
 ```bash
 export PROJECT_ID=<PROJECT_ID>
-./scripts/terraform-init-gcs-backend.sh "deploy/terraform/stacks/core-vm" "$PROJECT_ID"
+./scripts/terraform-init-gcs-backend.sh "deploy/terraform/stacks/entry-vm" "$PROJECT_ID"
 
-cd deploy/terraform/stacks/core-vm
+cd deploy/terraform/stacks/entry-vm
 cp terraform.tfvars.example terraform.tfvars
 terraform plan
 terraform apply
@@ -37,7 +37,7 @@ terraform apply
 
 ## GitHub Actions automation
 
-- `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform/stacks/core-vm` and `deploy/terraform/stacks/bootstrap-oidc`.
+- `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform/stacks/entry-vm` and `deploy/terraform/stacks/bootstrap-oidc`.
   - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) for all stacks.
   - `action=plan` saves `tfplan` as a workflow artifact.
   - `action=apply` requires `plan_run_id` and applies that exact saved plan.

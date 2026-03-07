@@ -36,7 +36,7 @@ on:
         required: false
         default: ""
       tf_state_prefix:
-        description: "Optional backend state object prefix (must end with /core-vm; defaults to terraform/core-vm)"
+        description: "Optional backend state object prefix (must end with /entry-vm; defaults to terraform/entry-vm)"
         required: false
         default: ""
       tf_state_bucket_location:
@@ -59,7 +59,7 @@ jobs:
       TF_VAR_region: ${{ inputs.region }}
       TF_VAR_name: ${{ inputs.vm_name }}
       TF_PLAN_FILE: "tfplan"
-      TF_PLAN_ARTIFACT: "entry-vm-core-vm-tfplan"
+      TF_PLAN_ARTIFACT: "entry-vm-tfplan"
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +88,7 @@ jobs:
         if: inputs.provisioner == 'terraform'
         run: |
           bash scripts/terraform-init-gcs-backend.sh \
-            "deploy/terraform/stacks/core-vm" \
+            "deploy/terraform/stacks/entry-vm" \
             "$PROJECT_ID" \
             "${{ inputs.tf_state_bucket }}" \
             "${{ inputs.tf_state_prefix }}" \
@@ -96,7 +96,7 @@ jobs:
 
       - name: Terraform plan (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
-        working-directory: deploy/terraform/stacks/core-vm
+        working-directory: deploy/terraform/stacks/entry-vm
         run: |
           set -o pipefail
           terraform plan -no-color -out="${TF_PLAN_FILE}" | tee terraform-plan.log
@@ -106,12 +106,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/core-vm/${{ env.TF_PLAN_FILE }}
+          path: deploy/terraform/stacks/entry-vm/${{ env.TF_PLAN_FILE }}
           if-no-files-found: error
 
       - name: Summarize Terraform plan (vm stack)
         if: always() && inputs.provisioner == 'terraform' && inputs.action == 'plan'
-        working-directory: deploy/terraform/stacks/core-vm
+        working-directory: deploy/terraform/stacks/entry-vm
         run: |
           plan_summary="$(grep -E '^Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.$' terraform-plan.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-plan.log | head -n 1 || true)"
@@ -143,21 +143,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/core-vm
+          path: deploy/terraform/stacks/entry-vm
           repository: ${{ github.repository }}
           run-id: ${{ inputs.plan_run_id }}
           github-token: ${{ github.token }}
 
       - name: Terraform apply (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
-        working-directory: deploy/terraform/stacks/core-vm
+        working-directory: deploy/terraform/stacks/entry-vm
         run: |
           set -o pipefail
           terraform apply -no-color -auto-approve "${TF_PLAN_FILE}" | tee terraform-apply.log
 
       - name: Summarize Terraform apply (vm stack)
         if: always() && inputs.provisioner == 'terraform' && inputs.action == 'apply'
-        working-directory: deploy/terraform/stacks/core-vm
+        working-directory: deploy/terraform/stacks/entry-vm
         run: |
           apply_summary="$(grep -E '^Apply complete! Resources: [0-9]+ added, [0-9]+ changed, [0-9]+ destroyed\.$' terraform-apply.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-apply.log | head -n 1 || true)"
@@ -176,14 +176,14 @@ jobs:
 
       - name: Terraform destroy (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'destroy'
-        working-directory: deploy/terraform/stacks/core-vm
+        working-directory: deploy/terraform/stacks/entry-vm
         run: |
           set -o pipefail
           terraform destroy -no-color -auto-approve | tee terraform-destroy.log
 
       - name: Summarize Terraform destroy (vm stack)
         if: always() && inputs.provisioner == 'terraform' && inputs.action == 'destroy'
-        working-directory: deploy/terraform/stacks/core-vm
+        working-directory: deploy/terraform/stacks/entry-vm
         run: |
           destroy_summary="$(grep -E '^Destroy complete! Resources: [0-9]+ destroyed\.$' terraform-destroy.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-destroy.log | head -n 1 || true)"

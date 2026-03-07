@@ -6,10 +6,10 @@ on:
       stack:
         description: "Terraform stack path"
         required: true
-        default: "deploy/terraform/stacks/core-vm"
+        default: "deploy/terraform/stacks/entry-vm"
         type: choice
         options:
-          - deploy/terraform/stacks/core-vm
+          - deploy/terraform/stacks/entry-vm
           - deploy/terraform/stacks/bootstrap-oidc
       action:
         description: "Terraform action"
@@ -86,7 +86,7 @@ jobs:
         if: inputs.action == 'plan'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TF_PLAN_ARTIFACT_PREFIX }}-${{ inputs.stack == 'deploy/terraform/stacks/core-vm' && 'core-vm' || 'bootstrap-oidc' }}
+          name: ${{ env.TF_PLAN_ARTIFACT_PREFIX }}-${{ inputs.stack == 'deploy/terraform/stacks/entry-vm' && 'entry-vm' || 'bootstrap-oidc' }}
           path: ${{ inputs.stack }}/${{ env.TF_PLAN_FILE }}
           if-no-files-found: error
 
@@ -123,7 +123,7 @@ jobs:
         if: inputs.action == 'apply'
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.TF_PLAN_ARTIFACT_PREFIX }}-${{ inputs.stack == 'deploy/terraform/stacks/core-vm' && 'core-vm' || 'bootstrap-oidc' }}
+          name: ${{ env.TF_PLAN_ARTIFACT_PREFIX }}-${{ inputs.stack == 'deploy/terraform/stacks/entry-vm' && 'entry-vm' || 'bootstrap-oidc' }}
           path: ${{ inputs.stack }}
           repository: ${{ github.repository }}
           run-id: ${{ inputs.plan_run_id }}

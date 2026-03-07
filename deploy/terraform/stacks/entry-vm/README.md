@@ -1,6 +1,6 @@
-# Core VM stack
+# Entry VM stack
 
-Terraform stack that instantiates the reusable `modules/core_vm` module.
+Terraform stack that instantiates the reusable `modules/entry_vm` module.
 
 ## Usage
 
@@ -8,10 +8,10 @@ Terraform stack that instantiates the reusable `modules/core_vm` module.
 export PROJECT_ID=<PROJECT_ID>
 
 ./scripts/terraform-init-gcs-backend.sh \
-  "deploy/terraform/stacks/core-vm" \
+  "deploy/terraform/stacks/entry-vm" \
   "$PROJECT_ID"
 
-cd deploy/terraform/stacks/core-vm
+cd deploy/terraform/stacks/entry-vm
 cp terraform.tfvars.example terraform.tfvars
 terraform apply
 ```

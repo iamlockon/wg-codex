@@ -44,11 +44,12 @@ if [[ -z "${STATE_BUCKET}" ]]; then
   STATE_BUCKET="$(default_state_bucket)"
 fi
 
+STACK_NAME="$(basename "${STACK_DIR}")"
+
 if [[ -z "${STATE_PREFIX}" ]]; then
-  STATE_PREFIX="terraform/$(basename "${STACK_DIR}")"
+  STATE_PREFIX="terraform/${STACK_NAME}"
 fi
 
-STACK_NAME="$(basename "${STACK_DIR}")"
 if [[ "${STATE_PREFIX}" != "${STACK_NAME}" && "${STATE_PREFIX}" != */"${STACK_NAME}" ]]; then
   echo "Invalid state prefix '${STATE_PREFIX}' for stack '${STACK_NAME}'." >&2
   echo "State prefix must end with '/${STACK_NAME}' to prevent cross-stack destroy/apply." >&2
