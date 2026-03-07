@@ -22,6 +22,10 @@ on:
         description: "Terraform service account id"
         required: true
         default: gha-terraform
+      plan_run_id:
+        description: "Workflow run id that produced the Terraform plan artifact (required for apply)"
+        required: false
+        default: ""
       action:
         description: "Terraform action"
         required: true
@@ -31,6 +35,8 @@ on:
 
 env:
   TF_IN_AUTOMATION: "true"
+  TF_PLAN_FILE: "tfplan"
+  TF_PLAN_ARTIFACT: "bootstrap-oidc-tfplan"
 
 jobs:
   bootstrap:
@@ -82,12 +88,38 @@ jobs:
       - name: Terraform plan
         if: inputs.action == 'plan'
         working-directory: deploy/terraform/stacks/bootstrap-oidc
-        run: terraform plan
+        run: terraform plan -out="${TF_PLAN_FILE}"
+
+      - name: Upload Terraform plan artifact
+        if: inputs.action == 'plan'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TF_PLAN_ARTIFACT }}
+          path: deploy/terraform/stacks/bootstrap-oidc/${{ env.TF_PLAN_FILE }}
+          if-no-files-found: error
+
+      - name: Require plan run id for apply
+        if: inputs.action == 'apply'
+        run: |
+          if [ -z "${{ inputs.plan_run_id }}" ]; then
+            echo "::error::plan_run_id is required for apply. Run action=plan first, then pass that run id to apply."
+            exit 1
+          fi
+
+      - name: Download Terraform plan artifact
+        if: inputs.action == 'apply'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.TF_PLAN_ARTIFACT }}
+          path: deploy/terraform/stacks/bootstrap-oidc
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Terraform apply
         if: inputs.action == 'apply'
         working-directory: deploy/terraform/stacks/bootstrap-oidc
-        run: terraform apply -auto-approve
+        run: terraform apply -auto-approve "${TF_PLAN_FILE}"
 
       - name: Terraform destroy
         if: inputs.action == 'destroy'

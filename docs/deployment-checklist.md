@@ -29,6 +29,7 @@
 5. GitHub Actions path (`.github/workflows/entry-vm-cicd.yml`):
    - Deploys only the entry VM using `scripts/deploy-entry-vm.sh`.
    - Add VM without touching Terraform stack state: `action=apply`, `provisioner=script`, unique `vm_name`.
+   - Terraform-managed VM flow: run `provisioner=terraform`, `action=plan`, then run `provisioner=terraform`, `action=apply` with `plan_run_id` from that plan run.
    - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
 
 ## Required production policy

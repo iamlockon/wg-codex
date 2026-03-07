@@ -31,6 +31,11 @@ Use `.github/workflows/bootstrap-gcp-oidc.yml` and provide:
 - `GCP_BOOTSTRAP_SA_KEY` repository secret containing JSON credentials for a bootstrap admin service account.
 - `GH_ADMIN_TOKEN` repository secret for `apply`/`destroy` runs. `GITHUB_TOKEN` is not sufficient for managing repository Actions secrets.
 
+Workflow behavior:
+- `action=plan` runs `terraform plan -out=tfplan` and uploads `tfplan` as artifact `bootstrap-oidc-tfplan`.
+- `action=apply` requires `plan_run_id` (the workflow run id from the earlier `plan`) and applies that exact saved plan file.
+- `action=destroy` runs a direct `terraform destroy -auto-approve`.
+
 This key is only needed to create/update bootstrap resources. Once OIDC is working, keep it restricted or remove it if you no longer need bootstrap updates.
 
 Recommended `GH_ADMIN_TOKEN` permissions:
