@@ -21,6 +21,18 @@ on:
         description: "Workflow run id that produced the Terraform plan artifact (required for apply)"
         required: false
         default: ""
+      tf_state_bucket:
+        description: "Optional GCS bucket name for Terraform state (auto-generated when empty)"
+        required: false
+        default: ""
+      tf_state_prefix:
+        description: "Optional backend state object prefix (must end with /<stack-name>; defaults to terraform/<stack-name>)"
+        required: false
+        default: ""
+      tf_state_bucket_location:
+        description: "GCS location to use when creating the state bucket"
+        required: false
+        default: us-central1
 
 env:
   TF_IN_AUTOMATION: "true"
@@ -44,9 +56,20 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform init
+      - name: Terraform init (shared GCS backend)
         working-directory: ${{ inputs.stack }}
-        run: terraform init
+        run: |
+          if [ -z "${{ secrets.GCP_PROJECT_ID }}" ]; then
+            echo "::error::GCP_PROJECT_ID secret is required for shared Terraform backend initialization."
+            exit 1
+          fi
+
+          bash "${GITHUB_WORKSPACE}/scripts/terraform-init-gcs-backend.sh" \
+            "${{ inputs.stack }}" \
+            "${{ secrets.GCP_PROJECT_ID }}" \
+            "${{ inputs.tf_state_bucket }}" \
+            "${{ inputs.tf_state_prefix }}" \
+            "${{ inputs.tf_state_bucket_location }}"
 
       - name: Terraform validate
         working-directory: ${{ inputs.stack }}

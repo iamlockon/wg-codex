@@ -16,9 +16,14 @@ Prerequisite:
 ## Usage
 
 ```bash
+export PROJECT_ID=<PROJECT_ID>
+
+./scripts/terraform-init-gcs-backend.sh \
+  "deploy/terraform/stacks/bootstrap-oidc" \
+  "$PROJECT_ID"
+
 cd deploy/terraform/stacks/bootstrap-oidc
 cp terraform.tfvars.example terraform.tfvars
-terraform init
 terraform plan
 terraform apply
 ```
@@ -32,6 +37,7 @@ After apply, your other workflows can authenticate with:
 Use `.github/workflows/bootstrap-gcp-oidc.yml` and provide:
 - `GCP_BOOTSTRAP_SA_KEY` repository secret containing JSON credentials for a bootstrap admin service account.
 - `GH_ADMIN_TOKEN` repository secret for `apply`/`destroy` runs. `GITHUB_TOKEN` is not sufficient for managing repository Actions secrets.
+- optional workflow inputs `tf_state_bucket`, `tf_state_prefix`, and `tf_state_bucket_location` (leave empty to auto-generate bucket and prefix).
 
 Workflow behavior:
 - `action=plan` first attempts best-effort `terraform import` for existing resources (Workload Identity Pool/Provider, required APIs, and IAM bindings) so reruns do not fail with already-exists errors.
@@ -88,6 +94,7 @@ Enable required APIs:
 ```bash
 gcloud services enable \
   iam.googleapis.com \
+  storage.googleapis.com \
   cloudresourcemanager.googleapis.com \
   serviceusage.googleapis.com \
   --project "$PROJECT_ID"
@@ -107,6 +114,7 @@ gcloud iam service-accounts create gha-bootstrap \
 for role in \
   roles/iam.workloadIdentityPoolAdmin \
   roles/iam.serviceAccountAdmin \
+  roles/storage.admin \
   roles/resourcemanager.projectIamAdmin \
   roles/serviceusage.serviceUsageAdmin
 do

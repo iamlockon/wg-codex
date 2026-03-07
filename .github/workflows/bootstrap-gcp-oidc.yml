@@ -23,6 +23,18 @@ on:
         description: "Terraform service account id"
         required: true
         default: gha-terraform
+      tf_state_bucket:
+        description: "GCS bucket name for Terraform state"
+        required: false
+        default: ""
+      tf_state_prefix:
+        description: "State object prefix in the bucket (must end with /bootstrap-oidc or be empty)"
+        required: false
+        default: ""
+      tf_state_bucket_location:
+        description: "GCS location to use when creating the state bucket"
+        required: false
+        default: us-central1
       plan_run_id:
         description: "Workflow run id that produced the Terraform plan artifact (required for apply)"
         required: false
@@ -78,9 +90,14 @@ jobs:
             -H "Authorization: Bearer $GH_ADMIN_TOKEN" \
             "https://api.github.com/repos/$REPO/actions/secrets/public-key" > /dev/null
 
-      - name: Terraform init
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
-        run: terraform init
+      - name: Terraform init (shared GCS backend)
+        run: |
+          bash scripts/terraform-init-gcs-backend.sh \
+            "deploy/terraform/stacks/bootstrap-oidc" \
+            "${{ inputs.project_id }}" \
+            "${{ inputs.tf_state_bucket }}" \
+            "${{ inputs.tf_state_prefix }}" \
+            "${{ inputs.tf_state_bucket_location }}"
 
       - name: Import existing resources (plan only)
         if: inputs.action == 'plan'

@@ -31,6 +31,18 @@ on:
         description: "Workflow run id that produced the Terraform plan artifact (required for provisioner=terraform + action=apply)"
         required: false
         default: ""
+      tf_state_bucket:
+        description: "Optional GCS bucket name for Terraform state (auto-generated when empty)"
+        required: false
+        default: ""
+      tf_state_prefix:
+        description: "Optional backend state object prefix (must end with /core-vm; defaults to terraform/core-vm)"
+        required: false
+        default: ""
+      tf_state_bucket_location:
+        description: "GCS location to use when creating the state bucket"
+        required: false
+        default: us-central1
 
 jobs:
   entry-vm:
@@ -72,10 +84,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Terraform init (vm stack)
+      - name: Terraform init (shared GCS backend)
         if: inputs.provisioner == 'terraform'
-        working-directory: deploy/terraform/stacks/core-vm
-        run: terraform init
+        run: |
+          bash scripts/terraform-init-gcs-backend.sh \
+            "deploy/terraform/stacks/core-vm" \
+            "$PROJECT_ID" \
+            "${{ inputs.tf_state_bucket }}" \
+            "${{ inputs.tf_state_prefix }}" \
+            "${{ inputs.tf_state_bucket_location }}"
 
       - name: Terraform plan (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'plan'

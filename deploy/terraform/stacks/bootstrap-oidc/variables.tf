@@ -47,6 +47,7 @@ variable "terraform_service_account_roles" {
     "roles/container.admin",
     "roles/cloudsql.admin",
     "roles/secretmanager.admin",
+    "roles/storage.admin",
     "roles/serviceusage.serviceUsageAdmin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",
