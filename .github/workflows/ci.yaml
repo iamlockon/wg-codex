@@ -1,9 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [ "master" ]
   pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - "clients/**"
+      - "crates/**"
+      - "services/**"
 
 jobs:
   rust:
