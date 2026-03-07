@@ -111,13 +111,43 @@ jobs:
         run: |
           set +e
 
+          STATE_ADDRESSES="$(terraform state list 2>/dev/null || true)"
+
+          is_managed_in_state() {
+            local address="$1"
+            grep -Fqx "$address" <<<"${STATE_ADDRESSES}"
+          }
+
+          mark_managed_in_state() {
+            local address="$1"
+            if [ -z "${STATE_ADDRESSES}" ]; then
+              STATE_ADDRESSES="$address"
+            else
+              STATE_ADDRESSES="${STATE_ADDRESSES}"$'\n'"$address"
+            fi
+          }
+
           try_import() {
             local address="$1"
             local import_id="$2"
-            if terraform import -no-color "$address" "$import_id"; then
+            local import_output import_reason
+
+            if is_managed_in_state "$address"; then
+              echo "Already managed: $address"
+              return 0
+            fi
+
+            import_output="$(terraform import -no-color "$address" "$import_id" 2>&1)"
+            if [ $? -eq 0 ]; then
               echo "Imported: $address"
+              mark_managed_in_state "$address"
             else
-              echo "Skipped import: $address"
+              import_reason="$(printf '%s\n' "$import_output" | grep -m1 '^Error:' || true)"
+              if [ -n "$import_reason" ]; then
+                echo "Skipped import: $address (${import_reason#Error: })"
+              else
+                echo "Skipped import: $address"
+              fi
             fi
           }
 
