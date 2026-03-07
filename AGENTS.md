@@ -48,7 +48,6 @@ This file is the working contract for coding agents in this repository.
   - `deploy/terraform/README.md`
 - CI/CD workflows:
   - `.github/workflows/ci.yaml`
-  - `.github/workflows/infra-terraform.yml`
   - `.github/workflows/entry-vm-cicd.yml`
   - `.github/workflows/bootstrap-gcp-oidc.yml`
 

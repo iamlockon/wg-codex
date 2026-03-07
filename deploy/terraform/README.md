@@ -37,10 +37,6 @@ terraform apply
 
 ## GitHub Actions automation
 
-- `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform/stacks/entry-vm` and `deploy/terraform/stacks/bootstrap-oidc`.
-  - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) for all stacks.
-  - `action=plan` saves `tfplan` as a workflow artifact.
-  - `action=apply` requires `plan_run_id` and applies that exact saved plan.
 - `.github/workflows/entry-vm-cicd.yml`: deploys VM infrastructure and runs `scripts/deploy-entry-vm.sh`.
   - `provisioner=script` supports `action=apply|destroy` (no Terraform state change).
   - `provisioner=terraform` uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.
