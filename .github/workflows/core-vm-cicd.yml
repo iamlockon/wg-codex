@@ -80,7 +80,9 @@ on:
 
 jobs:
   core-vm:
-    runs-on: ubuntu-latest
+    # Keep the build host glibc <= Debian 12 VM glibc (2.36) to avoid runtime
+    # loader failures like: `GLIBC_2.39 not found` when starting /usr/local/bin/core.
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       id-token: write
