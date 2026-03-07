@@ -32,5 +32,9 @@ terraform apply
 ## GitHub Actions automation
 
 - `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform/stacks/core-vm` and `deploy/terraform/stacks/bootstrap-oidc`.
-- `.github/workflows/entry-vm-cicd.yml`: deploys VM infrastructure and runs `scripts/deploy-entry-vm.sh`; supports `provisioner=script` for additive VM rollout (no Terraform state change) or `provisioner=terraform` for stack-managed apply/destroy.
+  - `action=plan` saves `tfplan` as a workflow artifact.
+  - `action=apply` requires `plan_run_id` and applies that exact saved plan.
+- `.github/workflows/entry-vm-cicd.yml`: deploys VM infrastructure and runs `scripts/deploy-entry-vm.sh`.
+  - `provisioner=script` supports `action=apply|destroy` (no Terraform state change).
+  - `provisioner=terraform` supports `action=plan|apply|destroy`; Terraform `apply` requires `plan_run_id` and uses the exact saved plan artifact.
 - `.github/workflows/bootstrap-gcp-oidc.yml`: bootstrap workflow that provisions OIDC trust and writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`.

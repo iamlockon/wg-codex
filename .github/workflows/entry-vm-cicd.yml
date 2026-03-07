@@ -16,23 +16,28 @@ on:
         required: true
         default: us-central1
       action:
-        description: Apply or destroy
+        description: Plan, apply or destroy
         required: true
         default: apply
         type: choice
-        options: [apply, destroy]
+        options: [plan, apply, destroy]
       provisioner:
         description: Infrastructure provisioner
         required: true
         default: script
         type: choice
         options: [script, terraform]
+      plan_run_id:
+        description: "Workflow run id that produced the Terraform plan artifact (required for provisioner=terraform + action=apply)"
+        required: false
+        default: ""
 
 jobs:
   entry-vm:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -41,8 +46,16 @@ jobs:
       TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
       TF_VAR_region: ${{ inputs.region }}
       TF_VAR_name: ${{ inputs.vm_name }}
+      TF_PLAN_FILE: "tfplan"
+      TF_PLAN_ARTIFACT: "entry-vm-core-vm-tfplan"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Reject plan with script provisioner
+        if: inputs.provisioner == 'script' && inputs.action == 'plan'
+        run: |
+          echo "::error::action=plan is only supported with provisioner=terraform."
+          exit 1
 
       - uses: google-github-actions/auth@v2
         with:
@@ -64,15 +77,46 @@ jobs:
         working-directory: deploy/terraform/stacks/core-vm
         run: terraform init
 
-      - name: Terraform apply/destroy (vm stack)
-        if: inputs.provisioner == 'terraform'
+      - name: Terraform plan (vm stack)
+        if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
         working-directory: deploy/terraform/stacks/core-vm
+        run: terraform plan -out="${TF_PLAN_FILE}"
+
+      - name: Upload Terraform plan artifact (vm stack)
+        if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TF_PLAN_ARTIFACT }}
+          path: deploy/terraform/stacks/core-vm/${{ env.TF_PLAN_FILE }}
+          if-no-files-found: error
+
+      - name: Require plan run id for Terraform apply
+        if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
         run: |
-          if [[ "${{ inputs.action }}" == "destroy" ]]; then
-            terraform destroy -auto-approve
-          else
-            terraform apply -auto-approve
+          if [ -z "${{ inputs.plan_run_id }}" ]; then
+            echo "::error::plan_run_id is required for provisioner=terraform + action=apply. Run action=plan first, then pass that run id to apply."
+            exit 1
           fi
+
+      - name: Download Terraform plan artifact (vm stack)
+        if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.TF_PLAN_ARTIFACT }}
+          path: deploy/terraform/stacks/core-vm
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Terraform apply (vm stack)
+        if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
+        working-directory: deploy/terraform/stacks/core-vm
+        run: terraform apply -auto-approve "${TF_PLAN_FILE}"
+
+      - name: Terraform destroy (vm stack)
+        if: inputs.provisioner == 'terraform' && inputs.action == 'destroy'
+        working-directory: deploy/terraform/stacks/core-vm
+        run: terraform destroy -auto-approve
 
       - name: Deploy entry onto VM
         if: inputs.action == 'apply'

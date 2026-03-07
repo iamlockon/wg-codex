@@ -11,4 +11,7 @@ terraform init
 terraform apply
 ```
 
-Use this with the `entry-vm-cicd.yml` GitHub Actions workflow for automated apply/destroy of the VM footprint used by entry deployment.
+Use this with the `entry-vm-cicd.yml` GitHub Actions workflow for automated VM stack operations:
+- `provisioner=terraform`, `action=plan` creates and uploads a Terraform plan artifact.
+- `provisioner=terraform`, `action=apply` requires `plan_run_id` and applies that exact saved plan.
+- `provisioner=terraform`, `action=destroy` runs direct destroy.
