@@ -12,24 +12,24 @@
 - WireGuard private key available for `core`.
 
 ## Deploy
-1. Build binaries and deploy with VM helper:
-   - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <name> --zone <zone>`
-2. If needed, pass production flags and secrets explicitly:
-   - `--app-env production`
+1. Deploy `entry` VM:
+   - `scripts/deploy-entry-vm.sh --project <project-id> --vm-name <entry-vm-name> --zone <zone>`
+2. For entry production settings, pass explicit flags/secrets as needed:
+   - `--entry-app-env production`
    - `--entry-admin-token <token>`
    - `--entry-jwt-signing-keys <kid:secret>`
    - `--google-oidc-client-id <id>`
    - `--google-oidc-client-secret <secret>`
    - `--google-oidc-redirect-uri <uri>`
-3. Optional: register the node in a remote entry control plane:
-   - `--register-node-in-entry true --entry-admin-url <url> --entry-node-region <region>`
-   - Script now keeps `CORE_NODE_ID` stable per VM seed and configures `CORE_ENTRY_HEALTH_URL` + `ADMIN_API_TOKEN` in core env so health heartbeats keep node freshness updated.
+3. Deploy `core` VM on demand:
+   - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <core-vm-name> --zone <zone> --entry-admin-url <entry-admin-base-url> --entry-admin-token <token>`
+4. Optional for core deploy:
+   - Register node in entry control plane: `--register-node-in-entry true --entry-node-region <region>`
    - If entry should route to discovered nodes on a non-default gRPC port, set `APP_CORE_NODE_GRPC_PORT` on entry.
-4. GitHub Actions path (`.github/workflows/core-vm-cicd.yml`):
+5. GitHub Actions path (`.github/workflows/entry-vm-cicd.yml`):
+   - Deploys only the entry VM using `scripts/deploy-entry-vm.sh`.
    - Add VM without touching Terraform stack state: `action=apply`, `provisioner=script`, unique `vm_name`.
-   - `register_node_in_entry` defaults to `true`; set it to `false` to skip remote node registration.
-   - Set `region` to choose GCP region for core VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
-   - `entry_node_region` can override node metadata region in entry; if omitted it follows `region`.
+   - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
 
 ## Required production policy
 - `entry`:
@@ -56,5 +56,5 @@
    - `GET /v1/admin/privacy/policy`
    - `GET /v1/admin/nodes` should show healthy nodes with recent `updated_at`
 3. Verify logs on VM:
-   - `gcloud compute ssh <vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-entry -n 200 --no-pager"`
-   - `gcloud compute ssh <vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-core -n 200 --no-pager"`
+   - `gcloud compute ssh <entry-vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-entry -n 200 --no-pager"`
+   - `gcloud compute ssh <core-vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-core -n 200 --no-pager"`

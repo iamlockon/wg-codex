@@ -928,7 +928,7 @@ async fn build_core_client(grpc_target: &str) -> anyhow::Result<ControlPlaneClie
         ));
     }
 
-    let channel = endpoint.connect().await?;
+    let channel = endpoint.connect_lazy();
     Ok(ControlPlaneClient::new(channel))
 }
 

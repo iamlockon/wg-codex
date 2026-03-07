@@ -1,4 +1,4 @@
-name: Core VM CI/CD
+name: Entry VM CI/CD
 
 on:
   workflow_dispatch:
@@ -6,19 +6,15 @@ on:
       vm_name:
         description: VM name
         required: true
-        default: wg-core-gha
+        default: wg-entry-gha
       zone:
         description: GCP zone (optional; defaults to <region>-a)
         required: false
         default: ""
       region:
-        description: GCP region for core VM
+        description: GCP region for entry VM
         required: true
         default: us-central1
-      entry_node_region:
-        description: Node region recorded in entry (optional override)
-        required: false
-        default: ""
       action:
         description: Apply or destroy
         required: true
@@ -31,15 +27,9 @@ on:
         default: script
         type: choice
         options: [script, terraform]
-      register_node_in_entry:
-        description: Register node in remote entry control plane
-        required: true
-        default: "true"
-        type: choice
-        options: ["false", "true"]
 
 jobs:
-  core-vm:
+  entry-vm:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -47,7 +37,6 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
-      ENTRY_NODE_REGION: ${{ inputs.entry_node_region != '' && inputs.entry_node_region || inputs.region }}
       TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
       TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
       TF_VAR_region: ${{ inputs.region }}
@@ -70,12 +59,12 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Terraform init (core-vm stack)
+      - name: Terraform init (vm stack)
         if: inputs.provisioner == 'terraform'
         working-directory: deploy/terraform/stacks/core-vm
         run: terraform init
 
-      - name: Terraform apply/destroy (core-vm stack)
+      - name: Terraform apply/destroy (vm stack)
         if: inputs.provisioner == 'terraform'
         working-directory: deploy/terraform/stacks/core-vm
         run: |
@@ -85,29 +74,17 @@ jobs:
             terraform apply -auto-approve
           fi
 
-      - name: Deploy core + entry onto VM
+      - name: Deploy entry onto VM
         if: inputs.action == 'apply'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wireguard-tools jq
-          register_args=()
-          if [[ "${{ inputs.register_node_in_entry }}" == "true" ]]; then
-            register_args+=(
-              --register-node-in-entry true
-              --entry-admin-url "${{ secrets.ENTRY_ADMIN_URL }}"
-              --entry-node-region "$ENTRY_NODE_REGION"
-              --entry-node-provider gcp-vm-gha
-            )
-          fi
-          scripts/deploy-core-vm.sh \
+          scripts/deploy-entry-vm.sh \
             --project "$PROJECT_ID" \
             --vm-name "${{ inputs.vm_name }}" \
             --zone "$ZONE" \
             --entry-admin-token "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" \
             --google-oidc-client-id "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}" \
             --google-oidc-client-secret "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}" \
-            --google-oidc-redirect-uri "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}" \
-            "${register_args[@]}"
+            --google-oidc-redirect-uri "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}"
 
       - name: Destroy VM directly (script provisioner)
         if: inputs.action == 'destroy' && inputs.provisioner == 'script'

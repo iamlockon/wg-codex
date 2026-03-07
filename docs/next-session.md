@@ -140,7 +140,7 @@
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
   - includes explicit `cargo check -p core --features native-nft` gate.
-  - VM rollout validation remains a manual checklist path (`docs/deployment-checklist.md` + `scripts/deploy-core-vm.sh`).
+  - VM rollout validation remains a manual checklist path (`docs/deployment-checklist.md` + `scripts/deploy-entry-vm.sh` / `scripts/deploy-core-vm.sh`).
 - Windows desktop client MVP scaffolding added:
   - `clients/windows-desktop/ui` contains typed backend contracts, API client, and initial session state model.
   - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.
@@ -171,7 +171,7 @@
 - Native NAT rollout still requires environment validation before promoting it as the default runtime mode.
 
 ## Priority Next Steps
-1. Run VM deployment validation end-to-end with `scripts/deploy-core-vm.sh` and confirm readiness/admin API behavior.
+1. Run VM deployment validation end-to-end with `scripts/deploy-entry-vm.sh` (entry) and `scripts/deploy-core-vm.sh` (core) and confirm readiness/admin API behavior.
 2. Validate `WG_NAT_DRIVER=native` in VM environments and, once stable, switch production default from `cli` to `native`.
 3. Add auditable privacy policy toggles and retention/redaction conformance checks.
 4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.

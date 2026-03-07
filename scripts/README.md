@@ -5,11 +5,13 @@
 - `scripts/run-db-integration-tests.sh`
   - Runs the DB-backed integration suites against `TEST_DATABASE_URL`.
 
+- `scripts/deploy-entry-vm.sh`
+  - Deploys only the `entry` service onto a GCE VM.
+  - Used by `.github/workflows/entry-vm-cicd.yml` for CI-driven entry VM rollout.
+
 - `scripts/deploy-core-vm.sh`
-  - VM deployment helper for a non-Kubernetes core host.
-  - Supports optional `--register-node-in-entry true` to upsert the newly created core node into a remote entry admin API.
-  - Automatically configures `CORE_NODE_ID` + `CORE_ENTRY_HEALTH_URL` so the VM heartbeats into entry node health and can be discovered without redeploying entry.
-  - Used by `.github/workflows/core-vm-cicd.yml` for region-aware core rollout automation.
+  - Deploys only the `core` service onto a GCE VM.
+  - Supports optional `--register-node-in-entry true` to upsert the node in a remote entry admin API and enable heartbeat updates.
 
 ## Useful manual diagnostics
 
