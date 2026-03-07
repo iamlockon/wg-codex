@@ -80,7 +80,9 @@ jobs:
       - name: Terraform plan (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
         working-directory: deploy/terraform/stacks/core-vm
-        run: terraform plan -out="${TF_PLAN_FILE}"
+        run: |
+          set -o pipefail
+          terraform plan -no-color -out="${TF_PLAN_FILE}" | tee terraform-plan.log
 
       - name: Upload Terraform plan artifact (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
@@ -89,6 +91,27 @@ jobs:
           name: ${{ env.TF_PLAN_ARTIFACT }}
           path: deploy/terraform/stacks/core-vm/${{ env.TF_PLAN_FILE }}
           if-no-files-found: error
+
+      - name: Summarize Terraform plan (vm stack)
+        if: always() && inputs.provisioner == 'terraform' && inputs.action == 'plan'
+        working-directory: deploy/terraform/stacks/core-vm
+        run: |
+          plan_summary="$(grep -E '^Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.$' terraform-plan.log | tail -n 1 || true)"
+          no_changes_summary="$(grep -E '^No changes\.' terraform-plan.log | head -n 1 || true)"
+
+          {
+            echo "## Terraform plan (vm stack)"
+            echo ""
+            echo "- plan_run_id: `${{ github.run_id }}`"
+            echo "- Run URL: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`"
+            if [ -n "$plan_summary" ]; then
+              echo "- $plan_summary"
+            elif [ -n "$no_changes_summary" ]; then
+              echo "- $no_changes_summary"
+            else
+              echo "- Plan summary not found. Check the Terraform plan step logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require plan run id for Terraform apply
         if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
@@ -111,12 +134,54 @@ jobs:
       - name: Terraform apply (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
         working-directory: deploy/terraform/stacks/core-vm
-        run: terraform apply -auto-approve "${TF_PLAN_FILE}"
+        run: |
+          set -o pipefail
+          terraform apply -no-color -auto-approve "${TF_PLAN_FILE}" | tee terraform-apply.log
+
+      - name: Summarize Terraform apply (vm stack)
+        if: always() && inputs.provisioner == 'terraform' && inputs.action == 'apply'
+        working-directory: deploy/terraform/stacks/core-vm
+        run: |
+          apply_summary="$(grep -E '^Apply complete! Resources: [0-9]+ added, [0-9]+ changed, [0-9]+ destroyed\.$' terraform-apply.log | tail -n 1 || true)"
+          no_changes_summary="$(grep -E '^No changes\.' terraform-apply.log | head -n 1 || true)"
+
+          {
+            echo "## Terraform apply (vm stack)"
+            echo ""
+            if [ -n "$apply_summary" ]; then
+              echo "- $apply_summary"
+            elif [ -n "$no_changes_summary" ]; then
+              echo "- $no_changes_summary"
+            else
+              echo "- Apply summary not found. Check the Terraform apply step logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Terraform destroy (vm stack)
         if: inputs.provisioner == 'terraform' && inputs.action == 'destroy'
         working-directory: deploy/terraform/stacks/core-vm
-        run: terraform destroy -auto-approve
+        run: |
+          set -o pipefail
+          terraform destroy -no-color -auto-approve | tee terraform-destroy.log
+
+      - name: Summarize Terraform destroy (vm stack)
+        if: always() && inputs.provisioner == 'terraform' && inputs.action == 'destroy'
+        working-directory: deploy/terraform/stacks/core-vm
+        run: |
+          destroy_summary="$(grep -E '^Destroy complete! Resources: [0-9]+ destroyed\.$' terraform-destroy.log | tail -n 1 || true)"
+          no_changes_summary="$(grep -E '^No changes\.' terraform-destroy.log | head -n 1 || true)"
+
+          {
+            echo "## Terraform destroy (vm stack)"
+            echo ""
+            if [ -n "$destroy_summary" ]; then
+              echo "- $destroy_summary"
+            elif [ -n "$no_changes_summary" ]; then
+              echo "- $no_changes_summary"
+            else
+              echo "- Destroy summary not found. Check the Terraform destroy step logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Deploy entry onto VM
         if: inputs.action == 'apply'
