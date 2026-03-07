@@ -1,0 +1,12 @@
+project_id                    = "my-gcp-project"
+github_repository             = "my-org/my-repo"
+workload_identity_pool_id     = "github-actions"
+workload_identity_provider_id = "github-oidc"
+terraform_service_account_id  = "gha-terraform"
+enable_required_apis          = true
+
+# Optional: override default roles for the Terraform SA.
+# terraform_service_account_roles = [
+#   "roles/editor",
+#   "roles/resourcemanager.projectIamAdmin",
+# ]

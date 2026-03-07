@@ -59,5 +59,6 @@ If you do not want to seed additional secret values in Terraform state, leave `s
 
 - `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform` and `deploy/terraform/stacks/core-vm`.
 - `.github/workflows/core-vm-cicd.yml`: creates/tears down a regional core VM stack and deploys the services via `scripts/deploy-core-vm.sh`.
+- `.github/workflows/bootstrap-gcp-oidc.yml`: one-time/bootstrap workflow that creates GitHub OIDC trust in GCP and writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA` repository secrets.
 
 The `deploy/terraform/stacks/core-vm` stack consumes the reusable module at `deploy/terraform/modules/core_vm`.
