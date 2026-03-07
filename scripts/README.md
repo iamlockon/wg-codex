@@ -12,6 +12,7 @@
 - `scripts/deploy-core-vm.sh`
   - Deploys only the `core` service onto a GCE VM.
   - Supports optional `--register-node-in-entry true` to upsert the node in a remote entry admin API and enable heartbeat updates.
+  - Used by `.github/workflows/core-vm-cicd.yml` for CI-driven core VM rollout.
 
 ## Useful manual diagnostics
 

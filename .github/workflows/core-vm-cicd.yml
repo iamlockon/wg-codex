@@ -1,0 +1,176 @@
+name: Core VM CI/CD
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_name:
+        description: VM name
+        required: true
+        default: wg-core-gha
+      zone:
+        description: GCP zone (optional; defaults to <region>-a)
+        required: false
+        default: ""
+      region:
+        description: GCP region for core VM
+        required: true
+        default: us-central1
+      action:
+        description: Apply or destroy
+        required: true
+        default: apply
+        type: choice
+        options: [apply, destroy]
+      register_node_in_entry:
+        description: Register core node in entry admin API during apply
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      entry_admin_url:
+        description: Entry admin base URL (required when register_node_in_entry=true)
+        required: false
+        default: ""
+      entry_node_region:
+        description: Optional region metadata to store for this node in entry
+        required: false
+        default: ""
+      entry_node_country_code:
+        description: Optional country code metadata in entry
+        required: false
+        default: ""
+      entry_node_city_code:
+        description: Optional city code metadata in entry
+        required: false
+        default: ""
+      allow_wg_cidrs:
+        description: Source CIDRs allowed to reach WireGuard UDP/51820
+        required: false
+        default: 0.0.0.0/0
+      allow_core_grpc_cidrs:
+        description: Optional source CIDRs allowed to reach core gRPC TCP/50051
+        required: false
+        default: ""
+      wg_nat_driver:
+        description: Dataplane NAT mode for core
+        required: true
+        default: cli
+        type: choice
+        options: [cli, native]
+      app_env:
+        description: APP_ENV passed to core
+        required: true
+        default: production
+      core_bind_addr:
+        description: CORE_BIND_ADDR
+        required: true
+        default: 0.0.0.0:50051
+      core_require_tls:
+        description: CORE_REQUIRE_TLS
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      core_require_client_cert:
+        description: CORE_REQUIRE_CLIENT_CERT
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+
+jobs:
+  core-vm:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate workflow inputs and required secrets
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::Missing required secret: GCP_PROJECT_ID"
+            exit 1
+          fi
+
+          if [ "${{ inputs.action }}" = "apply" ] && [ "${{ inputs.register_node_in_entry }}" = "true" ]; then
+            if [ -z "${{ inputs.entry_admin_url }}" ]; then
+              echo "::error::entry_admin_url is required when register_node_in_entry=true."
+              exit 1
+            fi
+            if [ -z "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" ]; then
+              echo "::error::ENTRY_ADMIN_API_TOKEN secret is required when register_node_in_entry=true."
+              exit 1
+            fi
+          fi
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_TERRAFORM_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: inputs.action == 'apply'
+
+      - name: Cache cargo
+        if: inputs.action == 'apply'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install native nft build dependencies
+        if: inputs.action == 'apply' && inputs.wg_nat_driver == 'native'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libmnl-dev libnftnl-dev
+
+      - name: Deploy core onto VM
+        if: inputs.action == 'apply'
+        run: |
+          cmd=(scripts/deploy-core-vm.sh
+            --project "$PROJECT_ID"
+            --vm-name "${{ inputs.vm_name }}"
+            --zone "$ZONE"
+            --app-env "${{ inputs.app_env }}"
+            --core-bind-addr "${{ inputs.core_bind_addr }}"
+            --core-require-tls "${{ inputs.core_require_tls }}"
+            --core-require-client-cert "${{ inputs.core_require_client_cert }}"
+            --allow-wg-cidrs "${{ inputs.allow_wg_cidrs }}"
+            --register-node-in-entry "${{ inputs.register_node_in_entry }}"
+          )
+
+          if [ "${{ inputs.wg_nat_driver }}" = "native" ]; then
+            cmd+=(--native-nft)
+          else
+            cmd+=(--wg-nat-driver cli)
+          fi
+
+          if [ -n "${{ inputs.allow_core_grpc_cidrs }}" ]; then
+            cmd+=(--allow-core-grpc-cidrs "${{ inputs.allow_core_grpc_cidrs }}")
+          fi
+          if [ -n "${{ inputs.entry_admin_url }}" ]; then
+            cmd+=(--entry-admin-url "${{ inputs.entry_admin_url }}")
+          fi
+          if [ -n "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" ]; then
+            cmd+=(--entry-admin-token "${{ secrets.ENTRY_ADMIN_API_TOKEN }}")
+          fi
+          if [ -n "${{ inputs.entry_node_region }}" ]; then
+            cmd+=(--entry-node-region "${{ inputs.entry_node_region }}")
+          fi
+          if [ -n "${{ inputs.entry_node_country_code }}" ]; then
+            cmd+=(--entry-node-country-code "${{ inputs.entry_node_country_code }}")
+          fi
+          if [ -n "${{ inputs.entry_node_city_code }}" ]; then
+            cmd+=(--entry-node-city-code "${{ inputs.entry_node_city_code }}")
+          fi
+
+          "${cmd[@]}"
+
+      - name: Destroy VM directly
+        if: inputs.action == 'destroy'
+        run: |
+          gcloud --project "$PROJECT_ID" compute instances delete "${{ inputs.vm_name }}" --zone "$ZONE" --quiet

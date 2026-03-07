@@ -26,11 +26,13 @@
 4. Optional for core deploy:
    - Register node in entry control plane: `--register-node-in-entry true --entry-node-region <region>`
    - If entry should route to discovered nodes on a non-default gRPC port, set `APP_CORE_NODE_GRPC_PORT` on entry.
-5. GitHub Actions path (`.github/workflows/entry-vm-cicd.yml`):
-   - Deploys only the entry VM using `scripts/deploy-entry-vm.sh`.
+5. GitHub Actions paths:
+   - `entry`: `.github/workflows/entry-vm-cicd.yml` deploys `entry` using `scripts/deploy-entry-vm.sh`.
    - Add VM without touching Terraform stack state: `action=apply`, `provisioner=script`, unique `vm_name`.
    - Terraform-managed VM flow: run `provisioner=terraform`, `action=plan`, then run `provisioner=terraform`, `action=apply` with `plan_run_id` from that plan run.
    - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
+   - `core`: `.github/workflows/core-vm-cicd.yml` deploys `core` using `scripts/deploy-core-vm.sh`.
+   - For `core` registration in entry, run `action=apply` with `register_node_in_entry=true`, set `entry_admin_url`, and provide `ENTRY_ADMIN_API_TOKEN` in repository secrets.
 
 ## Required production policy
 - `entry`:

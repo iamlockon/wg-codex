@@ -140,7 +140,10 @@
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
   - includes explicit `cargo check -p core --features native-nft` gate.
-  - VM rollout validation remains a manual checklist path (`docs/deployment-checklist.md` + `scripts/deploy-entry-vm.sh` / `scripts/deploy-core-vm.sh`).
+  - VM rollout automation is available via:
+    - `.github/workflows/entry-vm-cicd.yml` (entry),
+    - `.github/workflows/core-vm-cicd.yml` (core),
+    - plus manual checklist path in `docs/deployment-checklist.md`.
 - Windows desktop client MVP scaffolding added:
   - `clients/windows-desktop/ui` contains typed backend contracts, API client, and initial session state model.
   - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.

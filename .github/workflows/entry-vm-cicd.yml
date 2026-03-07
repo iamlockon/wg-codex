@@ -34,7 +34,7 @@ on:
       tf_state_bucket:
         description: "Optional GCS bucket name for Terraform state (auto-generated when empty)"
         required: false
-        default: ""
+        default: "wg-codex-tfstate-stg"
       tf_state_prefix:
         description: "Optional backend state object prefix (must end with /entry-vm; defaults to terraform/entry-vm)"
         required: false
