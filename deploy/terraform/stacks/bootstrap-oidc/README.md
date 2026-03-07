@@ -96,6 +96,7 @@ gcloud services enable \
   iam.googleapis.com \
   storage.googleapis.com \
   cloudresourcemanager.googleapis.com \
+  compute.googleapis.com \
   serviceusage.googleapis.com \
   --project "$PROJECT_ID"
 ```
