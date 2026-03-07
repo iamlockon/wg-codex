@@ -13,9 +13,16 @@ provider "github" {
   token = var.github_token
 }
 
-resource "google_service_account" "terraform" {
-  account_id   = var.terraform_service_account_id
-  display_name = "GitHub Actions Terraform"
+data "google_service_account" "terraform" {
+  account_id = var.terraform_service_account_id
+}
+
+removed {
+  from = google_service_account.terraform
+
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "google_project_iam_member" "terraform_sa_roles" {
@@ -23,7 +30,7 @@ resource "google_project_iam_member" "terraform_sa_roles" {
 
   project = var.project_id
   role    = each.value
-  member  = "serviceAccount:${google_service_account.terraform.email}"
+  member  = "serviceAccount:${data.google_service_account.terraform.email}"
 }
 
 resource "google_project_service" "iamcredentials" {
@@ -73,7 +80,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 resource "google_service_account_iam_member" "github_oidc_impersonation" {
-  service_account_id = google_service_account.terraform.name
+  service_account_id = data.google_service_account.terraform.name
   role               = "roles/iam.workloadIdentityUser"
   member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repository}"
 }
@@ -87,5 +94,5 @@ resource "github_actions_secret" "workload_identity_provider" {
 resource "github_actions_secret" "terraform_sa" {
   repository      = local.github_repo_name
   secret_name     = var.github_secret_name_terraform_sa
-  plaintext_value = google_service_account.terraform.email
+  plaintext_value = data.google_service_account.terraform.email
 }

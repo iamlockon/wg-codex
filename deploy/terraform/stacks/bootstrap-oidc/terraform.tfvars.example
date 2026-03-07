@@ -5,6 +5,8 @@ workload_identity_provider_id = "github-oidc"
 terraform_service_account_id  = "gha-terraform"
 enable_required_apis          = true
 
+# Must already exist in the project before running this stack.
+
 # Optional: override default roles for the Terraform SA.
 # terraform_service_account_roles = [
 #   "roles/editor",

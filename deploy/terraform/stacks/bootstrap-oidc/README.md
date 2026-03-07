@@ -7,9 +7,11 @@ This stack bootstraps GitHub Actions -> GCP Workload Identity Federation and wri
 
 It creates:
 - a GCP Workload Identity Pool + Provider trusting GitHub OIDC tokens for one repository
-- a Terraform service account for GitHub Actions
 - IAM binding allowing that GitHub repository to impersonate the service account
 - GitHub Actions secrets with the provider name and service account email
+
+Prerequisite:
+- the Terraform service account (default `gha-terraform`) must already exist in the project before running this stack.
 
 ## Usage
 

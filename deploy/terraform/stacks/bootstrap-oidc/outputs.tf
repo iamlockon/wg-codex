@@ -5,5 +5,5 @@ output "workload_identity_provider" {
 
 output "terraform_service_account_email" {
   description = "Service account email used by google-github-actions/auth service_account input."
-  value       = google_service_account.terraform.email
+  value       = data.google_service_account.terraform.email
 }

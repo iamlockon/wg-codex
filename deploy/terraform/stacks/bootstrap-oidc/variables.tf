@@ -1,6 +1,7 @@
 variable "project_id" {
-  description = "GCP project id where Workload Identity and the Terraform service account are created."
+  description = "GCP project id where Workload Identity is created and the Terraform service account already exists."
   type        = string
+  default     = "wg-stg"
 }
 
 variable "github_repository" {
@@ -33,7 +34,7 @@ variable "workload_identity_provider_id" {
 }
 
 variable "terraform_service_account_id" {
-  description = "Service account id used by GitHub Actions Terraform workflows."
+  description = "Existing service account id used by GitHub Actions Terraform workflows."
   type        = string
   default     = "gha-terraform"
 }
