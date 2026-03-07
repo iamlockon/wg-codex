@@ -26,7 +26,7 @@ on:
       tf_state_bucket:
         description: "GCS bucket name for Terraform state"
         required: false
-        default: ""
+        default: "wg-codex-tfstate-stg"
       tf_state_prefix:
         description: "State object prefix in the bucket (must end with /bootstrap-oidc or be empty)"
         required: false
