@@ -8,6 +8,7 @@
 - `scripts/deploy-core-vm.sh`
   - VM deployment helper for a non-Kubernetes core host.
   - Supports optional `--register-node-in-entry true` to upsert the newly created core node into a remote entry admin API.
+  - Automatically configures `CORE_NODE_ID` + `CORE_ENTRY_HEALTH_URL` so the VM heartbeats into entry node health and can be discovered without redeploying entry.
   - Used by `.github/workflows/core-vm-cicd.yml` for region-aware core rollout automation.
 
 ## Useful manual diagnostics

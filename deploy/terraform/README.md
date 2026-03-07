@@ -32,5 +32,5 @@ terraform apply
 ## GitHub Actions automation
 
 - `.github/workflows/infra-terraform.yml`: manual plan/apply/destroy for `deploy/terraform/stacks/core-vm` and `deploy/terraform/stacks/bootstrap-oidc`.
-- `.github/workflows/core-vm-cicd.yml`: creates/tears down a regional core VM stack and deploys services via `scripts/deploy-core-vm.sh`.
+- `.github/workflows/core-vm-cicd.yml`: deploys core VMs via `scripts/deploy-core-vm.sh`; supports `provisioner=script` for additive VM rollout (no Terraform state change) or `provisioner=terraform` for stack-managed apply/destroy. Node registration is optional via `register_node_in_entry=true`.
 - `.github/workflows/bootstrap-gcp-oidc.yml`: bootstrap workflow that provisions OIDC trust and writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`.

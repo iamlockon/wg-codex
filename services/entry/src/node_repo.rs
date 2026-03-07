@@ -101,6 +101,19 @@ impl PostgresNodeRepository {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    pub async fn get_node(&self, node_id: Uuid) -> Result<Option<NodeRecord>, NodeRepoError> {
+        let row = sqlx::query_as::<_, NodeDbRow>(
+            "SELECT id, region, country_code, city_code, pool, provider, endpoint_host, endpoint_port, healthy, active_peer_count, capacity_peers, updated_at
+             FROM vpn_nodes
+             WHERE id = $1",
+        )
+        .bind(node_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(Into::into))
+    }
+
     pub async fn upsert_node(&self, input: UpsertNodeInput) -> Result<NodeRecord, NodeRepoError> {
         let row = sqlx::query_as::<_, NodeDbRow>(
             "INSERT INTO vpn_nodes (

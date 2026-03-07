@@ -71,13 +71,14 @@ Optional options:
   --wg-egress-iface <name|auto>     WG_EGRESS_IFACE (default: auto)
   --app-env <env>                   APP_ENV (default: production)
   --core-require-tls <bool>         CORE_REQUIRE_TLS (default: true)
-  --register-node-in-entry <bool>    Upsert this core node into a remote entry admin API (default: false)
+  --register-node-in-entry <bool>    Upsert this core node into a remote entry admin API (default: true)
   --entry-admin-url <url>            Entry admin base URL used for node registration
   --entry-node-region <region>       Region stored in entry node registry (default: derived from zone)
   --entry-node-country-code <code>   Optional country code metadata for node selection
   --entry-node-city-code <code>      Optional city code metadata for node selection
   --entry-node-pool <name>           Node pool metadata (default: standard)
   --entry-node-provider <name>       Node provider metadata (default: gcp-vm)
+  --core-node-id <uuid>              Stable CORE_NODE_ID used for entry health reporting
   --create-only                      Only create VM + cloud-init; skip upload/install
 
 Example:
@@ -155,13 +156,15 @@ GOOGLE_OIDC_CLIENT_ID=""
 GOOGLE_OIDC_CLIENT_SECRET=""
 GOOGLE_OIDC_REDIRECT_URI=""
 VM_IP=""
-REGISTER_NODE_IN_ENTRY="false"
+REGISTER_NODE_IN_ENTRY="true"
 ENTRY_ADMIN_URL=""
 ENTRY_NODE_REGION=""
 ENTRY_NODE_COUNTRY_CODE=""
 ENTRY_NODE_CITY_CODE=""
 ENTRY_NODE_POOL="standard"
 ENTRY_NODE_PROVIDER="gcp-vm"
+CORE_NODE_ID=""
+CORE_ENTRY_HEALTH_URL=""
 
 WG_PRIVATE_KEY_FILE="./secrets/private.key"
 TLS_SERVER_CRT_FILE="./secrets/server.crt"
@@ -232,6 +235,7 @@ while [[ $# -gt 0 ]]; do
     --entry-node-city-code) ENTRY_NODE_CITY_CODE="$2"; shift 2 ;;
     --entry-node-pool) ENTRY_NODE_POOL="$2"; shift 2 ;;
     --entry-node-provider) ENTRY_NODE_PROVIDER="$2"; shift 2 ;;
+    --core-node-id) CORE_NODE_ID="$2"; shift 2 ;;
     --wg-interface) WG_INTERFACE="$2"; shift 2 ;;
     --wg-interface-cidr) WG_INTERFACE_CIDR="$2"; shift 2 ;;
     --wg-listen-port) WG_LISTEN_PORT="$2"; shift 2 ;;
@@ -324,6 +328,25 @@ fi
 if [[ -z "$PROJECT" ]]; then
   echo "project is required (use --project or configure gcloud default project)" >&2
   exit 1
+fi
+
+if [[ -z "$CORE_NODE_ID" ]]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    node_seed="${PROJECT}:${ZONE}:${VM_NAME}"
+    node_hash="$(printf '%s' "$node_seed" | sha256sum | awk '{print $1}')"
+    CORE_NODE_ID="${node_hash:0:8}-${node_hash:8:4}-${node_hash:12:4}-${node_hash:16:4}-${node_hash:20:12}"
+  else
+    CORE_NODE_ID="$(cat /proc/sys/kernel/random/uuid)"
+  fi
+fi
+if [[ ! "$CORE_NODE_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  echo "invalid --core-node-id: $CORE_NODE_ID (expected UUID format)" >&2
+  exit 1
+fi
+if [[ -n "$ENTRY_ADMIN_URL" ]]; then
+  CORE_ENTRY_HEALTH_URL="${ENTRY_ADMIN_URL%/}/v1/internal/nodes/health"
+else
+  CORE_ENTRY_HEALTH_URL="http://127.0.0.1:8080/v1/internal/nodes/health"
 fi
 
 require_cmd gcloud
@@ -461,6 +484,9 @@ WG_SERVER_PUBLIC_KEY=${wg_server_public_key_value}
 
 CORE_TLS_CERT_PATH=/etc/core-tls/server.crt
 CORE_TLS_KEY_PATH=/etc/core-tls/server.key
+CORE_NODE_ID=${CORE_NODE_ID}
+CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}
+ADMIN_API_TOKEN=${ENTRY_ADMIN_API_TOKEN}
 EOF
 if [[ "$CORE_REQUIRE_CLIENT_CERT" == "1" || "$CORE_REQUIRE_CLIENT_CERT" == "true" || "$CORE_REQUIRE_CLIENT_CERT" == "TRUE" ]]; then
   echo "CORE_TLS_CLIENT_CA_CERT_PATH=/etc/core-tls/ca.pem" >>"$env_file"
@@ -973,6 +999,8 @@ fi
 if [[ -n "$EFFECTIVE_WG_ENDPOINT_TEMPLATE" ]]; then
   echo "Effective WG_ENDPOINT_TEMPLATE=${EFFECTIVE_WG_ENDPOINT_TEMPLATE}"
 fi
+echo "CORE_NODE_ID=${CORE_NODE_ID}"
+echo "CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}"
 if [[ -n "$GOOGLE_OIDC_CLIENT_ID" ]]; then
   echo "Google OIDC configured for entry (client id provided)."
 fi
@@ -992,7 +1020,7 @@ if [[ "$REGISTER_NODE_IN_ENTRY" == "1" || "$REGISTER_NODE_IN_ENTRY" == "true" ||
   fi
   require_cmd curl
   require_cmd jq
-  payload="$(jq -nc     --arg id "$(cat /proc/sys/kernel/random/uuid)"     --arg region "$ENTRY_NODE_REGION"     --arg provider "$ENTRY_NODE_PROVIDER"     --arg endpoint_host "$VM_IP"     --argjson endpoint_port "$WG_LISTEN_PORT"     --arg country_code "$ENTRY_NODE_COUNTRY_CODE"     --arg city_code "$ENTRY_NODE_CITY_CODE"     --arg pool "$ENTRY_NODE_POOL"     '{id:$id,region:$region,provider:$provider,endpoint_host:$endpoint_host,endpoint_port:$endpoint_port,healthy:true,active_peer_count:0,capacity_peers:200,pool:$pool}
+  payload="$(jq -nc     --arg id "$CORE_NODE_ID"     --arg region "$ENTRY_NODE_REGION"     --arg provider "$ENTRY_NODE_PROVIDER"     --arg endpoint_host "$VM_IP"     --argjson endpoint_port "$WG_LISTEN_PORT"     --arg country_code "$ENTRY_NODE_COUNTRY_CODE"     --arg city_code "$ENTRY_NODE_CITY_CODE"     --arg pool "$ENTRY_NODE_POOL"     '{id:$id,region:$region,provider:$provider,endpoint_host:$endpoint_host,endpoint_port:$endpoint_port,healthy:true,active_peer_count:0,capacity_peers:200,pool:$pool}
       + (if $country_code=="" then {} else {country_code:$country_code} end)
       + (if $city_code=="" then {} else {city_code:$city_code} end)')"
   echo "Registering core node in entry: ${ENTRY_ADMIN_URL%/}/v1/admin/nodes"

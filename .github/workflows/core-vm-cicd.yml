@@ -8,19 +8,35 @@ on:
         required: true
         default: wg-core-gha
       zone:
-        description: GCP zone
-        required: true
-        default: us-central1-a
+        description: GCP zone (optional; defaults to <region>-a)
+        required: false
+        default: ""
       region:
-        description: Node region recorded in entry
+        description: GCP region for core VM
         required: true
         default: us-central1
+      entry_node_region:
+        description: Node region recorded in entry (optional override)
+        required: false
+        default: ""
       action:
         description: Apply or destroy
         required: true
         default: apply
         type: choice
         options: [apply, destroy]
+      provisioner:
+        description: Infrastructure provisioner
+        required: true
+        default: script
+        type: choice
+        options: [script, terraform]
+      register_node_in_entry:
+        description: Register node in remote entry control plane
+        required: true
+        default: "true"
+        type: choice
+        options: ["false", "true"]
 
 jobs:
   core-vm:
@@ -30,8 +46,10 @@ jobs:
       id-token: write
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      ENTRY_NODE_REGION: ${{ inputs.entry_node_region != '' && inputs.entry_node_region || inputs.region }}
       TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-      TF_VAR_zone: ${{ inputs.zone }}
+      TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
       TF_VAR_region: ${{ inputs.region }}
       TF_VAR_name: ${{ inputs.vm_name }}
     steps:
@@ -43,6 +61,7 @@ jobs:
           service_account: ${{ secrets.GCP_TERRAFORM_SA }}
 
       - uses: hashicorp/setup-terraform@v3
+        if: inputs.provisioner == 'terraform'
 
       - uses: google-github-actions/setup-gcloud@v2
 
@@ -52,10 +71,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Terraform init (core-vm stack)
+        if: inputs.provisioner == 'terraform'
         working-directory: deploy/terraform/stacks/core-vm
         run: terraform init
 
       - name: Terraform apply/destroy (core-vm stack)
+        if: inputs.provisioner == 'terraform'
         working-directory: deploy/terraform/stacks/core-vm
         run: |
           if [[ "${{ inputs.action }}" == "destroy" ]]; then
@@ -69,15 +90,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wireguard-tools jq
+          register_args=()
+          if [[ "${{ inputs.register_node_in_entry }}" == "true" ]]; then
+            register_args+=(
+              --register-node-in-entry true
+              --entry-admin-url "${{ secrets.ENTRY_ADMIN_URL }}"
+              --entry-node-region "$ENTRY_NODE_REGION"
+              --entry-node-provider gcp-vm-gha
+            )
+          fi
           scripts/deploy-core-vm.sh \
             --project "$PROJECT_ID" \
             --vm-name "${{ inputs.vm_name }}" \
-            --zone "${{ inputs.zone }}" \
+            --zone "$ZONE" \
             --entry-admin-token "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" \
             --google-oidc-client-id "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}" \
             --google-oidc-client-secret "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}" \
             --google-oidc-redirect-uri "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}" \
-            --register-node-in-entry true \
-            --entry-admin-url "${{ secrets.ENTRY_ADMIN_URL }}" \
-            --entry-node-region "${{ inputs.region }}" \
-            --entry-node-provider gcp-vm-gha
+            "${register_args[@]}"
+
+      - name: Destroy VM directly (script provisioner)
+        if: inputs.action == 'destroy' && inputs.provisioner == 'script'
+        run: |
+          gcloud --project "$PROJECT_ID" compute instances delete "${{ inputs.vm_name }}" --zone "$ZONE" --quiet

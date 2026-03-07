@@ -7,6 +7,7 @@ pub struct SessionRow {
     pub session_key: String,
     pub customer_id: Uuid,
     pub device_id: Uuid,
+    pub node_id: Option<Uuid>,
     pub region: String,
     pub connected_at: DateTime<Utc>,
 }
@@ -35,6 +36,13 @@ pub trait SessionRepository {
     ) -> StartSessionOutcome;
 
     fn terminate_session(&mut self, customer_id: Uuid, session_key: &str) -> Result<(), RepoError>;
+
+    fn set_active_session_node_id(
+        &mut self,
+        customer_id: Uuid,
+        session_key: &str,
+        node_id: Option<Uuid>,
+    ) -> Result<(), RepoError>;
 
     fn get_active_session(&self, customer_id: Uuid) -> Option<SessionRow>;
 }
@@ -67,6 +75,7 @@ impl SessionRepository for InMemorySessionRepository {
             session_key: requested_session_key,
             customer_id,
             device_id,
+            node_id: None,
             region,
             connected_at: Utc::now(),
         };
@@ -78,6 +87,22 @@ impl SessionRepository for InMemorySessionRepository {
         match self.active_sessions.get(&customer_id) {
             Some(existing) if existing.session_key == session_key => {
                 self.active_sessions.remove(&customer_id);
+                Ok(())
+            }
+            Some(_) => Err(RepoError::SessionKeyMismatch),
+            None => Err(RepoError::NotFound),
+        }
+    }
+
+    fn set_active_session_node_id(
+        &mut self,
+        customer_id: Uuid,
+        session_key: &str,
+        node_id: Option<Uuid>,
+    ) -> Result<(), RepoError> {
+        match self.active_sessions.get_mut(&customer_id) {
+            Some(existing) if existing.session_key == session_key => {
+                existing.node_id = node_id;
                 Ok(())
             }
             Some(_) => Err(RepoError::SessionKeyMismatch),

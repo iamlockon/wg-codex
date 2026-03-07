@@ -123,6 +123,39 @@ impl PostgresSessionRepository {
         Ok(())
     }
 
+    pub async fn set_active_session_node_id(
+        &self,
+        customer_id: Uuid,
+        session_key: &str,
+        node_id: Option<Uuid>,
+    ) -> Result<(), PostgresRepoError> {
+        let mut tx = self.pool.begin().await?;
+        let existing = fetch_active_session_tx(&mut tx, customer_id).await?;
+        let existing = existing.ok_or(PostgresRepoError::NotFound)?;
+
+        if existing.session_key != session_key {
+            tx.commit().await?;
+            return Err(PostgresRepoError::SessionKeyMismatch);
+        }
+
+        sqlx::query(
+            "UPDATE sessions
+             SET node_id = $3,
+                 updated_at = now()
+             WHERE customer_id = $1
+               AND state = 'active'
+               AND session_key = $2",
+        )
+        .bind(customer_id)
+        .bind(session_key)
+        .bind(node_id)
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     pub async fn get_active_session(
         &self,
         customer_id: Uuid,
@@ -148,6 +181,7 @@ async fn fetch_active_session_pool(
         "SELECT session_key,
                 customer_id,
                 device_id,
+                node_id,
                 region,
                 COALESCE(connected_at, created_at) AS connected_at
          FROM sessions
@@ -171,6 +205,7 @@ async fn fetch_active_session_tx(
         "SELECT session_key,
                 customer_id,
                 device_id,
+                node_id,
                 region,
                 COALESCE(connected_at, created_at) AS connected_at
          FROM sessions
@@ -200,6 +235,7 @@ async fn insert_active_session_tx(
          RETURNING session_key,
                    customer_id,
                    device_id,
+                   node_id,
                    region,
                    COALESCE(connected_at, created_at) AS connected_at",
     )
@@ -218,6 +254,7 @@ struct SessionDbRow {
     session_key: String,
     customer_id: Uuid,
     device_id: Uuid,
+    node_id: Option<Uuid>,
     region: String,
     connected_at: DateTime<Utc>,
 }
@@ -228,6 +265,7 @@ impl From<SessionDbRow> for SessionRow {
             session_key: value.session_key,
             customer_id: value.customer_id,
             device_id: value.device_id,
+            node_id: value.node_id,
             region: value.region,
             connected_at: value.connected_at,
         }
