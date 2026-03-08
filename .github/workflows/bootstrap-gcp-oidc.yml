@@ -23,6 +23,18 @@ on:
         description: "Terraform service account id"
         required: true
         default: gha-terraform
+      app_google_oidc_client_id:
+        description: "App login Google OAuth client id"
+        required: true
+        default: ""
+      app_google_oidc_client_secret:
+        description: "App login Google OAuth client secret"
+        required: true
+        default: ""
+      app_google_oidc_redirect_uri:
+        description: "App login Google OAuth redirect uri"
+        required: true
+        default: ""
       tf_state_bucket:
         description: "GCS bucket name for Terraform state"
         required: false
@@ -64,9 +76,9 @@ jobs:
       TF_VAR_workload_identity_provider_id: ${{ inputs.workload_identity_provider_id }}
       TF_VAR_terraform_service_account_id: ${{ inputs.terraform_service_account_id }}
       TF_VAR_github_token: ${{ secrets.GH_ADMIN_TOKEN != '' && secrets.GH_ADMIN_TOKEN || github.token }}
-      TF_VAR_app_google_oidc_client_id: ${{ secrets.BOOTSTRAP_GOOGLE_OIDC_CLIENT_ID }}
-      TF_VAR_app_google_oidc_client_secret: ${{ secrets.BOOTSTRAP_GOOGLE_OIDC_CLIENT_SECRET }}
-      TF_VAR_app_google_oidc_redirect_uri: ${{ secrets.BOOTSTRAP_GOOGLE_OIDC_REDIRECT_URI }}
+      TF_VAR_app_google_oidc_client_id: ${{ inputs.app_google_oidc_client_id }}
+      TF_VAR_app_google_oidc_client_secret: ${{ inputs.app_google_oidc_client_secret }}
+      TF_VAR_app_google_oidc_redirect_uri: ${{ inputs.app_google_oidc_redirect_uri }}
       GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
       GITHUB_TOKEN: ${{ github.token }}
     steps:
@@ -78,18 +90,18 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
 
-      - name: Validate required app login OIDC secret source
+      - name: Validate required app login OIDC workflow inputs
         run: |
-          if [ -z "${{ secrets.BOOTSTRAP_GOOGLE_OIDC_CLIENT_ID }}" ]; then
-            echo "::error::BOOTSTRAP_GOOGLE_OIDC_CLIENT_ID is required."
+          if [ -z "${TF_VAR_app_google_oidc_client_id}" ]; then
+            echo "::error::app_google_oidc_client_id is required."
             exit 1
           fi
-          if [ -z "${{ secrets.BOOTSTRAP_GOOGLE_OIDC_CLIENT_SECRET }}" ]; then
-            echo "::error::BOOTSTRAP_GOOGLE_OIDC_CLIENT_SECRET is required."
+          if [ -z "${TF_VAR_app_google_oidc_client_secret}" ]; then
+            echo "::error::app_google_oidc_client_secret is required."
             exit 1
           fi
-          if [ -z "${{ secrets.BOOTSTRAP_GOOGLE_OIDC_REDIRECT_URI }}" ]; then
-            echo "::error::BOOTSTRAP_GOOGLE_OIDC_REDIRECT_URI is required."
+          if [ -z "${TF_VAR_app_google_oidc_redirect_uri}" ]; then
+            echo "::error::app_google_oidc_redirect_uri is required."
             exit 1
           fi
 
