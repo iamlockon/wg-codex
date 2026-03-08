@@ -3,12 +3,9 @@ provider "google" {
 }
 
 locals {
-  repository_parts                    = split("/", var.github_repository)
-  github_owner                        = local.repository_parts[0]
-  github_repo_name                    = local.repository_parts[1]
-  app_google_oidc_client_id_value     = trimspace(var.app_google_oidc_client_id)
-  app_google_oidc_client_secret_value = trimspace(var.app_google_oidc_client_secret)
-  app_google_oidc_redirect_uri_value  = trimspace(var.app_google_oidc_redirect_uri)
+  repository_parts = split("/", var.github_repository)
+  github_owner     = local.repository_parts[0]
+  github_repo_name = local.repository_parts[1]
 }
 
 provider "github" {
@@ -22,6 +19,30 @@ data "google_service_account" "terraform" {
 
 removed {
   from = google_service_account.terraform
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = github_actions_secret.app_google_oidc_client_id
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = github_actions_secret.app_google_oidc_client_secret
+
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = github_actions_secret.app_google_oidc_redirect_uri
 
   lifecycle {
     destroy = false
@@ -98,22 +119,4 @@ resource "github_actions_secret" "terraform_sa" {
   repository      = local.github_repo_name
   secret_name     = var.github_secret_name_terraform_sa
   plaintext_value = data.google_service_account.terraform.email
-}
-
-resource "github_actions_secret" "app_google_oidc_client_id" {
-  repository      = local.github_repo_name
-  secret_name     = var.github_secret_name_google_oidc_client_id
-  plaintext_value = local.app_google_oidc_client_id_value
-}
-
-resource "github_actions_secret" "app_google_oidc_client_secret" {
-  repository      = local.github_repo_name
-  secret_name     = var.github_secret_name_google_oidc_client_secret
-  plaintext_value = local.app_google_oidc_client_secret_value
-}
-
-resource "github_actions_secret" "app_google_oidc_redirect_uri" {
-  repository      = local.github_repo_name
-  secret_name     = var.github_secret_name_google_oidc_redirect_uri
-  plaintext_value = local.app_google_oidc_redirect_uri_value
 }

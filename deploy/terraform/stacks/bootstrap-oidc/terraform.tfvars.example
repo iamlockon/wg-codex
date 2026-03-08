@@ -12,13 +12,3 @@ enable_required_apis          = true
 #   "roles/editor",
 #   "roles/resourcemanager.projectIamAdmin",
 # ]
-
-# Required: app-login OIDC values for entry-vm-cicd.
-app_google_oidc_client_id     = "replace_me.apps.googleusercontent.com"
-app_google_oidc_client_secret = "replace_me"
-app_google_oidc_redirect_uri  = "http://127.0.0.1:53682/oauth/callback"
-
-# Optional: override destination GitHub secret names.
-# github_secret_name_google_oidc_client_id     = "GOOGLE_OIDC_CLIENT_ID"
-# github_secret_name_google_oidc_client_secret = "GOOGLE_OIDC_CLIENT_SECRET"
-# github_secret_name_google_oidc_redirect_uri  = "GOOGLE_OIDC_REDIRECT_URI"
