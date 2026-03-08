@@ -39,7 +39,8 @@ Config env vars:
 - `WG_WINDOWS_CONFIG_DIR` (optional config file directory)
 - `WG_WINDOWS_TUNNEL_NAME` (optional tunnel service name)
 - `WG_WINDOWS_NOOP_TUNNEL` (optional no-op tunnel mode for UI/API testing)
-- `VITE_GOOGLE_OIDC_CLIENT_ID` / `VITE_GOOGLE_OIDC_REDIRECT_URI` (Google OAuth UI config)
+- Google OAuth UI config is resolved from `entry` public config by default.
+- Users can set local app overrides from the UI Settings panel.
 
 Runtime config packaging:
 - `npm run tauri:dev` and `npm run tauri:build` auto-generate `src-tauri/app.env` from current shell env and local env files (`clients/windows-desktop/.env`, `clients/windows-desktop/ui/src/.env`).

@@ -29,9 +29,15 @@ type UiPublicConfig = {
   google_oidc_redirect_uri: string;
 };
 
-let googleClientId = (import.meta.env.VITE_GOOGLE_OIDC_CLIENT_ID as string | undefined) ?? "";
-let googleRedirectUri =
-  (import.meta.env.VITE_GOOGLE_OIDC_REDIRECT_URI as string | undefined) ?? "";
+type UiAppConfig = {
+  entryApiBaseUrl: string;
+  wireguardExe: string;
+  googleOidcClientId: string;
+  googleOidcRedirectUri: string;
+};
+
+let googleClientId = "";
+let googleRedirectUri = "";
 const PENDING_OAUTH_STORAGE_KEY = "wg.pendingOAuth";
 
 const app = document.getElementById("app")!;
@@ -77,6 +83,30 @@ app.innerHTML = `
       <h2>Status</h2>
       <div id="status"></div>
 
+      <h2 style="margin-top:14px">Settings</h2>
+      <p class="section-note">Local values here override entry public config when set.</p>
+      <div class="grid one-col">
+        <div>
+          <label for="cfg-entry-api-base-url">ENTRY_API_BASE_URL</label>
+          <input id="cfg-entry-api-base-url" type="text" placeholder="http://127.0.0.1:8080" />
+        </div>
+        <div>
+          <label for="cfg-wireguard-exe">WG_WINDOWS_WIREGUARD_EXE</label>
+          <input id="cfg-wireguard-exe" type="text" placeholder="C:\\Program Files\\WireGuard\\wireguard.exe" />
+        </div>
+        <div>
+          <label for="cfg-google-client-id">GOOGLE_OIDC_CLIENT_ID override</label>
+          <input id="cfg-google-client-id" type="text" placeholder="optional local override" />
+        </div>
+        <div>
+          <label for="cfg-google-redirect-uri">GOOGLE_OIDC_REDIRECT_URI override</label>
+          <input id="cfg-google-redirect-uri" type="text" placeholder="optional local override" />
+        </div>
+      </div>
+      <div class="actions">
+        <button id="btn-settings-save" class="secondary">Save Settings</button>
+      </div>
+
       <h2 style="margin-top:14px">Log</h2>
       <div class="log" id="log"></div>
     </section>
@@ -99,6 +129,11 @@ const googleLoginIdentityEl = document.getElementById("google-login-identity") a
 const connectBtn = document.getElementById("btn-connect") as HTMLButtonElement;
 const disconnectBtn = document.getElementById("btn-disconnect") as HTMLButtonElement;
 const connectionBanner = document.getElementById("connection-banner") as HTMLDivElement;
+const settingsSaveBtn = document.getElementById("btn-settings-save") as HTMLButtonElement;
+const entryApiBaseUrlInput = document.getElementById("cfg-entry-api-base-url") as HTMLInputElement;
+const wireguardExeInput = document.getElementById("cfg-wireguard-exe") as HTMLInputElement;
+const googleClientIdInput = document.getElementById("cfg-google-client-id") as HTMLInputElement;
+const googleRedirectUriInput = document.getElementById("cfg-google-redirect-uri") as HTMLInputElement;
 
 function appendLog(line: string) {
   const ts = new Date().toISOString();
