@@ -360,7 +360,7 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     await loadPublicConfig();
     if (!googleClientId || !googleRedirectUri) {
       throw new Error(
-        "missing_google_oauth_ui_config (set VITE_GOOGLE_OIDC_CLIENT_ID and VITE_GOOGLE_OIDC_REDIRECT_URI)",
+        "missing_google_oauth_ui_config (configure GOOGLE_OIDC_CLIENT_ID and GOOGLE_OIDC_REDIRECT_URI in entry, or set local VITE_GOOGLE_OIDC_* fallback vars)",
       );
     }
     const codeVerifier = randomUrlSafeString(64);

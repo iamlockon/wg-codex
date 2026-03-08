@@ -42,4 +42,6 @@ terraform apply
   - `provisioner=terraform` uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.
   - `provisioner=terraform` supports `action=plan|apply|destroy`; Terraform `apply` requires `plan_run_id` and uses the exact saved plan artifact.
 - `.github/workflows/bootstrap-gcp-oidc.yml`: bootstrap workflow that provisions OIDC trust and writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`.
+  - Also publishes app-login `GOOGLE_OIDC_*` secrets from required `BOOTSTRAP_GOOGLE_OIDC_*` source secrets.
+  - App-login Google OAuth client credentials are created manually in Google Cloud Console (see `deploy/terraform/stacks/bootstrap-oidc/README.md`).
   - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.

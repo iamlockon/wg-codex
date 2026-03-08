@@ -4,7 +4,7 @@ use crate::models::{
 };
 use anyhow::Context;
 use reqwest::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct EntryApi {
@@ -41,6 +41,12 @@ pub enum EntryApiError {
 #[derive(Debug, serde::Deserialize)]
 struct ErrorPayload {
     error: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PublicClientConfig {
+    pub google_oidc_client_id: String,
+    pub google_oidc_redirect_uri: String,
 }
 
 impl EntryApi {
@@ -151,6 +157,15 @@ impl EntryApi {
             self.client
                 .get(format!("{}/v1/sessions/current", self.base_url))
                 .bearer_auth(access_token),
+            StatusCode::OK,
+        )
+        .await
+    }
+
+    pub async fn public_client_config(&self) -> Result<PublicClientConfig, EntryApiError> {
+        self.request_json(
+            self.client
+                .get(format!("{}/v1/public/client-config", self.base_url)),
             StatusCode::OK,
         )
         .await

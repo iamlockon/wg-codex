@@ -59,7 +59,6 @@ struct UiStatus {
 }
 
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 struct UiPublicConfig {
     google_oidc_client_id: String,
     google_oidc_redirect_uri: String,
@@ -419,11 +418,31 @@ fn app_config() -> AppConfig {
 }
 
 #[tauri::command]
-async fn get_public_config() -> Result<UiPublicConfig, String> {
-    Ok(UiPublicConfig {
+async fn get_public_config(state: tauri::State<'_, AppState>) -> Result<UiPublicConfig, String> {
+    let local = UiPublicConfig {
         google_oidc_client_id: config_var("VITE_GOOGLE_OIDC_CLIENT_ID").unwrap_or_default(),
         google_oidc_redirect_uri: config_var("VITE_GOOGLE_OIDC_REDIRECT_URI").unwrap_or_default(),
-    })
+    };
+
+    let api = EntryApi::new(state.config.entry_base_url.clone());
+    match api.public_client_config().await {
+        Ok(remote) => Ok(UiPublicConfig {
+            google_oidc_client_id: if remote.google_oidc_client_id.trim().is_empty() {
+                local.google_oidc_client_id
+            } else {
+                remote.google_oidc_client_id
+            },
+            google_oidc_redirect_uri: if remote.google_oidc_redirect_uri.trim().is_empty() {
+                local.google_oidc_redirect_uri
+            } else {
+                remote.google_oidc_redirect_uri
+            },
+        }),
+        Err(err) => {
+            tracing::warn!("failed to load public config from entry: {}", err);
+            Ok(local)
+        }
+    }
 }
 
 fn default_device_name() -> String {

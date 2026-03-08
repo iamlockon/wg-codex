@@ -155,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/public/client-config", get(get_public_client_config))
         .route("/v1/auth/oauth/{provider}/callback", post(oauth_callback))
         .route("/v1/auth/logout", post(logout))
         .route("/v1/devices", post(register_device).get(list_devices))
@@ -729,6 +730,26 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+async fn get_public_client_config(
+    State(state): State<Arc<AppState>>,
+) -> Json<PublicClientConfigResponse> {
+    let google_oidc_client_id = state
+        .google_oidc
+        .as_ref()
+        .map(|cfg| cfg.client_id.clone())
+        .unwrap_or_default();
+    let google_oidc_redirect_uri = state
+        .google_oidc
+        .as_ref()
+        .map(|cfg| cfg.redirect_uri.clone())
+        .unwrap_or_default();
+
+    Json(PublicClientConfigResponse {
+        google_oidc_client_id,
+        google_oidc_redirect_uri,
+    })
+}
+
 async fn revocation_cleanup_loop(repo: PostgresTokenRepository) {
     loop {
         if let Ok(removed) = repo.purge_expired().await {
@@ -1150,6 +1171,12 @@ struct OAuthCallbackResponse {
     access_token: String,
     email: Option<String>,
     name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicClientConfigResponse {
+    google_oidc_client_id: String,
+    google_oidc_redirect_uri: String,
 }
 
 async fn oauth_callback(
@@ -3616,6 +3643,7 @@ mod tests {
 
     fn api_integration_routes(state: Arc<AppState>) -> Router {
         Router::new()
+            .route("/v1/public/client-config", get(get_public_client_config))
             .route("/v1/auth/logout", post(logout))
             .route("/v1/devices", get(list_devices))
             .route("/v1/sessions/start", post(start_session))
@@ -4003,5 +4031,107 @@ mod tests {
             .expect("body");
         let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(json["error"], "privacy_store_not_configured");
+    }
+
+    #[tokio::test]
+    async fn public_client_config_returns_oidc_fields_without_auth() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: Some(GoogleOidcConfig {
+                client_id: "google-client-id".to_string(),
+                client_secret: "google-client-secret".to_string(),
+                redirect_uri: "http://127.0.0.1:1420".to_string(),
+                token_url: "https://oauth2.googleapis.com/token".to_string(),
+                jwks_url: "https://www.googleapis.com/oauth2/v3/certs".to_string(),
+            }),
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+        let app = api_integration_routes(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/public/client-config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["google_oidc_client_id"], "google-client-id");
+        assert_eq!(json["google_oidc_redirect_uri"], "http://127.0.0.1:1420");
+    }
+
+    #[tokio::test]
+    async fn public_client_config_returns_empty_fields_when_oidc_not_configured() {
+        let state = Arc::new(AppState {
+            runtime_sessions_by_customer: RwLock::new(HashMap::new()),
+            devices_by_customer: RwLock::new(HashMap::new()),
+            core_client: Mutex::new(ControlPlaneClient::new(
+                tonic::transport::Endpoint::from_static("http://127.0.0.1:50051").connect_lazy(),
+            )),
+            session_store: SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            http_client: reqwest::Client::new(),
+            google_oidc: None,
+            identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            admin_api_token: None,
+            jwt_keys: test_keys(),
+            allow_legacy_customer_header: false,
+            revoked_token_ids: Mutex::new(HashMap::new()),
+            token_store: None,
+            subscription_store: SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            privacy_store: None,
+            runtime_mode: RuntimeMode::Development,
+            log_redaction_mode: LogRedactionMode::Off,
+            terminated_session_retention_days: 7,
+            audit_retention_days: 30,
+            node_freshness_secs: 60,
+        });
+        let app = api_integration_routes(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/v1/public/client-config")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(json["google_oidc_client_id"], "");
+        assert_eq!(json["google_oidc_redirect_uri"], "");
     }
 }
