@@ -125,6 +125,11 @@ jobs:
             grep -Eq "already managed by Terraform|already exists in state" <<<"$import_output"
           }
 
+          is_address_managed_in_state() {
+            local address="$1"
+            terraform state show -no-color "$address" >/dev/null 2>&1
+          }
+
           try_import() {
             local address="$1"
             local import_id="$2"
@@ -146,13 +151,24 @@ jobs:
             local address="$1"
             local import_id="$2"
 
+            if is_address_managed_in_state "$address"; then
+              echo "Already managed in state: $address"
+              return 0
+            fi
+
             if try_import "$address" "$import_id"; then
               return 0
             fi
 
             if is_already_managed_error "$IMPORT_LAST_OUTPUT"; then
-              echo "Already managed: $address"
-              return 0
+              if is_address_managed_in_state "$address"; then
+                echo "Already managed in state: $address"
+                return 0
+              fi
+
+              echo "::error::Import reported already-managed, but ${address} is not mapped at this address in state."
+              echo "::error::Run 'terraform state list' and use 'terraform state mv' to move the existing object to ${address}."
+              return 1
             fi
 
             if [ -n "$IMPORT_LAST_REASON" ]; then
@@ -168,12 +184,22 @@ jobs:
             local address="$1"
             local import_id="$2"
 
+            if is_address_managed_in_state "$address"; then
+              echo "Already managed in state: $address"
+              return 0
+            fi
+
             if try_import "$address" "$import_id"; then
               return 0
             fi
 
             if is_already_managed_error "$IMPORT_LAST_OUTPUT"; then
-              echo "Already managed: $address"
+              if is_address_managed_in_state "$address"; then
+                echo "Already managed in state: $address"
+                return 0
+              fi
+
+              echo "Skipped import: $address (already-managed reported, but address not present in state)"
               return 0
             fi
 
