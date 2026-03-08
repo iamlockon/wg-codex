@@ -253,7 +253,11 @@ fn load_ui_overrides(path: &std::path::Path) -> UiConfigOverrides {
         Ok(content) => match serde_json::from_str::<UiConfigOverrides>(&content) {
             Ok(parsed) => parsed,
             Err(err) => {
-                tracing::warn!("failed to parse UI overrides at {}: {}", path.display(), err);
+                tracing::warn!(
+                    "failed to parse UI overrides at {}: {}",
+                    path.display(),
+                    err
+                );
                 UiConfigOverrides::default()
             }
         },
@@ -270,8 +274,8 @@ fn save_ui_overrides(path: &std::path::Path, overrides: &UiConfigOverrides) -> R
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create config directory: {err}"))?;
     }
-    let serialized =
-        serde_json::to_string_pretty(overrides).map_err(|err| format!("serialize failed: {err}"))?;
+    let serialized = serde_json::to_string_pretty(overrides)
+        .map_err(|err| format!("serialize failed: {err}"))?;
     std::fs::write(path, serialized).map_err(|err| format!("write failed: {err}"))?;
     Ok(())
 }
@@ -287,7 +291,10 @@ fn ui_app_config_from(base: &AppConfig, overrides: &UiConfigOverrides) -> UiAppC
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default(),
         google_oidc_client_id: overrides.google_oidc_client_id.clone().unwrap_or_default(),
-        google_oidc_redirect_uri: overrides.google_oidc_redirect_uri.clone().unwrap_or_default(),
+        google_oidc_redirect_uri: overrides
+            .google_oidc_redirect_uri
+            .clone()
+            .unwrap_or_default(),
     }
 }
 
@@ -605,7 +612,9 @@ async fn get_public_config(state: tauri::State<'_, AppState>) -> Result<UiPublic
         merged.google_oidc_redirect_uri = redirect_uri.clone();
     }
 
-    if merged.google_oidc_client_id.trim().is_empty() || merged.google_oidc_redirect_uri.trim().is_empty() {
+    if merged.google_oidc_client_id.trim().is_empty()
+        || merged.google_oidc_redirect_uri.trim().is_empty()
+    {
         return Err("missing_google_oauth_ui_config (configure GOOGLE_OIDC_CLIENT_ID and GOOGLE_OIDC_REDIRECT_URI in entry, or set local app overrides in Settings)".to_string());
     }
     Ok(merged)

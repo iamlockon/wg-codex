@@ -380,22 +380,45 @@ async function safe(name: string, fn: () => Promise<void>) {
   }
 }
 
+function applyAppConfig(cfg: UiAppConfig) {
+  entryApiBaseUrlInput.value = cfg.entryApiBaseUrl ?? "";
+  wireguardExeInput.value = cfg.wireguardExe ?? "";
+  googleClientIdInput.value = cfg.googleOidcClientId ?? "";
+  googleRedirectUriInput.value = cfg.googleOidcRedirectUri ?? "";
+}
+
+async function loadAppConfig() {
+  const cfg = await invoke<UiAppConfig>("get_app_config");
+  applyAppConfig(cfg);
+}
+
 async function loadPublicConfig() {
   const cfg = await invoke<UiPublicConfig>("get_public_config");
-  if (cfg.google_oidc_client_id) {
-    googleClientId = cfg.google_oidc_client_id;
-  }
-  if (cfg.google_oidc_redirect_uri) {
-    googleRedirectUri = cfg.google_oidc_redirect_uri;
-  }
+  googleClientId = cfg.google_oidc_client_id;
+  googleRedirectUri = cfg.google_oidc_redirect_uri;
 }
+
+settingsSaveBtn.addEventListener("click", () =>
+  safe("settings_save", async () => {
+    const cfg = await invoke<UiAppConfig>("set_app_config", {
+      input: {
+        entryApiBaseUrl: entryApiBaseUrlInput.value,
+        wireguardExe: wireguardExeInput.value,
+        googleOidcClientId: googleClientIdInput.value,
+        googleOidcRedirectUri: googleRedirectUriInput.value,
+      },
+    });
+    applyAppConfig(cfg);
+    await loadPublicConfig();
+  }),
+);
 
 document.getElementById("btn-google-start")!.addEventListener("click", () =>
   safe("google_oauth_start", async () => {
     await loadPublicConfig();
     if (!googleClientId || !googleRedirectUri) {
       throw new Error(
-        "missing_google_oauth_ui_config (configure GOOGLE_OIDC_CLIENT_ID and GOOGLE_OIDC_REDIRECT_URI in entry, or set local VITE_GOOGLE_OIDC_* fallback vars)",
+        "missing_google_oauth_ui_config (configure GOOGLE_OIDC_* in entry or set local overrides in Settings)",
       );
     }
     const codeVerifier = randomUrlSafeString(64);
@@ -466,6 +489,7 @@ document.getElementById("btn-disconnect")!.addEventListener("click", () =>
 );
 
 safe("init", async () => {
+  await loadAppConfig();
   await loadPublicConfig();
   await refreshStatus();
   await maybeCompleteOAuthFromReturnUrl();
