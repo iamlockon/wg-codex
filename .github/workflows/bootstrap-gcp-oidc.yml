@@ -39,6 +39,12 @@ on:
         description: "Workflow run id that produced the Terraform plan artifact (required for apply)"
         required: false
         default: ""
+      adopt_existing:
+        description: "Import pre-existing resources into Terraform state before plan (one-time adoption)."
+        required: true
+        default: "false"
+        type: choice
+        options: ["false", "true"]
       action:
         description: "Terraform action"
         required: true
@@ -99,8 +105,8 @@ jobs:
             "${{ inputs.tf_state_prefix }}" \
             "${{ inputs.tf_state_bucket_location }}"
 
-      - name: Import existing resources (plan only)
-        if: inputs.action == 'plan'
+      - name: Adopt existing resources into state (plan only)
+        if: inputs.action == 'plan' && inputs.adopt_existing == 'true'
         working-directory: deploy/terraform/stacks/bootstrap-oidc
         env:
           PROJECT_ID: ${{ inputs.project_id }}
@@ -111,20 +117,12 @@ jobs:
         run: |
           set +e
 
-          STATE_ADDRESSES="$(terraform state list 2>/dev/null || true)"
+          IMPORT_LAST_OUTPUT=""
+          IMPORT_LAST_REASON=""
 
-          is_managed_in_state() {
-            local address="$1"
-            grep -Fqx "$address" <<<"${STATE_ADDRESSES}"
-          }
-
-          mark_managed_in_state() {
-            local address="$1"
-            if [ -z "${STATE_ADDRESSES}" ]; then
-              STATE_ADDRESSES="$address"
-            else
-              STATE_ADDRESSES="${STATE_ADDRESSES}"$'\n'"$address"
-            fi
+          is_already_managed_error() {
+            local import_output="$1"
+            grep -Eq "already managed by Terraform|already exists in state" <<<"$import_output"
           }
 
           try_import() {
@@ -132,53 +130,98 @@ jobs:
             local import_id="$2"
             local import_output import_reason
 
-            if is_managed_in_state "$address"; then
+            import_output="$(terraform import -no-color "$address" "$import_id" 2>&1)"
+            IMPORT_LAST_OUTPUT="$import_output"
+            IMPORT_LAST_REASON="$(printf '%s\n' "$import_output" | grep -m1 '^Error:' || true)"
+
+            if [ $? -eq 0 ]; then
+              echo "Imported: $address ($import_id)"
+              return 0
+            fi
+
+            return 1
+          }
+
+          try_import_required() {
+            local address="$1"
+            local import_id="$2"
+
+            if try_import "$address" "$import_id"; then
+              return 0
+            fi
+
+            if is_already_managed_error "$IMPORT_LAST_OUTPUT"; then
               echo "Already managed: $address"
               return 0
             fi
 
-            import_output="$(terraform import -no-color "$address" "$import_id" 2>&1)"
-            if [ $? -eq 0 ]; then
-              echo "Imported: $address"
-              mark_managed_in_state "$address"
+            if [ -n "$IMPORT_LAST_REASON" ]; then
+              echo "::error::Required import failed: $address (${IMPORT_LAST_REASON#Error: })"
             else
-              import_reason="$(printf '%s\n' "$import_output" | grep -m1 '^Error:' || true)"
-              if [ -n "$import_reason" ]; then
-                echo "Skipped import: $address (${import_reason#Error: })"
-              else
-                echo "Skipped import: $address"
-              fi
+              echo "::error::Required import failed: $address"
             fi
+
+            return 1
           }
 
-          PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null)"
-          SA_EMAIL="${TERRAFORM_SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
+          try_import_optional() {
+            local address="$1"
+            local import_id="$2"
 
-          if [ -n "$PROJECT_NUMBER" ]; then
-            try_import \
-              google_iam_workload_identity_pool.github \
-              "projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}"
-            try_import \
-              google_iam_workload_identity_pool_provider.github \
-              "projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/providers/${WORKLOAD_IDENTITY_PROVIDER_ID}"
+            if try_import "$address" "$import_id"; then
+              return 0
+            fi
 
-            GITHUB_REPO_MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/attribute.repository/${GITHUB_REPOSITORY_FULL}"
-            try_import \
-              google_service_account_iam_member.github_oidc_impersonation \
-              "projects/${PROJECT_ID}/serviceAccounts/${SA_EMAIL} roles/iam.workloadIdentityUser ${GITHUB_REPO_MEMBER}"
-          else
-            # Fallback IDs for pool/provider if project number lookup is unavailable.
-            try_import \
-              google_iam_workload_identity_pool.github \
-              "${PROJECT_ID}/${WORKLOAD_IDENTITY_POOL_ID}"
-            try_import \
-              google_iam_workload_identity_pool_provider.github \
-              "${PROJECT_ID}/${WORKLOAD_IDENTITY_POOL_ID}/${WORKLOAD_IDENTITY_PROVIDER_ID}"
-            echo "Skipped import: google_service_account_iam_member.github_oidc_impersonation (project number unavailable)"
+            if is_already_managed_error "$IMPORT_LAST_OUTPUT"; then
+              echo "Already managed: $address"
+              return 0
+            fi
+
+            if [ -n "$IMPORT_LAST_REASON" ]; then
+              echo "Skipped import: $address (${IMPORT_LAST_REASON#Error: })"
+            else
+              echo "Skipped import: $address"
+            fi
+
+            return 0
+          }
+
+          if ! command -v gcloud >/dev/null 2>&1; then
+            echo "::error::gcloud is required to import existing bootstrap resources."
+            exit 1
           fi
 
-          try_import "google_project_service.iamcredentials[0]" "${PROJECT_ID}/iamcredentials.googleapis.com"
-          try_import "google_project_service.sts[0]" "${PROJECT_ID}/sts.googleapis.com"
+          PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null || true)"
+          if [ -z "$PROJECT_NUMBER" ]; then
+            echo "::error::Could not resolve project number for ${PROJECT_ID}."
+            exit 1
+          fi
+
+          SA_EMAIL="${TERRAFORM_SERVICE_ACCOUNT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
+          GITHUB_REPO_NAME="${GITHUB_REPOSITORY_FULL#*/}"
+          POOL_NAME="projects/${PROJECT_ID}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}"
+          PROVIDER_NAME="${POOL_NAME}/providers/${WORKLOAD_IDENTITY_PROVIDER_ID}"
+          GITHUB_REPO_MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WORKLOAD_IDENTITY_POOL_ID}/attribute.repository/${GITHUB_REPOSITORY_FULL}"
+
+          import_failed=0
+
+          try_import_required \
+            google_iam_workload_identity_pool.github \
+            "${POOL_NAME}" || import_failed=1
+          try_import_required \
+            google_iam_workload_identity_pool_provider.github \
+            "${PROVIDER_NAME}" || import_failed=1
+          try_import_required \
+            google_service_account_iam_member.github_oidc_impersonation \
+            "projects/${PROJECT_ID}/serviceAccounts/${SA_EMAIL} roles/iam.workloadIdentityUser ${GITHUB_REPO_MEMBER}" || import_failed=1
+
+          if [ "$import_failed" -ne 0 ]; then
+            echo "::error::Adoption mode failed for required resources. Fix IDs/permissions, or set adopt_existing=false for a fresh create."
+            exit 1
+          fi
+
+          try_import_optional "google_project_service.iamcredentials[0]" "${PROJECT_ID}/iamcredentials.googleapis.com"
+          try_import_optional "google_project_service.sts[0]" "${PROJECT_ID}/sts.googleapis.com"
 
           for role in \
             roles/compute.admin \
@@ -191,10 +234,17 @@ jobs:
             roles/iam.serviceAccountUser \
             roles/resourcemanager.projectIamAdmin
           do
-            try_import \
+            try_import_optional \
               "google_project_iam_member.terraform_sa_roles[\"${role}\"]" \
               "${PROJECT_ID} ${role} serviceAccount:${SA_EMAIL}"
           done
+
+          try_import_optional \
+            github_actions_secret.workload_identity_provider \
+            "${GITHUB_REPO_NAME}/GCP_WORKLOAD_IDENTITY_PROVIDER"
+          try_import_optional \
+            github_actions_secret.terraform_sa \
+            "${GITHUB_REPO_NAME}/GCP_TERRAFORM_SA"
 
           exit 0
 
