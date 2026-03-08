@@ -52,6 +52,7 @@
 - Core gRPC now includes node runtime status API:
   - `GetNodeStatus` reports health, active peers, nat driver mode, dataplane mode, and native feature support.
 - `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
+- `core` now performs optional node registration (`POST /v1/admin/nodes`) from the VM startup health-reporter path when registration env vars are present (instead of GitHub runner-side registration).
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,
   - optional client TLS and client cert in `entry`.

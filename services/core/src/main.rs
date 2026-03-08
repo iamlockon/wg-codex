@@ -211,10 +211,110 @@ async fn reconciliation_loop(service: CoreService) {
 }
 
 #[derive(Clone)]
+struct NodeRegistrationConfig {
+    upsert_url: String,
+    region: String,
+    country_code: Option<String>,
+    city_code: Option<String>,
+    pool: String,
+    provider: String,
+    endpoint_host: String,
+    endpoint_port: u16,
+    capacity_peers: i64,
+}
+
+impl NodeRegistrationConfig {
+    fn from_env() -> Option<Self> {
+        let upsert_url = std::env::var("CORE_ENTRY_NODE_UPSERT_URL")
+            .ok()
+            .map(|v| v.trim().to_string())?;
+        if upsert_url.is_empty() {
+            warn!("CORE_ENTRY_NODE_UPSERT_URL is empty; disabling node registration");
+            return None;
+        }
+
+        let region = std::env::var("CORE_ENTRY_NODE_REGION")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
+        if region.is_empty() {
+            warn!("CORE_ENTRY_NODE_REGION is missing; disabling node registration");
+            return None;
+        }
+
+        let provider = std::env::var("CORE_ENTRY_NODE_PROVIDER")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "gcp-vm".to_string());
+
+        let endpoint_host = std::env::var("CORE_ENTRY_NODE_ENDPOINT_HOST")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default();
+        if endpoint_host.is_empty() {
+            warn!("CORE_ENTRY_NODE_ENDPOINT_HOST is missing; disabling node registration");
+            return None;
+        }
+
+        let endpoint_port = std::env::var("CORE_ENTRY_NODE_ENDPOINT_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .or_else(|| {
+                std::env::var("WG_LISTEN_PORT")
+                    .ok()
+                    .and_then(|v| v.parse::<u16>().ok())
+            })
+            .unwrap_or(51820);
+
+        let pool = std::env::var("CORE_ENTRY_NODE_POOL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "standard".to_string());
+
+        let country_code = std::env::var("CORE_ENTRY_NODE_COUNTRY_CODE")
+            .ok()
+            .map(|v| v.trim().to_uppercase())
+            .filter(|v| !v.is_empty())
+            .and_then(|v| {
+                if v.len() == 2 {
+                    Some(v)
+                } else {
+                    warn!(value = %v, "invalid CORE_ENTRY_NODE_COUNTRY_CODE; ignoring");
+                    None
+                }
+            });
+        let city_code = std::env::var("CORE_ENTRY_NODE_CITY_CODE")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let capacity_peers = std::env::var("CORE_ENTRY_NODE_CAPACITY_PEERS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(200);
+
+        Some(Self {
+            upsert_url,
+            region,
+            country_code,
+            city_code,
+            pool,
+            provider,
+            endpoint_host,
+            endpoint_port,
+            capacity_peers,
+        })
+    }
+}
+
+#[derive(Clone)]
 struct HealthReporterConfig {
     node_id: Uuid,
     entry_health_url: String,
     admin_api_token: String,
+    node_registration: Option<NodeRegistrationConfig>,
 }
 
 impl HealthReporterConfig {
@@ -223,20 +323,89 @@ impl HealthReporterConfig {
         let admin_api_token = read_env_or_file("ADMIN_API_TOKEN")?;
         let entry_health_url = std::env::var("CORE_ENTRY_HEALTH_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8080/v1/internal/nodes/health".to_string());
+        let node_registration = NodeRegistrationConfig::from_env();
 
         Some(Self {
             node_id,
             entry_health_url,
             admin_api_token,
+            node_registration,
         })
     }
 }
 
+async fn upsert_node_registration(
+    http: &reqwest::Client,
+    cfg: &HealthReporterConfig,
+    node_cfg: &NodeRegistrationConfig,
+    healthy: bool,
+    active_peer_count: i64,
+) -> Result<reqwest::StatusCode, reqwest::Error> {
+    let mut body = serde_json::json!({
+        "id": cfg.node_id,
+        "region": node_cfg.region,
+        "provider": node_cfg.provider,
+        "endpoint_host": node_cfg.endpoint_host,
+        "endpoint_port": node_cfg.endpoint_port,
+        "healthy": healthy,
+        "active_peer_count": active_peer_count,
+        "capacity_peers": node_cfg.capacity_peers,
+        "pool": node_cfg.pool,
+    });
+    if let Some(country_code) = node_cfg.country_code.as_ref() {
+        body["country_code"] = serde_json::json!(country_code);
+    }
+    if let Some(city_code) = node_cfg.city_code.as_ref() {
+        body["city_code"] = serde_json::json!(city_code);
+    }
+
+    let resp = http
+        .post(&node_cfg.upsert_url)
+        .header("x-admin-token", &cfg.admin_api_token)
+        .json(&body)
+        .send()
+        .await?;
+    Ok(resp.status())
+}
+
 async fn health_report_loop(service: CoreService, cfg: HealthReporterConfig) {
     let http = reqwest::Client::new();
+    let mut node_registered = cfg.node_registration.is_none();
     loop {
         let active_peer_count = service.active_peer_count().await;
         let healthy = service.is_healthy();
+
+        if let Some(node_cfg) = cfg.node_registration.as_ref() {
+            if !node_registered {
+                match upsert_node_registration(&http, &cfg, node_cfg, healthy, active_peer_count)
+                    .await
+                {
+                    Ok(status) if status.is_success() => {
+                        node_registered = true;
+                        info!(
+                            node_id = %cfg.node_id,
+                            endpoint = %format!("{}:{}", node_cfg.endpoint_host, node_cfg.endpoint_port),
+                            "core node registration upserted in entry"
+                        );
+                    }
+                    Ok(status) => {
+                        error!(status = %status, "core node registration rejected");
+                        sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                    Err(err) => {
+                        error!(
+                            %err,
+                            upsert_url = %node_cfg.upsert_url,
+                            "failed to upsert core node in entry"
+                        );
+                        sleep(Duration::from_secs(10)).await;
+                        continue;
+                    }
+                }
+            }
+        }
+
         let body = serde_json::json!({
             "node_id": cfg.node_id,
             "healthy": healthy,
@@ -251,11 +420,17 @@ async fn health_report_loop(service: CoreService, cfg: HealthReporterConfig) {
             .await;
         match res {
             Ok(resp) if !resp.status().is_success() => {
-                error!(status = %resp.status(), "node health publish rejected");
+                let status = resp.status();
+                if status == reqwest::StatusCode::NOT_FOUND && cfg.node_registration.is_some() {
+                    node_registered = false;
+                    warn!("node health publish returned 404; scheduling node re-registration");
+                } else {
+                    error!(status = %status, "node health publish rejected");
+                }
             }
             Ok(_) => {}
             Err(err) => {
-                error!(%err, "failed to publish node health");
+                error!(%err, health_url = %cfg.entry_health_url, "failed to publish node health");
             }
         }
 

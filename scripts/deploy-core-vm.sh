@@ -101,6 +101,19 @@ is_true() {
   [[ "$value" == "1" || "$value" == "true" || "$value" == "TRUE" ]]
 }
 
+endpoint_host_from_template() {
+  local template="${1:-}"
+  local host="$template"
+  if [[ "$host" =~ ^\[(.+)\](:[0-9]+)?$ ]]; then
+    printf '[%s]' "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$host" == *:* ]]; then
+    host="${host%:*}"
+  fi
+  printf '%s' "$host"
+}
+
 CONFIG_FILE="scripts/deploy-core-vm.env"
 VM_NAME="wg-core-free"
 ZONE="us-west1-b"
@@ -143,6 +156,7 @@ ENTRY_NODE_POOL="standard"
 ENTRY_NODE_PROVIDER="gcp-vm"
 CORE_NODE_ID=""
 CORE_ENTRY_HEALTH_URL=""
+CORE_ENTRY_NODE_UPSERT_URL=""
 
 WG_PRIVATE_KEY_FILE="./secrets/private.key"
 TLS_SERVER_CRT_FILE="./secrets/server.crt"
@@ -287,6 +301,15 @@ if [[ -z "$PROJECT" ]]; then
   exit 1
 fi
 
+if [[ -n "$ENTRY_ADMIN_URL" ]]; then
+  if [[ "$ENTRY_ADMIN_URL" != *"://"* ]]; then
+    ENTRY_ADMIN_URL="http://${ENTRY_ADMIN_URL}"
+  elif [[ "$ENTRY_ADMIN_URL" != http://* && "$ENTRY_ADMIN_URL" != https://* ]]; then
+    echo "invalid --entry-admin-url: $ENTRY_ADMIN_URL (expected http:// or https://)" >&2
+    exit 1
+  fi
+fi
+
 health_reporting_enabled="false"
 if [[ -n "$ENTRY_ADMIN_URL" && -n "$ENTRY_ADMIN_API_TOKEN" ]]; then
   health_reporting_enabled="true"
@@ -304,6 +327,10 @@ if is_true "$REGISTER_NODE_IN_ENTRY"; then
   fi
   health_reporting_enabled="true"
   CORE_ENTRY_HEALTH_URL="${ENTRY_ADMIN_URL%/}/v1/internal/nodes/health"
+  CORE_ENTRY_NODE_UPSERT_URL="${ENTRY_ADMIN_URL%/}/v1/admin/nodes"
+  if [[ -z "$ENTRY_NODE_REGION" ]]; then
+    ENTRY_NODE_REGION="${ZONE%-*}"
+  fi
 fi
 
 if [[ -z "$CORE_NODE_ID" && "$health_reporting_enabled" == "true" ]]; then
@@ -443,6 +470,19 @@ CORE_NODE_ID=${CORE_NODE_ID}
 CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}
 ADMIN_API_TOKEN=${ENTRY_ADMIN_API_TOKEN}
 EOF_HEALTH
+  if is_true "$REGISTER_NODE_IN_ENTRY"; then
+    cat >>"$env_file" <<EOF_REGISTER
+CORE_ENTRY_NODE_UPSERT_URL=${CORE_ENTRY_NODE_UPSERT_URL}
+CORE_ENTRY_NODE_REGION=${ENTRY_NODE_REGION}
+CORE_ENTRY_NODE_COUNTRY_CODE=${ENTRY_NODE_COUNTRY_CODE}
+CORE_ENTRY_NODE_CITY_CODE=${ENTRY_NODE_CITY_CODE}
+CORE_ENTRY_NODE_POOL=${ENTRY_NODE_POOL}
+CORE_ENTRY_NODE_PROVIDER=${ENTRY_NODE_PROVIDER}
+CORE_ENTRY_NODE_ENDPOINT_HOST=__AUTO_ENTRY_NODE_ENDPOINT_HOST__
+CORE_ENTRY_NODE_ENDPOINT_PORT=${WG_LISTEN_PORT}
+CORE_ENTRY_NODE_CAPACITY_PEERS=200
+EOF_REGISTER
+  fi
 fi
 
 GCLOUD_BASE=(gcloud --project "$PROJECT")
@@ -515,6 +555,15 @@ if [[ "$WG_ENDPOINT_TEMPLATE" == "auto" ]]; then
   effective_wg_endpoint_template="${VM_IP}:${WG_LISTEN_PORT}"
 fi
 
+entry_node_endpoint_host="$VM_IP"
+if [[ -z "$entry_node_endpoint_host" ]]; then
+  entry_node_endpoint_host="$(endpoint_host_from_template "$effective_wg_endpoint_template")"
+fi
+if is_true "$REGISTER_NODE_IN_ENTRY" && [[ -z "$entry_node_endpoint_host" ]]; then
+  echo "failed to determine node endpoint host for entry registration" >&2
+  exit 1
+fi
+
 awk -v tmpl="$effective_wg_endpoint_template" '
   BEGIN { updated = 0 }
   /^WG_ENDPOINT_TEMPLATE=/ {
@@ -530,6 +579,24 @@ awk -v tmpl="$effective_wg_endpoint_template" '
   }
 ' "$env_file" >"${env_file}.tmp"
 mv "${env_file}.tmp" "$env_file"
+
+if [[ "$health_reporting_enabled" == "true" ]] && is_true "$REGISTER_NODE_IN_ENTRY"; then
+  awk -v host="$entry_node_endpoint_host" '
+    BEGIN { updated = 0 }
+    /^CORE_ENTRY_NODE_ENDPOINT_HOST=/ {
+      print "CORE_ENTRY_NODE_ENDPOINT_HOST=" host
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print "CORE_ENTRY_NODE_ENDPOINT_HOST=" host
+      }
+    }
+  ' "$env_file" >"${env_file}.tmp"
+  mv "${env_file}.tmp" "$env_file"
+fi
 
 if [[ "$CREATE_ONLY" -eq 1 ]]; then
   echo "Create-only mode complete."
@@ -592,18 +659,12 @@ fi
 if ! command -v ip >/dev/null 2>&1; then
   need_apt=1
 fi
-if ! command -v curl >/dev/null 2>&1; then
-  need_apt=1
-fi
-if ! command -v jq >/dev/null 2>&1; then
-  need_apt=1
-fi
 if ! command -v uuidgen >/dev/null 2>&1; then
   need_apt=1
 fi
 if [[ "\$need_apt" -eq 1 ]]; then
   sudo apt-get update
-  sudo apt-get install -y wireguard-tools openssl nftables iproute2 curl jq uuid-runtime
+  sudo apt-get install -y wireguard-tools openssl nftables iproute2 uuid-runtime
 fi
 
 if [[ "\$WG_KEY_MODE" == "upload" ]]; then
@@ -837,32 +898,5 @@ echo "Quick on-VM checks:"
 echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'sudo systemctl status wg-core --no-pager'"
 
 if is_true "$REGISTER_NODE_IN_ENTRY"; then
-  if [[ -z "$VM_IP" ]]; then
-    echo "Unable to register node in entry because VM public IP is empty." >&2
-    exit 1
-  fi
-  if [[ -z "$ENTRY_NODE_REGION" ]]; then
-    ENTRY_NODE_REGION="${ZONE%-*}"
-  fi
-  require_cmd curl
-  require_cmd jq
-  payload="$(jq -nc \
-    --arg id "$CORE_NODE_ID" \
-    --arg region "$ENTRY_NODE_REGION" \
-    --arg provider "$ENTRY_NODE_PROVIDER" \
-    --arg endpoint_host "$VM_IP" \
-    --argjson endpoint_port "$WG_LISTEN_PORT" \
-    --arg country_code "$ENTRY_NODE_COUNTRY_CODE" \
-    --arg city_code "$ENTRY_NODE_CITY_CODE" \
-    --arg pool "$ENTRY_NODE_POOL" \
-    '{id:$id,region:$region,provider:$provider,endpoint_host:$endpoint_host,endpoint_port:$endpoint_port,healthy:true,active_peer_count:0,capacity_peers:200,pool:$pool}
-      + (if $country_code=="" then {} else {country_code:$country_code} end)
-      + (if $city_code=="" then {} else {city_code:$city_code} end)')"
-
-  echo "Registering core node in entry: ${ENTRY_ADMIN_URL%/}/v1/admin/nodes"
-  curl -fsS -X POST "${ENTRY_ADMIN_URL%/}/v1/admin/nodes" \
-    -H 'content-type: application/json' \
-    -H "x-admin-token: ${ENTRY_ADMIN_API_TOKEN}" \
-    -d "$payload" >/dev/null
-  echo "Core node registered in entry for region=${ENTRY_NODE_REGION} endpoint=${VM_IP}:${WG_LISTEN_PORT}"
+  echo "Core node registration is configured in /etc/default/wg-core and performed by core at startup."
 fi

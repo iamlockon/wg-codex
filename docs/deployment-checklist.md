@@ -23,6 +23,7 @@
    - `--google-oidc-redirect-uri <uri>`
 3. Deploy `core` VM on demand:
    - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <core-vm-name> --zone <zone> --entry-admin-url <entry-admin-base-url> --entry-admin-token <token>`
+   - For private VPC-only access, use internal DNS with scheme (example: `http://wg-entry-gha.c.<project>.internal:8080`).
 4. Optional for core deploy:
    - Register node in entry control plane: `--register-node-in-entry true --entry-node-region <region>`
    - If entry should route to discovered nodes on a non-default gRPC port, set `APP_CORE_NODE_GRPC_PORT` on entry.
@@ -33,6 +34,7 @@
    - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
    - `core`: `.github/workflows/core-vm-cicd.yml` deploys `core` using `scripts/deploy-core-vm.sh`.
    - For `core` registration in entry, run `action=apply` with `register_node_in_entry=true`, set `entry_admin_url`, and provide `ENTRY_ADMIN_API_TOKEN` in repository secrets.
+   - Registration is performed by `core` on VM startup; the GitHub runner does not call `POST /v1/admin/nodes`.
 
 ## Required production policy
 - `entry`:

@@ -505,6 +505,7 @@ EOF_REMOTE
 "${GCLOUD_BASE[@]}" compute ssh "$VM_NAME" --zone "$ZONE" --command "bash /tmp/remote-install.sh"
 
 VM_IP="$("${GCLOUD_BASE[@]}" compute instances describe "$VM_NAME" --zone "$ZONE" --format='get(networkInterfaces[0].accessConfigs[0].natIP)' || true)"
+VM_INTERNAL_DNS="${VM_NAME}.c.${PROJECT}.internal"
 
 echo "Done. Check live logs with:"
 echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'sudo journalctl -u wg-entry -f'"
@@ -522,3 +523,6 @@ if [[ -n "$VM_IP" ]]; then
   echo "Client app base URL:"
   echo "  ENTRY_API_BASE_URL=http://${VM_IP}:8080"
 fi
+
+echo "Internal DNS name (for core VM):"
+echo "  ENTRY_ADMIN_URL=http://${VM_INTERNAL_DNS}:8080"
