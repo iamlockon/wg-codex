@@ -285,6 +285,41 @@ jobs:
           set -o pipefail
           terraform plan -no-color -out="${TF_PLAN_FILE}" | tee terraform-plan.log
 
+      - name: Validate adoption plan (no creates for adopted core resources)
+        if: inputs.action == 'plan' && inputs.adopt_existing == 'true'
+        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        run: |
+          set -euo pipefail
+
+          terraform show -json "${TF_PLAN_FILE}" > tfplan.json
+
+          has_create_action() {
+            local address="$1"
+            jq -e --arg address "$address" '
+              any(
+                .resource_changes[]?;
+                .address == $address and (.change.actions | index("create") != null)
+              )
+            ' tfplan.json >/dev/null
+          }
+
+          failed=0
+          for address in \
+            google_iam_workload_identity_pool.github \
+            google_iam_workload_identity_pool_provider.github \
+            google_service_account_iam_member.github_oidc_impersonation
+          do
+            if has_create_action "$address"; then
+              echo "::error::Adoption mode plan still contains create action for ${address}."
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::Adoption did not converge. Verify state backend inputs and imported resource status (ACTIVE vs DELETED)."
+            exit 1
+          fi
+
       - name: Upload Terraform plan artifact
         if: inputs.action == 'plan'
         uses: actions/upload-artifact@v4

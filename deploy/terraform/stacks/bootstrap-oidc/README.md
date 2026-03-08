@@ -71,6 +71,7 @@ Workflow behavior:
 - `action=plan` with `adopt_existing=true` runs one-time adoption imports before planning.
 - In adoption mode, imports for pool/provider and the Workload Identity user IAM binding are required and fail fast on errors other than "already managed in state".
 - In adoption mode, imports for APIs, project IAM roles, and GitHub Actions secrets are best-effort.
+- In adoption mode, the workflow fails `plan` if the saved plan still includes `create` actions for pool/provider or the required IAM binding.
 - `action=plan` runs `terraform plan -out=tfplan` and uploads `tfplan` as artifact `bootstrap-oidc-tfplan`.
 - `action=apply` requires `plan_run_id` (the workflow run id from the earlier `plan`) and applies that exact saved plan file.
 - `action=destroy` runs a direct `terraform destroy -auto-approve`.
