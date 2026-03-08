@@ -16,10 +16,14 @@ use models::Device;
 use rand_core::OsRng;
 use session::DesktopClient;
 use std::collections::HashMap;
+use std::sync::Arc;
 #[cfg(not(windows))]
 use storage::FileSecureStorage;
 use tauri::Manager;
-use tokio::sync::Mutex;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{Mutex, Notify};
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, timeout};
 #[cfg(not(windows))]
 use wireguard::NoopTunnelController;
 #[cfg(windows)]
@@ -47,6 +51,9 @@ struct AppState {
     ui_overrides: Mutex<UiConfigOverrides>,
     ui_overrides_path: std::path::PathBuf,
     op_lock: Mutex<()>,
+    oauth_callback: Arc<Mutex<Option<OAuthLoopbackCallback>>>,
+    oauth_callback_notify: Arc<Notify>,
+    oauth_listener_task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -74,6 +81,15 @@ struct UiStatus {
 struct UiPublicConfig {
     google_oidc_client_id: String,
     google_oidc_redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OAuthLoopbackCallback {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+    error_description: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -127,6 +143,24 @@ struct SelectDeviceInput {
 #[serde(rename_all = "camelCase")]
 struct ConnectInput {
     region: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrepareOAuthCallbackListenerInput {
+    redirect_uri: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WaitForOAuthCallbackInput {
+    timeout_seconds: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenExternalUrlInput {
+    url: String,
 }
 
 fn parse_dotenv(content: &str) -> HashMap<String, String> {
@@ -239,6 +273,136 @@ fn normalize_optional_http_url(raw: &str) -> Result<Option<String>, String> {
         "http" | "https" => Ok(Some(value)),
         _ => Err("invalid_entry_api_base_url: scheme must be http or https".to_string()),
     }
+}
+
+struct LoopbackRedirectTarget {
+    bind_addr: std::net::SocketAddr,
+    request_origin: String,
+}
+
+fn parse_loopback_redirect_uri(raw: &str) -> Result<LoopbackRedirectTarget, String> {
+    let parsed = reqwest::Url::parse(raw).map_err(|err| format!("invalid_redirect_uri: {err}"))?;
+    if parsed.scheme() != "http" {
+        return Err("invalid_redirect_uri: scheme must be http for loopback callback".to_string());
+    }
+    let port = parsed
+        .port()
+        .ok_or_else(|| "invalid_redirect_uri: explicit port is required".to_string())?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "invalid_redirect_uri: host is required".to_string())?;
+
+    let (bind_addr, request_origin) = match host {
+        "127.0.0.1" | "localhost" => (
+            std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+            format!("http://127.0.0.1:{port}"),
+        ),
+        "::1" => (
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+            format!("http://[::1]:{port}"),
+        ),
+        _ => {
+            return Err(
+                "invalid_redirect_uri: host must be localhost, 127.0.0.1, or ::1".to_string(),
+            );
+        }
+    };
+    Ok(LoopbackRedirectTarget {
+        bind_addr,
+        request_origin,
+    })
+}
+
+fn parse_http_request_target(request: &str) -> Option<&str> {
+    let first_line = request.lines().next()?;
+    let mut parts = first_line.split_whitespace();
+    let method = parts.next()?;
+    if !method.eq_ignore_ascii_case("GET") {
+        return None;
+    }
+    parts.next()
+}
+
+fn parse_oauth_callback_from_target(
+    request_origin: &str,
+    request_target: &str,
+) -> OAuthLoopbackCallback {
+    let normalized_target = if request_target.starts_with('/') {
+        request_target.to_string()
+    } else {
+        format!("/{request_target}")
+    };
+    let absolute_url = format!("{request_origin}{normalized_target}");
+    let parsed = reqwest::Url::parse(&absolute_url);
+    let mut callback = OAuthLoopbackCallback::default();
+    let Ok(url) = parsed else {
+        callback.error = Some("invalid_callback".to_string());
+        callback.error_description = Some("failed to parse callback URL".to_string());
+        return callback;
+    };
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "code" => callback.code = Some(value.to_string()),
+            "state" => callback.state = Some(value.to_string()),
+            "error" => callback.error = Some(value.to_string()),
+            "error_description" => callback.error_description = Some(value.to_string()),
+            _ => {}
+        }
+    }
+    if callback.code.is_none() && callback.error.is_none() {
+        callback.error = Some("invalid_callback".to_string());
+        callback.error_description = Some("missing code parameter in callback URL".to_string());
+    }
+    callback
+}
+
+fn oauth_callback_html_body(callback: &OAuthLoopbackCallback) -> &'static str {
+    if callback.error.is_some() {
+        "<html><body><h1>Sign-in was not completed</h1><p>You can close this window and return to the app.</p></body></html>"
+    } else if callback.code.is_some() {
+        "<html><body><h1>Sign-in complete</h1><p>You can close this window and return to the app.</p></body></html>"
+    } else {
+        "<html><body><h1>Invalid callback</h1><p>You can close this window and return to the app.</p></body></html>"
+    }
+}
+
+async fn take_oauth_callback(
+    store: &Arc<Mutex<Option<OAuthLoopbackCallback>>>,
+) -> Option<OAuthLoopbackCallback> {
+    let mut guard = store.lock().await;
+    guard.take()
+}
+
+fn open_external_url_with_system_browser(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
+            .spawn()
+            .map_err(|err| format!("failed_to_open_browser: {err}"))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(url)
+            .spawn()
+            .map_err(|err| format!("failed_to_open_browser: {err}"))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|err| format!("failed_to_open_browser: {err}"))?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err("failed_to_open_browser: unsupported platform".to_string())
 }
 
 fn ui_overrides_path(state_file_path: &std::path::Path) -> std::path::PathBuf {
@@ -413,6 +577,97 @@ async fn oauth_login(
         .await
         .map_err(|e| e.to_string())?;
     Ok(to_ui_status(&client))
+}
+
+#[tauri::command]
+async fn prepare_oauth_callback_listener(
+    state: tauri::State<'_, AppState>,
+    input: PrepareOAuthCallbackListenerInput,
+) -> Result<(), String> {
+    let target = parse_loopback_redirect_uri(&input.redirect_uri)?;
+
+    if let Some(existing_task) = state.oauth_listener_task.lock().await.take() {
+        existing_task.abort();
+    }
+    {
+        let mut callback = state.oauth_callback.lock().await;
+        *callback = None;
+    }
+
+    let listener = tokio::net::TcpListener::bind(target.bind_addr)
+        .await
+        .map_err(|err| format!("failed_to_bind_oauth_callback_listener: {err}"))?;
+
+    let callback_store = Arc::clone(&state.oauth_callback);
+    let callback_notify = Arc::clone(&state.oauth_callback_notify);
+    let request_origin = target.request_origin.clone();
+
+    let task = tokio::spawn(async move {
+        let accepted = timeout(Duration::from_secs(300), listener.accept()).await;
+        let Ok(Ok((mut stream, _peer_addr))) = accepted else {
+            return;
+        };
+
+        let mut buffer = vec![0_u8; 16 * 1024];
+        let request_size = match timeout(Duration::from_secs(10), stream.read(&mut buffer)).await {
+            Ok(Ok(size)) if size > 0 => size,
+            _ => return,
+        };
+
+        let request = String::from_utf8_lossy(&buffer[..request_size]).to_string();
+        let request_target = parse_http_request_target(&request).unwrap_or("/");
+        let callback = parse_oauth_callback_from_target(&request_origin, request_target);
+        let body = oauth_callback_html_body(&callback);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+
+        {
+            let mut slot = callback_store.lock().await;
+            *slot = Some(callback);
+        }
+        callback_notify.notify_waiters();
+    });
+
+    *state.oauth_listener_task.lock().await = Some(task);
+    Ok(())
+}
+
+#[tauri::command]
+async fn wait_for_oauth_callback(
+    state: tauri::State<'_, AppState>,
+    input: WaitForOAuthCallbackInput,
+) -> Result<OAuthLoopbackCallback, String> {
+    let timeout_seconds = input.timeout_seconds.unwrap_or(180).clamp(5, 600);
+    let callback_store = Arc::clone(&state.oauth_callback);
+    if let Some(callback) = take_oauth_callback(&callback_store).await {
+        return Ok(callback);
+    }
+
+    let callback_notify = Arc::clone(&state.oauth_callback_notify);
+    timeout(Duration::from_secs(timeout_seconds), async move {
+        loop {
+            callback_notify.notified().await;
+            if let Some(callback) = take_oauth_callback(&callback_store).await {
+                return callback;
+            }
+        }
+    })
+    .await
+    .map_err(|_| "oauth_callback_timeout".to_string())
+}
+
+#[tauri::command]
+async fn open_external_url(input: OpenExternalUrlInput) -> Result<(), String> {
+    let parsed =
+        reqwest::Url::parse(&input.url).map_err(|err| format!("invalid_external_url: {err}"))?;
+    match parsed.scheme() {
+        "http" | "https" => open_external_url_with_system_browser(parsed.as_ref()),
+        _ => Err("invalid_external_url: scheme must be http or https".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -661,6 +916,9 @@ fn main() {
         ui_overrides: Mutex::new(ui_overrides),
         ui_overrides_path,
         op_lock: Mutex::new(()),
+        oauth_callback: Arc::new(Mutex::new(None)),
+        oauth_callback_notify: Arc::new(Notify::new()),
+        oauth_listener_task: Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -675,6 +933,9 @@ fn main() {
             get_app_config,
             set_app_config,
             get_public_config,
+            prepare_oauth_callback_listener,
+            wait_for_oauth_callback,
+            open_external_url,
             oauth_login,
             list_devices,
             register_device,

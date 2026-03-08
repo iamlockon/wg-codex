@@ -41,6 +41,7 @@ Config env vars:
 - `WG_WINDOWS_NOOP_TUNNEL` (optional no-op tunnel mode for UI/API testing)
 - Google OAuth UI config is resolved from `entry` public config by default.
 - Users can set local app overrides from the UI Settings panel.
+- Recommended unified Google redirect URI (dev + release): `http://127.0.0.1:53682/oauth/callback`.
 
 Runtime config packaging:
 - `npm run tauri:dev` and `npm run tauri:build` auto-generate `src-tauri/app.env` from current shell env and local env files (`clients/windows-desktop/.env`, `clients/windows-desktop/ui/src/.env`).
@@ -98,7 +99,7 @@ npm run tauri:dev
 ```
 
 3. Use the in-app flow:
-- click `Sign Up / Log In With Google` and complete Google auth; app returns as logged in,
+- click `Sign Up / Log In With Google`; app starts a local callback listener and opens your system browser for Google auth,
 - the app auto-registers or reuses a local device,
 - connect/disconnect,
 - logout or restore+reconnect.

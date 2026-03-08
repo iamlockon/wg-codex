@@ -24,6 +24,13 @@ type PendingOAuth = {
   state: string;
 };
 
+type OAuthLoopbackCallback = {
+  code: string | null;
+  state: string | null;
+  error: string | null;
+  errorDescription: string | null;
+};
+
 type UiPublicConfig = {
   google_oidc_client_id: string;
   google_oidc_redirect_uri: string;
@@ -100,7 +107,7 @@ app.innerHTML = `
         </div>
         <div>
           <label for="cfg-google-redirect-uri">GOOGLE_OIDC_REDIRECT_URI override</label>
-          <input id="cfg-google-redirect-uri" type="text" placeholder="optional local override" />
+          <input id="cfg-google-redirect-uri" type="text" placeholder="http://127.0.0.1:53682/oauth/callback" />
         </div>
       </div>
       <div class="actions">
@@ -200,14 +207,6 @@ async function sha256Base64Url(input: string): Promise<string> {
   return toBase64Url(new Uint8Array(digest));
 }
 
-function parseCodeAndStateFromCallbackUrl(url: URL): { code: string; state: string | null } {
-  const code = url.searchParams.get("code");
-  if (!code) {
-    throw new Error("missing_oauth_code_in_callback");
-  }
-  return { code, state: url.searchParams.get("state") };
-}
-
 function loadPendingOAuthFromStorage(): PendingOAuth | null {
   const raw = sessionStorage.getItem(PENDING_OAUTH_STORAGE_KEY);
   if (!raw) {
@@ -253,56 +252,6 @@ function clearOAuthTransientState(): void {
   clearPendingOAuthFromStorage();
   pendingOAuth = null;
   cleanupOAuthQueryParams();
-}
-
-async function maybeCompleteOAuthFromReturnUrl() {
-  const current = new URL(window.location.href);
-  if (!current.searchParams.has("code")) {
-    pendingOAuth = loadPendingOAuthFromStorage();
-    return;
-  }
-
-  const code = current.searchParams.get("code");
-  const returnedState = current.searchParams.get("state");
-  if (!code || !returnedState) {
-    appendLog("google_oauth_complete: ignored (missing code/state)");
-    clearOAuthTransientState();
-    return;
-  }
-
-  const callback = parseCodeAndStateFromCallbackUrl(current);
-  const pending = loadPendingOAuthFromStorage();
-  if (!pending) {
-    appendLog("google_oauth_complete: ignored (oauth_not_started)");
-    cleanupOAuthQueryParams();
-    return;
-  }
-  if (callback.state !== pending.state) {
-    appendLog("google_oauth_complete: ignored (oauth_state_mismatch)");
-    clearOAuthTransientState();
-    return;
-  }
-
-  try {
-    status = await invoke<UiStatus>("oauth_login", {
-      input: {
-        provider: "google",
-        code: callback.code,
-        codeVerifier: pending.codeVerifier,
-        nonce: pending.nonce,
-      },
-    });
-  } catch (e) {
-    appendLog(`google_oauth_complete: ${String(e)}`);
-    clearOAuthTransientState();
-    return;
-  }
-
-  clearOAuthTransientState();
-  renderStatus();
-  syncInteractivity();
-  appendLog("google_oauth_complete: ok");
-  await refreshDevices();
 }
 
 async function ensureAutoSelectedDevice() {
@@ -425,8 +374,9 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     const codeChallenge = await sha256Base64Url(codeVerifier);
     const nonce = randomUrlSafeString(24);
     const state = randomUrlSafeString(24);
-    pendingOAuth = { codeVerifier, nonce, state };
-    savePendingOAuthToStorage(pendingOAuth);
+    const pending: PendingOAuth = { codeVerifier, nonce, state };
+    pendingOAuth = pending;
+    savePendingOAuthToStorage(pending);
 
     const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     authUrl.searchParams.set("client_id", googleClientId);
@@ -439,10 +389,45 @@ document.getElementById("btn-google-start")!.addEventListener("click", () =>
     authUrl.searchParams.set("state", state);
     authUrl.searchParams.set("prompt", "select_account");
 
+    await invoke("prepare_oauth_callback_listener", {
+      input: { redirectUri: googleRedirectUri },
+    });
+
     appendLog(`google_oauth_start_url: ${authUrl.toString()}`);
-    appendLog("google_oauth_start: redirecting to Google sign in");
+    appendLog("google_oauth_start: opening system browser");
     syncInteractivity();
-    window.location.assign(authUrl.toString());
+    await invoke("open_external_url", {
+      input: { url: authUrl.toString() },
+    });
+
+    const callback = await invoke<OAuthLoopbackCallback>("wait_for_oauth_callback", {
+      input: { timeoutSeconds: 180 },
+    });
+
+    if (callback.error) {
+      const description = callback.errorDescription ? ` (${callback.errorDescription})` : "";
+      throw new Error(`oauth_callback_error: ${callback.error}${description}`);
+    }
+    if (!callback.code || !callback.state) {
+      throw new Error("missing_oauth_code_or_state");
+    }
+    if (callback.state !== pending.state) {
+      throw new Error("oauth_state_mismatch");
+    }
+
+    status = await invoke<UiStatus>("oauth_login", {
+      input: {
+        provider: "google",
+        code: callback.code,
+        codeVerifier: pending.codeVerifier,
+        nonce: pending.nonce,
+      },
+    });
+    clearOAuthTransientState();
+    renderStatus();
+    syncInteractivity();
+    appendLog("google_oauth_complete: ok");
+    await refreshDevices();
   }),
 );
 
@@ -491,7 +476,7 @@ document.getElementById("btn-disconnect")!.addEventListener("click", () =>
 safe("init", async () => {
   await loadAppConfig();
   await loadPublicConfig();
+  pendingOAuth = loadPendingOAuthFromStorage();
   await refreshStatus();
-  await maybeCompleteOAuthFromReturnUrl();
   await refreshDevices();
 });
