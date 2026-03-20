@@ -113,3 +113,82 @@ async fn stack_starts_and_entry_healthz_recovers() {
         .expect("healthz request");
     assert!(response.status().is_success());
 }
+
+#[tokio::test]
+async fn reconnect_with_matching_key_reuses_active_session() {
+    let stack = BackendStack::start()
+        .await
+        .expect("backend stack should start");
+    let api = BackendApiClient::new(stack.entry_base_url().to_string());
+
+    let oauth = api
+        .oauth_callback("auth-code", Some("pkce-verifier"), Some("stub-nonce"))
+        .await
+        .expect("oauth callback should succeed");
+    api.upsert_subscription(oauth.customer_id, "free", "active")
+        .await
+        .expect("subscription upsert should succeed");
+
+    let device = api
+        .register_device(&oauth.access_token, "test-device", "test-public-key")
+        .await
+        .expect("device registration should succeed");
+
+    let first = api
+        .start_session(&oauth.access_token, device.id, "us-west1")
+        .await
+        .expect("initial session should succeed");
+    let first_key = first.session_key.clone().expect("session key");
+
+    let second = api
+        .start_session_with_reconnect(
+            &oauth.access_token,
+            device.id,
+            "us-west1",
+            Some(first_key.as_str()),
+        )
+        .await
+        .expect("reconnect should succeed");
+
+    assert_eq!(second.status, "active");
+    assert_eq!(second.session_key.as_deref(), Some(first_key.as_str()));
+}
+
+#[tokio::test]
+async fn reconnect_without_matching_key_returns_conflict() {
+    let stack = BackendStack::start()
+        .await
+        .expect("backend stack should start");
+    let api = BackendApiClient::new(stack.entry_base_url().to_string());
+
+    let oauth = api
+        .oauth_callback("auth-code", Some("pkce-verifier"), Some("stub-nonce"))
+        .await
+        .expect("oauth callback should succeed");
+    api.upsert_subscription(oauth.customer_id, "free", "active")
+        .await
+        .expect("subscription upsert should succeed");
+
+    let device = api
+        .register_device(&oauth.access_token, "test-device", "test-public-key")
+        .await
+        .expect("device registration should succeed");
+
+    let first = api
+        .start_session(&oauth.access_token, device.id, "us-west1")
+        .await
+        .expect("initial session should succeed");
+    let first_key = first.session_key.clone().expect("session key");
+
+    let second = api
+        .start_session_with_reconnect(&oauth.access_token, device.id, "us-west1", None)
+        .await
+        .expect("conflict response should parse");
+
+    assert_eq!(second.status, "conflict");
+    assert_eq!(
+        second.existing_session_key.as_deref(),
+        Some(first_key.as_str())
+    );
+    assert_eq!(second.message.as_deref(), Some("active_session_exists"));
+}

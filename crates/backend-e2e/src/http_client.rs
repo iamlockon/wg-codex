@@ -82,6 +82,17 @@ impl BackendApiClient {
         device_id: Uuid,
         region: &str,
     ) -> anyhow::Result<StartSessionResponse> {
+        self.start_session_with_reconnect(access_token, device_id, region, None)
+            .await
+    }
+
+    pub async fn start_session_with_reconnect(
+        &self,
+        access_token: &str,
+        device_id: Uuid,
+        region: &str,
+        reconnect_session_key: Option<&str>,
+    ) -> anyhow::Result<StartSessionResponse> {
         self.send_json(
             self.http
                 .post(format!("{}/v1/sessions/start", self.base_url))
@@ -89,6 +100,7 @@ impl BackendApiClient {
                 .json(&serde_json::json!({
                     "device_id": device_id,
                     "region": region,
+                    "reconnect_session_key": reconnect_session_key,
                 })),
             StatusCode::OK,
         )
@@ -174,6 +186,8 @@ pub struct StartSessionResponse {
     pub status: String,
     pub session_key: Option<String>,
     pub region: Option<String>,
+    pub existing_session_key: Option<String>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
