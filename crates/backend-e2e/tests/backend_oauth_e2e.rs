@@ -1,4 +1,5 @@
 use backend_e2e::oauth_stub::OAuthStubServer;
+use backend_e2e::process::BackendStack;
 use jsonwebtoken::decode_header;
 use serde_json::Value;
 
@@ -50,4 +51,16 @@ async fn oauth_stub_serves_token_and_jwks() {
     assert_eq!(keys[0]["kid"].as_str(), Some(stub.key_id()));
     assert!(keys[0]["n"].as_str().is_some());
     assert!(keys[0]["e"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn stack_starts_and_entry_healthz_recovers() {
+    let stack = BackendStack::start()
+        .await
+        .expect("backend stack should start");
+
+    let response = reqwest::get(format!("{}/healthz", stack.entry_base_url()))
+        .await
+        .expect("healthz request");
+    assert!(response.status().is_success());
 }
