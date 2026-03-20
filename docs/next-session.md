@@ -99,6 +99,21 @@
   - bearer-authenticated logout + token revocation enforcement on follow-up API requests,
   - admin subscription updates driving session-start gating (`subscription_inactive`),
   - admin readiness/privacy endpoints (auth enforcement, policy payload, and privacy-store availability behavior).
+- Added a dedicated process-level backend e2e suite in `crates/backend-e2e` that:
+  - boots real `entry` and `core` binaries,
+  - serves a local stub OAuth token/JWKS provider,
+  - drives OAuth login, device registration, session start/current/terminate, reconnect reuse/conflict, and logout revocation over public HTTP endpoints.
+- Added local backend e2e runner:
+  - `scripts/run-backend-e2e.sh`
+  - requires `TEST_DATABASE_URL`
+- CI now includes a path-gated backend e2e job in `.github/workflows/ci.yaml` for:
+  - `services/entry/**`
+  - `services/core/**`
+  - `crates/control-plane/**`
+  - `crates/domain/**`
+  - `crates/backend-e2e/**`
+  - `db/**`
+  - `scripts/run-backend-e2e.sh`
 - DB-backed integration suite runner is now green end-to-end via `scripts/run-db-integration-tests.sh` (current repository suites pass with the catalog-based node model and existing migrations).
 - Recent stability fixes landed while validating integration tests:
   - `entry` test-build fixes for async test annotation and `Debug` derivations used by `expect_err`.
@@ -134,6 +149,7 @@
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
   - includes explicit `cargo check -p core --features native-nft` gate.
+  - includes explicit path-gated backend OAuth e2e coverage with Postgres service setup via `scripts/run-backend-e2e.sh`.
   - VM rollout automation is available via:
     - `.github/workflows/entry-vm-cicd.yml` (entry),
     - `.github/workflows/core-vm-cicd.yml` (core),
@@ -199,7 +215,8 @@
 ## Commands to Run Next Session
 ```bash
 cargo fmt --all
-cargo check --workspace
+cargo check --workspace --exclude wg-windows-client
+scripts/run-backend-e2e.sh
 scripts/run-db-integration-tests.sh
 ```
 Note: in restricted/sandboxed environments you may hit `Invalid cross-device link (os error 18)` during Rust `.rmeta` writes; if that occurs, rerun in the dev container or a local shell where the DB-backed test suite already passes.
