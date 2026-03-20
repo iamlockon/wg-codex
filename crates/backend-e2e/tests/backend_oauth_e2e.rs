@@ -55,6 +55,16 @@ async fn oauth_login_session_lifecycle_and_logout_revocation_e2e() {
     )
     .await
     .expect("session termination should succeed");
+
+    api.logout(&oauth.access_token)
+        .await
+        .expect("logout should succeed");
+
+    let revoked = api
+        .list_devices_expect_unauthorized(&oauth.access_token)
+        .await
+        .expect("revoked token response should parse");
+    assert_eq!(revoked.error, "revoked_access_token");
 }
 
 #[tokio::test]

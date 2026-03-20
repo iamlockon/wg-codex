@@ -145,6 +145,35 @@ impl BackendApiClient {
         Ok(())
     }
 
+    pub async fn logout(&self, access_token: &str) -> anyhow::Result<()> {
+        let response = self
+            .http
+            .post(format!("{}/v1/auth/logout", self.base_url))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .context("logout request failed")?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if status != StatusCode::NO_CONTENT {
+            return Err(anyhow!("unexpected logout status {status}: {body}"));
+        }
+        Ok(())
+    }
+
+    pub async fn list_devices_expect_unauthorized(
+        &self,
+        access_token: &str,
+    ) -> anyhow::Result<ErrorResponse> {
+        self.send_json(
+            self.http
+                .get(format!("{}/v1/devices", self.base_url))
+                .bearer_auth(access_token),
+            StatusCode::UNAUTHORIZED,
+        )
+        .await
+    }
+
     async fn send_json<T: DeserializeOwned>(
         &self,
         request: reqwest::RequestBuilder,
@@ -195,4 +224,9 @@ pub struct CurrentSessionResponse {
     pub active: bool,
     pub session_key: Option<String>,
     pub device_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
 }
