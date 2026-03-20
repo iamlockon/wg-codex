@@ -3,9 +3,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use sqlx::postgres::PgPoolOptions;
 use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+use uuid::Uuid;
 
 use crate::catalog_fixture::write_node_catalog;
 use crate::oauth_stub::OAuthStubServer;
@@ -27,6 +29,7 @@ impl BackendStack {
         let entry_port = allocate_port().await?;
         let catalog_path = write_node_catalog(tempdir.path(), core_port)?;
         let oauth_stub = OAuthStubServer::start("test-client-id".to_string()).await?;
+        let database_url = prepare_test_database().await?;
 
         let core_binary = workspace_binary_path("core");
         let entry_binary = workspace_binary_path("entry");
@@ -48,8 +51,14 @@ impl BackendStack {
             .env("GOOGLE_OIDC_CLIENT_ID", "test-client-id")
             .env("GOOGLE_OIDC_CLIENT_SECRET", "test-client-secret")
             .env("GOOGLE_OIDC_REDIRECT_URI", "http://127.0.0.1/callback")
-            .env("GOOGLE_OIDC_TOKEN_URL", format!("{}/token", oauth_stub.base_url()))
-            .env("GOOGLE_OIDC_JWKS_URL", format!("{}/jwks", oauth_stub.base_url()))
+            .env(
+                "GOOGLE_OIDC_TOKEN_URL",
+                format!("{}/token", oauth_stub.base_url()),
+            )
+            .env(
+                "GOOGLE_OIDC_JWKS_URL",
+                format!("{}/jwks", oauth_stub.base_url()),
+            )
             .env("APP_JWT_SIGNING_KEYS", "v1:test-signing-key")
             .env("APP_JWT_ACTIVE_KID", "v1")
             .env("ADMIN_API_TOKEN", "admin-secret")
@@ -59,7 +68,7 @@ impl BackendStack {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
 
-        if let Ok(database_url) = std::env::var("TEST_DATABASE_URL") {
+        if let Some(database_url) = database_url {
             entry_command.env("DATABASE_URL", database_url);
         }
 
@@ -135,9 +144,52 @@ async fn build_backend_binaries() -> anyhow::Result<()> {
         .await
         .context("failed to invoke cargo build for entry/core")?;
     if !status.success() {
-        return Err(anyhow!("cargo build -p entry -p core failed with status {status}"));
+        return Err(anyhow!(
+            "cargo build -p entry -p core failed with status {status}"
+        ));
     }
     Ok(())
+}
+
+async fn prepare_test_database() -> anyhow::Result<Option<String>> {
+    let base_url = match std::env::var("TEST_DATABASE_URL") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return Ok(None),
+    };
+
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&base_url)
+        .await
+        .context("failed to connect to TEST_DATABASE_URL")?;
+    let schema = format!("test_backend_e2e_{}", Uuid::new_v4().simple());
+    let create_schema = format!("CREATE SCHEMA {schema}");
+    let set_path = format!("SET search_path TO {schema}");
+
+    sqlx::query(&create_schema)
+        .execute(&pool)
+        .await
+        .context("failed to create backend e2e schema")?;
+    sqlx::query(&set_path)
+        .execute(&pool)
+        .await
+        .context("failed to set backend e2e search_path")?;
+
+    for migration in [
+        include_str!("../../../../../db/migrations/202602090001_initial_schema.sql"),
+        include_str!("../../../../../db/migrations/202602100002_revoked_tokens.sql"),
+        include_str!("../../../../../db/migrations/202602100003_consumer_model.sql"),
+    ] {
+        sqlx::raw_sql(migration)
+            .execute(&pool)
+            .await
+            .context("failed to apply backend e2e migration")?;
+    }
+
+    let separator = if base_url.contains('?') { "&" } else { "?" };
+    Ok(Some(format!(
+        "{base_url}{separator}options=-csearch_path%3D{schema}"
+    )))
 }
 
 fn workspace_root() -> PathBuf {

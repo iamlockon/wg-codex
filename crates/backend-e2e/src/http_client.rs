@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow};
 use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -185,7 +185,8 @@ impl BackendApiClient {
         if status != expected_status {
             return Err(anyhow!("unexpected status {status}: {body}"));
         }
-        serde_json::from_str(&body).with_context(|| format!("failed to parse response body: {body}"))
+        serde_json::from_str(&body)
+            .with_context(|| format!("failed to parse response body: {body}"))
     }
 }
 

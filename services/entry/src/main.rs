@@ -1,3 +1,4 @@
+mod device_repo;
 mod google_oidc;
 mod node_catalog;
 mod oauth_repo;
@@ -23,6 +24,7 @@ use control_plane::proto::{ConnectRequest, DisconnectRequest, GetSessionRequest}
 use control_plane::{
     ControlPlaneClient, config_from_proto, maybe_uuid_to_string, parse_optional_uuid, parse_rfc3339,
 };
+use device_repo::PostgresDeviceRepository;
 use domain::{Device, WireGuardClientConfig};
 use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
 use jsonwebtoken::{
@@ -75,30 +77,38 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let core_client = build_core_client(&grpc_target).await?;
 
-    let (session_store, identity_store, token_store, subscription_store, privacy_store) =
-        if let Some(database_url) = read_env_or_file("DATABASE_URL") {
-            let pool = PgPoolOptions::new()
-                .max_connections(10)
-                .connect(&database_url)
-                .await?;
-            info!("entry using postgres session/oauth stores");
-            (
-                SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
-                IdentityStore::Postgres(PostgresOAuthRepository::new(pool.clone())),
-                Some(PostgresTokenRepository::new(pool.clone())),
-                SubscriptionStore::Postgres(PostgresSubscriptionRepository::new(pool.clone())),
-                Some(PostgresPrivacyRepository::new(pool.clone())),
-            )
-        } else {
-            warn!("DATABASE_URL not set; entry using in-memory session/oauth stores");
-            (
-                SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
-                IdentityStore::InMemory(Mutex::new(HashMap::new())),
-                None,
-                SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
-                None,
-            )
-        };
+    let (
+        session_store,
+        identity_store,
+        device_store,
+        token_store,
+        subscription_store,
+        privacy_store,
+    ) = if let Some(database_url) = read_env_or_file("DATABASE_URL") {
+        let pool = PgPoolOptions::new()
+            .max_connections(10)
+            .connect(&database_url)
+            .await?;
+        info!("entry using postgres session/oauth stores");
+        (
+            SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
+            IdentityStore::Postgres(PostgresOAuthRepository::new(pool.clone())),
+            Some(PostgresDeviceRepository::new(pool.clone())),
+            Some(PostgresTokenRepository::new(pool.clone())),
+            SubscriptionStore::Postgres(PostgresSubscriptionRepository::new(pool.clone())),
+            Some(PostgresPrivacyRepository::new(pool.clone())),
+        )
+    } else {
+        warn!("DATABASE_URL not set; entry using in-memory session/oauth stores");
+        (
+            SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
+            IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            None,
+            None,
+            SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
+            None,
+        )
+    };
     let node_catalog = BlobNodeCatalog::from_env().or_else(|| {
         let path = default_dev_catalog_path();
         if path.exists() {
@@ -128,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         google_oidc: GoogleOidcConfig::from_env(),
         identity_store,
+        device_store,
         node_catalog,
         admin_api_token: read_env_or_file("ADMIN_API_TOKEN"),
         jwt_keys,
@@ -211,6 +222,7 @@ struct AppState {
     http_client: reqwest::Client,
     google_oidc: Option<GoogleOidcConfig>,
     identity_store: IdentityStore,
+    device_store: Option<PostgresDeviceRepository>,
     node_catalog: Option<BlobNodeCatalog>,
     admin_api_token: Option<String>,
     jwt_keys: JwtKeyStore,
@@ -1257,11 +1269,6 @@ async fn register_device(
         .entitlements_for_customer(customer_id)
         .await?;
 
-    let mut devices_map = state.devices_by_customer.write().await;
-    let entry = devices_map.entry(customer_id).or_default();
-    if entry.len() as i32 >= entitlements.max_devices {
-        return Err(ApiError::bad_request("device_limit_reached"));
-    }
     let device = Device {
         id: Uuid::new_v4(),
         customer_id,
@@ -1269,7 +1276,28 @@ async fn register_device(
         public_key: payload.public_key,
         created_at: Utc::now(),
     };
-    entry.push(device.clone());
+
+    if let Some(repo) = &state.device_store {
+        if repo
+            .count_devices(customer_id)
+            .await
+            .map_err(map_device_repo_error)?
+            >= entitlements.max_devices as i64
+        {
+            return Err(ApiError::bad_request("device_limit_reached"));
+        }
+        repo.register_device(&device)
+            .await
+            .map_err(map_device_repo_error)?;
+    } else {
+        let mut devices_map = state.devices_by_customer.write().await;
+        let entry = devices_map.entry(customer_id).or_default();
+        if entry.len() as i32 >= entitlements.max_devices {
+            return Err(ApiError::bad_request("device_limit_reached"));
+        }
+        entry.push(device.clone());
+    }
+
     Ok(Json(device))
 }
 
@@ -1278,6 +1306,13 @@ async fn list_devices(
     headers: HeaderMap,
 ) -> Result<Json<Vec<Device>>, ApiError> {
     let customer_id = customer_id_from_request(&state, &headers).await?;
+    if let Some(repo) = &state.device_store {
+        let devices = repo
+            .list_devices(customer_id)
+            .await
+            .map_err(map_device_repo_error)?;
+        return Ok(Json(devices));
+    }
     let devices_map = state.devices_by_customer.read().await;
     Ok(Json(
         devices_map
@@ -1806,7 +1841,11 @@ async fn start_session(
         }
     }
 
-    let device = {
+    let device = if let Some(repo) = &state.device_store {
+        repo.get_device(customer_id, payload.device_id)
+            .await
+            .map_err(map_device_repo_error)?
+    } else {
         let devices_map = state.devices_by_customer.read().await;
         devices_map
             .get(&customer_id)
@@ -2350,6 +2389,10 @@ fn map_token_repo_error(err: TokenRepoError) -> ApiError {
     }
 }
 
+fn map_device_repo_error(_: sqlx::Error) -> ApiError {
+    ApiError::service_unavailable("device_store_failed")
+}
+
 fn map_node_catalog_error(err: NodeCatalogError) -> ApiError {
     match err {
         NodeCatalogError::Unavailable => ApiError::service_unavailable("node_catalog_unavailable"),
@@ -2516,6 +2559,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -2558,6 +2602,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -2649,6 +2694,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: JwtKeyStore {
@@ -2698,6 +2744,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
@@ -2732,6 +2779,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
@@ -2769,6 +2817,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
@@ -2814,6 +2863,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -2856,6 +2906,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: keys,
@@ -2904,6 +2955,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: keys,
@@ -3079,6 +3131,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3152,6 +3205,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3226,6 +3280,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3299,6 +3354,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3404,6 +3460,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3479,6 +3536,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3563,6 +3621,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3627,6 +3686,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
@@ -3674,6 +3734,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: None,
             jwt_keys: keys,
@@ -3736,6 +3797,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
@@ -3809,6 +3871,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
             node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
@@ -3926,7 +3989,8 @@ mod tests {
                 jwks_url: "https://www.googleapis.com/oauth2/v3/certs".to_string(),
             }),
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -3974,7 +4038,8 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            device_store: None,
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
