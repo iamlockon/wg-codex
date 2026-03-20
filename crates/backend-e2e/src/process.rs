@@ -44,6 +44,7 @@ impl BackendStack {
         entry_command
             .env("ENTRY_BIND_ADDR", format!("127.0.0.1:{entry_port}"))
             .env("CORE_GRPC_URL", format!("http://127.0.0.1:{core_port}"))
+            .env("APP_CORE_NODE_GRPC_PORT", core_port.to_string())
             .env("GOOGLE_OIDC_CLIENT_ID", "test-client-id")
             .env("GOOGLE_OIDC_CLIENT_SECRET", "test-client-secret")
             .env("GOOGLE_OIDC_REDIRECT_URI", "http://127.0.0.1/callback")

@@ -1,3 +1,4 @@
+use backend_e2e::http_client::BackendApiClient;
 use backend_e2e::oauth_stub::OAuthStubServer;
 use backend_e2e::process::BackendStack;
 use jsonwebtoken::decode_header;
@@ -5,7 +6,55 @@ use serde_json::Value;
 
 #[tokio::test]
 async fn oauth_login_session_lifecycle_and_logout_revocation_e2e() {
-    panic!("backend e2e harness not implemented");
+    let stack = BackendStack::start()
+        .await
+        .expect("backend stack should start");
+    let api = BackendApiClient::new(stack.entry_base_url().to_string());
+
+    let oauth = api
+        .oauth_callback("auth-code", Some("pkce-verifier"), Some("stub-nonce"))
+        .await
+        .expect("oauth callback should succeed");
+    assert_eq!(oauth.provider, "google");
+    assert!(!oauth.access_token.is_empty());
+
+    let subscription = api
+        .upsert_subscription(oauth.customer_id, "free", "active")
+        .await
+        .expect("subscription upsert should succeed");
+    assert_eq!(subscription.customer_id, oauth.customer_id);
+    assert_eq!(subscription.plan_code, "free");
+    assert_eq!(subscription.status, "active");
+
+    let device = api
+        .register_device(&oauth.access_token, "test-device", "test-public-key")
+        .await
+        .expect("device registration should succeed");
+    assert_eq!(device.customer_id, oauth.customer_id);
+    assert_eq!(device.name, "test-device");
+
+    let session = api
+        .start_session(&oauth.access_token, device.id, "us-west1")
+        .await
+        .expect("session start should succeed");
+    assert_eq!(session.status, "active");
+    assert_eq!(session.region.as_deref(), Some("us-west1"));
+    assert!(session.session_key.is_some());
+
+    let current = api
+        .current_session(&oauth.access_token)
+        .await
+        .expect("current session should succeed");
+    assert!(current.active);
+    assert_eq!(current.session_key, session.session_key);
+    assert_eq!(current.device_id, Some(device.id));
+
+    api.terminate_session(
+        &oauth.access_token,
+        session.session_key.as_deref().expect("session key"),
+    )
+    .await
+    .expect("session termination should succeed");
 }
 
 #[tokio::test]

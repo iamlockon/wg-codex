@@ -98,8 +98,6 @@ impl Drop for OAuthStubServer {
 struct TokenRequest {
     client_id: String,
     code: String,
-    #[serde(default)]
-    nonce: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -134,7 +132,7 @@ async fn issue_token(
         aud: state.client_id.clone(),
         sub: "stub-subject".to_string(),
         exp: 4_102_444_800,
-        nonce: request.nonce,
+        nonce: Some("stub-nonce".to_string()),
         email: "stub@example.com".to_string(),
         name: "Stub User".to_string(),
     };
