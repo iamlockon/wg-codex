@@ -57,9 +57,18 @@ Run these after meaningful code changes:
 
 ```bash
 cargo fmt --all
-cargo check --workspace
+cargo check --workspace --exclude wg-windows-client
 cargo test --workspace --lib --exclude wg-windows-client
 ```
+
+Desktop client validation (host-aware):
+
+```bash
+npm --prefix clients/windows-desktop/ui run typecheck
+npm --prefix clients/windows-desktop/ui run build
+```
+
+Windows host builds for the Tauri desktop shell should be run on Windows. Linux/macOS shells may compile shared Rust modules in `clients/windows-desktop/src-tauri`, but full Tauri host builds depend on host-native GUI libraries and are not part of the generic non-Windows baseline.
 
 DB-backed `entry` repository tests (requires `TEST_DATABASE_URL`):
 

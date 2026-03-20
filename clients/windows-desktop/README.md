@@ -106,5 +106,12 @@ npm run tauri:dev
 
 ## Notes
 
-- This is not wired into CI yet.
+- Linux/macOS workspace validation excludes `wg-windows-client`; full Tauri host validation runs on Windows CI/hosts.
+- Windows CI now validates the desktop client only when `clients/windows-desktop/**` changes.
+- That Windows job runs:
+  - UI `typecheck`
+  - UI `build`
+  - `cargo check -p wg-windows-client`
+  - `cargo test -p wg-windows-client --no-run`
+- Full installer/runtime packaging still depends on staging `wg-tools/` and is not part of the generic CI job yet.
 - Backend contract reference: `docs/windows-desktop-client-plan.md`.

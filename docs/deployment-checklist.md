@@ -25,16 +25,15 @@
    - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <core-vm-name> --zone <zone> --entry-admin-url <entry-admin-base-url> --entry-admin-token <token>`
    - For private VPC-only access, use internal DNS with scheme (example: `http://wg-entry-gha.c.<project>.internal:8080`).
 4. Optional for core deploy:
-   - Register node in entry control plane: `--register-node-in-entry true --entry-node-region <region>`
-   - If entry should route to discovered nodes on a non-default gRPC port, set `APP_CORE_NODE_GRPC_PORT` on entry.
+   - Provide a node catalog entry through the blob catalog consumed by `entry`; `core` no longer registers itself into `entry` over HTTP.
+   - If entry should route to discovered nodes on a non-default gRPC port, set `grpc_port` in the catalog entry or `APP_CORE_NODE_GRPC_PORT` on entry.
 5. GitHub Actions paths:
    - `entry`: `.github/workflows/entry-vm-cicd.yml` deploys `entry` using `scripts/deploy-entry-vm.sh`.
    - Add VM without touching Terraform stack state: `action=apply`, `provisioner=script`, unique `vm_name`.
    - Terraform-managed VM flow: run `provisioner=terraform`, `action=plan`, then run `provisioner=terraform`, `action=apply` with `plan_run_id` from that plan run.
    - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
    - `core`: `.github/workflows/core-vm-cicd.yml` deploys `core` using `scripts/deploy-core-vm.sh`.
-   - For `core` registration in entry, run `action=apply` with `register_node_in_entry=true`, set `entry_admin_url`, and provide `ENTRY_ADMIN_API_TOKEN` in repository secrets.
-   - Registration is performed by `core` on VM startup; the GitHub runner does not call `POST /v1/admin/nodes`.
+   - Maintain node metadata in the node catalog source consumed by `entry`; the GitHub runner and `core` do not call `POST /v1/admin/nodes`.
 
 ## Required production policy
 - `entry`:
@@ -59,7 +58,7 @@
    - `GET /v1/admin/readiness` should report `production_ready=true`
    - `GET /v1/admin/core/status`
    - `GET /v1/admin/privacy/policy`
-   - `GET /v1/admin/nodes` should show healthy nodes with recent `updated_at`
+   - `GET /v1/admin/nodes` should show catalog nodes with recent `updated_at` values from gRPC health refresh
 3. Verify logs on VM:
    - `gcloud compute ssh <entry-vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-entry -n 200 --no-pager"`
    - `gcloud compute ssh <core-vm-name> --project "$PROJECT_ID" --zone "$ZONE" --command "sudo journalctl -u wg-core -n 200 --no-pager"`

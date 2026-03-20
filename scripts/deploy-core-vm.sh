@@ -52,15 +52,7 @@ Optional options:
   --core-bind-addr <addr>           CORE_BIND_ADDR (default: 0.0.0.0:50051)
   --core-require-tls <bool>         CORE_REQUIRE_TLS (default: true)
   --core-require-client-cert <bool> Require client cert for core gRPC (default: false)
-  --entry-admin-token <token>       Admin token used for node health/report registration in entry
-  --register-node-in-entry <bool>   Upsert this core node into remote entry admin API (default: true)
-  --entry-admin-url <url>           Entry admin base URL used for health + node registration
-  --entry-node-region <region>      Region stored in entry node registry (default: derived from zone)
-  --entry-node-country-code <code>  Optional country code metadata for node selection
-  --entry-node-city-code <code>     Optional city code metadata for node selection
-  --entry-node-pool <name>          Node pool metadata (default: standard)
-  --entry-node-provider <name>      Node provider metadata (default: gcp-vm)
-  --core-node-id <uuid>             Stable CORE_NODE_ID used for entry health reporting
+  --core-node-id <uuid>             Optional stable CORE_NODE_ID for local identification/logging
   --wg-interface <name>             WG_INTERFACE (default: wg0)
   --wg-interface-cidr <cidr>        WG_INTERFACE_CIDR (default: 10.90.0.1/24)
   --wg-listen-port <port>           WG_LISTEN_PORT (default: 51820)
@@ -68,7 +60,7 @@ Optional options:
   --wg-egress-iface <name|auto>     WG_EGRESS_IFACE (default: auto)
 
 Example:
-  scripts/deploy-core-vm.sh --project my-project --entry-admin-url https://entry.example.com
+  scripts/deploy-core-vm.sh --project my-project --vm-name wg-core-us-west
 USAGE
 }
 
@@ -99,19 +91,6 @@ require_pkg_config_lib() {
 is_true() {
   local value="${1:-}"
   [[ "$value" == "1" || "$value" == "true" || "$value" == "TRUE" ]]
-}
-
-endpoint_host_from_template() {
-  local template="${1:-}"
-  local host="$template"
-  if [[ "$host" =~ ^\[(.+)\](:[0-9]+)?$ ]]; then
-    printf '[%s]' "${BASH_REMATCH[1]}"
-    return
-  fi
-  if [[ "$host" == *:* ]]; then
-    host="${host%:*}"
-  fi
-  printf '%s' "$host"
 }
 
 CONFIG_FILE="scripts/deploy-core-vm.env"
@@ -145,18 +124,7 @@ WG_SERVER_PUBLIC_KEY=""
 WG_KEY_MODE="generate"
 TLS_MODE="self-signed"
 TLS_COMMON_NAME=""
-
-ENTRY_ADMIN_API_TOKEN=""
-REGISTER_NODE_IN_ENTRY="true"
-ENTRY_ADMIN_URL=""
-ENTRY_NODE_REGION=""
-ENTRY_NODE_COUNTRY_CODE=""
-ENTRY_NODE_CITY_CODE=""
-ENTRY_NODE_POOL="standard"
-ENTRY_NODE_PROVIDER="gcp-vm"
 CORE_NODE_ID=""
-CORE_ENTRY_HEALTH_URL=""
-CORE_ENTRY_NODE_UPSERT_URL=""
 
 WG_PRIVATE_KEY_FILE="./secrets/private.key"
 TLS_SERVER_CRT_FILE="./secrets/server.crt"
@@ -207,14 +175,6 @@ while [[ $# -gt 0 ]]; do
     --core-bind-addr) CORE_BIND_ADDR="$2"; shift 2 ;;
     --core-require-tls) CORE_REQUIRE_TLS="$2"; shift 2 ;;
     --core-require-client-cert) CORE_REQUIRE_CLIENT_CERT="$2"; shift 2 ;;
-    --entry-admin-token) ENTRY_ADMIN_API_TOKEN="$2"; shift 2 ;;
-    --register-node-in-entry) REGISTER_NODE_IN_ENTRY="$2"; shift 2 ;;
-    --entry-admin-url) ENTRY_ADMIN_URL="$2"; shift 2 ;;
-    --entry-node-region) ENTRY_NODE_REGION="$2"; shift 2 ;;
-    --entry-node-country-code) ENTRY_NODE_COUNTRY_CODE="$2"; shift 2 ;;
-    --entry-node-city-code) ENTRY_NODE_CITY_CODE="$2"; shift 2 ;;
-    --entry-node-pool) ENTRY_NODE_POOL="$2"; shift 2 ;;
-    --entry-node-provider) ENTRY_NODE_PROVIDER="$2"; shift 2 ;;
     --core-node-id) CORE_NODE_ID="$2"; shift 2 ;;
     --wg-interface) WG_INTERFACE="$2"; shift 2 ;;
     --wg-interface-cidr) WG_INTERFACE_CIDR="$2"; shift 2 ;;
@@ -273,14 +233,6 @@ case "$ENSURE_FIREWALL" in
     ;;
 esac
 
-case "$REGISTER_NODE_IN_ENTRY" in
-  1|0|true|false|TRUE|FALSE) ;;
-  *)
-    echo "invalid --register-node-in-entry: $REGISTER_NODE_IN_ENTRY (expected true/false)" >&2
-    exit 1
-    ;;
-esac
-
 case "$CORE_REQUIRE_CLIENT_CERT" in
   1|0|true|false|TRUE|FALSE) ;;
   *)
@@ -301,39 +253,7 @@ if [[ -z "$PROJECT" ]]; then
   exit 1
 fi
 
-if [[ -n "$ENTRY_ADMIN_URL" ]]; then
-  if [[ "$ENTRY_ADMIN_URL" != *"://"* ]]; then
-    ENTRY_ADMIN_URL="http://${ENTRY_ADMIN_URL}"
-  elif [[ "$ENTRY_ADMIN_URL" != http://* && "$ENTRY_ADMIN_URL" != https://* ]]; then
-    echo "invalid --entry-admin-url: $ENTRY_ADMIN_URL (expected http:// or https://)" >&2
-    exit 1
-  fi
-fi
-
-health_reporting_enabled="false"
-if [[ -n "$ENTRY_ADMIN_URL" && -n "$ENTRY_ADMIN_API_TOKEN" ]]; then
-  health_reporting_enabled="true"
-  CORE_ENTRY_HEALTH_URL="${ENTRY_ADMIN_URL%/}/v1/internal/nodes/health"
-fi
-
-if is_true "$REGISTER_NODE_IN_ENTRY"; then
-  if [[ -z "$ENTRY_ADMIN_URL" ]]; then
-    echo "--entry-admin-url is required when --register-node-in-entry=true" >&2
-    exit 1
-  fi
-  if [[ -z "$ENTRY_ADMIN_API_TOKEN" ]]; then
-    echo "--entry-admin-token is required when --register-node-in-entry=true" >&2
-    exit 1
-  fi
-  health_reporting_enabled="true"
-  CORE_ENTRY_HEALTH_URL="${ENTRY_ADMIN_URL%/}/v1/internal/nodes/health"
-  CORE_ENTRY_NODE_UPSERT_URL="${ENTRY_ADMIN_URL%/}/v1/admin/nodes"
-  if [[ -z "$ENTRY_NODE_REGION" ]]; then
-    ENTRY_NODE_REGION="${ZONE%-*}"
-  fi
-fi
-
-if [[ -z "$CORE_NODE_ID" && "$health_reporting_enabled" == "true" ]]; then
+if [[ -z "$CORE_NODE_ID" ]]; then
   if command -v sha256sum >/dev/null 2>&1; then
     node_seed="${PROJECT}:${ZONE}:${VM_NAME}"
     node_hash="$(printf '%s' "$node_seed" | sha256sum | awk '{print $1}')"
@@ -456,6 +376,7 @@ WG_ENDPOINT_TEMPLATE=__AUTO_WG_ENDPOINT_TEMPLATE__
 WG_EGRESS_IFACE=${WG_EGRESS_IFACE}
 WG_NAT_DRIVER=${WG_NAT_DRIVER}
 WG_SERVER_PUBLIC_KEY=${wg_server_public_key_value}
+CORE_NODE_ID=${CORE_NODE_ID}
 
 CORE_TLS_CERT_PATH=/etc/core-tls/server.crt
 CORE_TLS_KEY_PATH=/etc/core-tls/server.key
@@ -463,26 +384,6 @@ EOF_ENV
 
 if is_true "$CORE_REQUIRE_CLIENT_CERT"; then
   echo "CORE_TLS_CLIENT_CA_CERT_PATH=/etc/core-tls/ca.pem" >>"$env_file"
-fi
-if [[ "$health_reporting_enabled" == "true" ]]; then
-  cat >>"$env_file" <<EOF_HEALTH
-CORE_NODE_ID=${CORE_NODE_ID}
-CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}
-ADMIN_API_TOKEN=${ENTRY_ADMIN_API_TOKEN}
-EOF_HEALTH
-  if is_true "$REGISTER_NODE_IN_ENTRY"; then
-    cat >>"$env_file" <<EOF_REGISTER
-CORE_ENTRY_NODE_UPSERT_URL=${CORE_ENTRY_NODE_UPSERT_URL}
-CORE_ENTRY_NODE_REGION=${ENTRY_NODE_REGION}
-CORE_ENTRY_NODE_COUNTRY_CODE=${ENTRY_NODE_COUNTRY_CODE}
-CORE_ENTRY_NODE_CITY_CODE=${ENTRY_NODE_CITY_CODE}
-CORE_ENTRY_NODE_POOL=${ENTRY_NODE_POOL}
-CORE_ENTRY_NODE_PROVIDER=${ENTRY_NODE_PROVIDER}
-CORE_ENTRY_NODE_ENDPOINT_HOST=__AUTO_ENTRY_NODE_ENDPOINT_HOST__
-CORE_ENTRY_NODE_ENDPOINT_PORT=${WG_LISTEN_PORT}
-CORE_ENTRY_NODE_CAPACITY_PEERS=200
-EOF_REGISTER
-  fi
 fi
 
 GCLOUD_BASE=(gcloud --project "$PROJECT")
@@ -555,15 +456,6 @@ if [[ "$WG_ENDPOINT_TEMPLATE" == "auto" ]]; then
   effective_wg_endpoint_template="${VM_IP}:${WG_LISTEN_PORT}"
 fi
 
-entry_node_endpoint_host="$VM_IP"
-if [[ -z "$entry_node_endpoint_host" ]]; then
-  entry_node_endpoint_host="$(endpoint_host_from_template "$effective_wg_endpoint_template")"
-fi
-if is_true "$REGISTER_NODE_IN_ENTRY" && [[ -z "$entry_node_endpoint_host" ]]; then
-  echo "failed to determine node endpoint host for entry registration" >&2
-  exit 1
-fi
-
 awk -v tmpl="$effective_wg_endpoint_template" '
   BEGIN { updated = 0 }
   /^WG_ENDPOINT_TEMPLATE=/ {
@@ -579,24 +471,6 @@ awk -v tmpl="$effective_wg_endpoint_template" '
   }
 ' "$env_file" >"${env_file}.tmp"
 mv "${env_file}.tmp" "$env_file"
-
-if [[ "$health_reporting_enabled" == "true" ]] && is_true "$REGISTER_NODE_IN_ENTRY"; then
-  awk -v host="$entry_node_endpoint_host" '
-    BEGIN { updated = 0 }
-    /^CORE_ENTRY_NODE_ENDPOINT_HOST=/ {
-      print "CORE_ENTRY_NODE_ENDPOINT_HOST=" host
-      updated = 1
-      next
-    }
-    { print }
-    END {
-      if (!updated) {
-        print "CORE_ENTRY_NODE_ENDPOINT_HOST=" host
-      }
-    }
-  ' "$env_file" >"${env_file}.tmp"
-  mv "${env_file}.tmp" "$env_file"
-fi
 
 if [[ "$CREATE_ONLY" -eq 1 ]]; then
   echo "Create-only mode complete."
@@ -647,21 +521,11 @@ sudo mkdir -p /etc/wireguard /etc/core-tls
 sudo chmod 700 /etc/wireguard /etc/core-tls
 
 need_apt=0
-if ! command -v wg >/dev/null 2>&1; then
-  need_apt=1
-fi
-if [[ "\$TLS_MODE" == "self-signed" ]] && ! command -v openssl >/dev/null 2>&1; then
-  need_apt=1
-fi
-if ! command -v nft >/dev/null 2>&1; then
-  need_apt=1
-fi
-if ! command -v ip >/dev/null 2>&1; then
-  need_apt=1
-fi
-if ! command -v uuidgen >/dev/null 2>&1; then
-  need_apt=1
-fi
+if ! command -v wg >/dev/null 2>&1; then need_apt=1; fi
+if [[ "\$TLS_MODE" == "self-signed" ]] && ! command -v openssl >/dev/null 2>&1; then need_apt=1; fi
+if ! command -v nft >/dev/null 2>&1; then need_apt=1; fi
+if ! command -v ip >/dev/null 2>&1; then need_apt=1; fi
+if ! command -v uuidgen >/dev/null 2>&1; then need_apt=1; fi
 if [[ "\$need_apt" -eq 1 ]]; then
   sudo apt-get update
   sudo apt-get install -y wireguard-tools openssl nftables iproute2 uuid-runtime
@@ -715,9 +579,7 @@ if [[ "\$TLS_MODE" == "upload" ]]; then
   sudo install -m 0644 /tmp/ca.pem /etc/core-tls/ca.pem
 elif [[ ! -s /etc/core-tls/server.crt || ! -s /etc/core-tls/server.key || ! -s /etc/core-tls/ca.pem ]]; then
   tmp_tls_dir="\$(mktemp -d)"
-  cleanup_tls() {
-    rm -rf "\$tmp_tls_dir"
-  }
+  cleanup_tls() { rm -rf "\$tmp_tls_dir"; }
   trap cleanup_tls EXIT
 
   cat >"\$tmp_tls_dir/ca.cnf" <<CFG
@@ -840,13 +702,9 @@ set_core_nat_driver() {
 wait_for_active wg-core 120
 core_bind_addr="\$(sudo awk -F= '/^CORE_BIND_ADDR=/{print \$2}' /etc/default/wg-core | tr -d '\r\n')"
 core_bind_port="\${core_bind_addr##*:}"
-if [[ ! "\$core_bind_port" =~ ^[0-9]+$ ]]; then
-  core_bind_port="50051"
-fi
+if [[ ! "\$core_bind_port" =~ ^[0-9]+$ ]]; then core_bind_port="50051"; fi
 core_nat_driver="\$(sudo awk -F= '/^WG_NAT_DRIVER=/{print \$2}' /etc/default/wg-core | tr -d '\r\n')"
-if [[ -z "\$core_nat_driver" ]]; then
-  core_nat_driver="cli"
-fi
+if [[ -z "\$core_nat_driver" ]]; then core_nat_driver="cli"; fi
 
 if ! wait_for_port "\$core_bind_port" 120; then
   if [[ "\$core_nat_driver" == "native" ]]; then
@@ -888,15 +746,8 @@ fi
 if [[ -n "$EFFECTIVE_WG_ENDPOINT_TEMPLATE" ]]; then
   echo "Effective WG_ENDPOINT_TEMPLATE=${EFFECTIVE_WG_ENDPOINT_TEMPLATE}"
 fi
-if [[ "$health_reporting_enabled" == "true" ]]; then
-  echo "CORE_NODE_ID=${CORE_NODE_ID}"
-  echo "CORE_ENTRY_HEALTH_URL=${CORE_ENTRY_HEALTH_URL}"
-fi
+echo "CORE_NODE_ID=${CORE_NODE_ID}"
 
 echo
 echo "Quick on-VM checks:"
 echo "  gcloud --project ${PROJECT} compute ssh ${VM_NAME} --zone ${ZONE} --command 'sudo systemctl status wg-core --no-pager'"
-
-if is_true "$REGISTER_NODE_IN_ENTRY"; then
-  echo "Core node registration is configured in /etc/default/wg-core and performed by core at startup."
-fi

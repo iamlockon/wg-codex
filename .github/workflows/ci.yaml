@@ -9,6 +9,22 @@ on:
       - "services/**"
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      windows_desktop: ${{ steps.filter.outputs.windows_desktop }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            windows_desktop:
+              - 'clients/windows-desktop/**'
+
   rust:
     runs-on: ubuntu-latest
     env:
@@ -45,3 +61,44 @@ jobs:
 
       - name: Unit tests
         run: cargo test --workspace --lib --exclude wg-windows-client
+
+  windows-desktop:
+    needs: changes
+    if: needs.changes.outputs.windows_desktop == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: clients/windows-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            clients/windows-desktop/package-lock.json
+            clients/windows-desktop/ui/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm install
+
+      - name: Install UI dependencies
+        run: npm --prefix ui install
+
+      - name: UI typecheck
+        run: npm --prefix ui run typecheck
+
+      - name: UI build
+        run: npm --prefix ui run build
+
+      - name: Desktop host build check
+        run: cargo check -p wg-windows-client
+
+      - name: Desktop test compile
+        run: cargo test -p wg-windows-client --no-run

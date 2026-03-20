@@ -9,7 +9,6 @@ fi
 
 echo "Running entry DB-backed integration tests against ${TEST_DATABASE_URL}"
 cargo test -p entry postgres_session_repo::tests -- --nocapture
-cargo test -p entry node_repo::tests -- --nocapture
 cargo test -p entry token_repo::tests -- --nocapture
 cargo test -p entry oauth_repo::tests -- --nocapture
 cargo test -p entry privacy_repo::tests -- --nocapture

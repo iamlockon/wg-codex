@@ -29,20 +29,16 @@
   - `oauth_callback` now uses this repository when `DATABASE_URL` is set.
   - In-memory fallback store is used when Postgres is not configured.
 - Node selection is now wired for `entry` start-session flow:
-  - `services/entry/src/node_repo.rs` selects healthy nodes from `vpn_nodes` by region and load (`active_peer_count`).
-  - `start_session` now auto-selects node in Postgres mode when `node_hint` is not provided.
-  - Returns `no_nodes_available_in_region` if no healthy node exists in requested region.
-- Node lifecycle and health APIs are now wired in `entry`:
-  - `GET /v1/admin/nodes` lists nodes.
-  - `POST /v1/admin/nodes` creates/updates node metadata.
-  - `POST /v1/internal/nodes/health` updates `healthy` and `active_peer_count`.
-  - These endpoints require `x-admin-token` matching `ADMIN_API_TOKEN`.
+  - `services/entry/src/node_catalog.rs` loads node metadata from a local file or GCS-backed JSON catalog.
+  - `entry` refreshes live node health/capacity by polling each node's `core` gRPC `GetNodeStatus` endpoint.
+  - `start_session` now auto-selects nodes from the catalog when `node_hint` is not provided.
+  - Returns `no_nodes_available_for_selection` if no healthy fresh node matches the requested filters.
+- Node admin API is now read-only in `entry`:
+  - `GET /v1/admin/nodes` lists catalog-backed nodes with live health overlay.
+  - `entry` no longer accepts `POST /v1/admin/nodes` or `POST /v1/internal/nodes/health`.
 - Node selection now requires fresh heartbeat data (`updated_at` within 60s) in addition to `healthy=true`.
 - Node freshness threshold is configurable via `APP_NODE_FRESHNESS_SECS` (default `60`).
-- `core` now has dataplane scaffolding with:
-  - pluggable dataplane (`noop` and Linux shell-backed),
-  - IPv4 pool allocation/release,
-  - periodic reconciliation loop.
+- `core` still exposes `GetNodeStatus` for `entry` polling, but no longer pushes registration or health state back into `entry` over HTTP.
 - Linux dataplane now uses Rust-native WireGuard UAPI socket operations for peer add/remove.
 - WireGuard device bootstrap (`private_key`, `listen_port`) is now also applied via Rust UAPI, removing `wg set` shell dependency.
 - Reconciliation now inspects live peers via WireGuard UAPI and removes stale peers while re-applying desired peer state.
@@ -51,8 +47,7 @@
 - `native-nft` now programs nftables directly over netlink (`nftnl`) instead of shelling out to the `nft` binary.
 - Core gRPC now includes node runtime status API:
   - `GetNodeStatus` reports health, active peers, nat driver mode, dataplane mode, and native feature support.
-- `core` now supports optional node health heartbeat publishing to `entry` health endpoint.
-- `core` now performs optional node registration (`POST /v1/admin/nodes`) from the VM startup health-reporter path when registration env vars are present (instead of GitHub runner-side registration).
+- `core` no longer performs optional node registration or HTTP health heartbeat publishing into `entry`; `entry` discovers nodes from the catalog and polls `core` over gRPC.
 - TLS/mTLS hooks are now present for `entry`<->`core` gRPC:
   - optional server TLS in `core`,
   - optional client TLS and client cert in `entry`.
@@ -79,8 +74,8 @@
   - `core`: `node_hint` UUID validation/propagation and disconnect behavior when no active session exists.
 - Product direction updated: target is now **Consumer Privacy / Geo-Unblocking VPN** (not Road Warrior).
 - Consumer model schema migration added:
-  - `plans`, `customer_subscriptions`,
-  - node geo/pool/capacity metadata on `vpn_nodes`.
+  - `plans`, `customer_subscriptions`
+  - node geo/pool/capacity metadata now lives in the blob-backed node catalog consumed by `entry`
 - `entry` now enforces subscription entitlements:
   - device registration respects `max_devices`,
   - session start validates region against `allowed_regions`,
@@ -97,7 +92,6 @@
   - eligibility drop after cancellation.
 - Added repository-level integration tests (gated by `TEST_DATABASE_URL`) for:
   - `postgres_session_repo`: conflict and terminate-key invariants,
-  - `node_repo`: geo/pool/capacity-aware selection behavior,
   - `token_repo`: revocation expiry and purge behavior,
   - `oauth_repo`: identity idempotency, provider scoping, email update behavior, and race-safe parallel identity resolution,
   - `privacy_repo`: audit-event insert/list filters and retention purge behavior.
@@ -105,13 +99,12 @@
   - bearer-authenticated logout + token revocation enforcement on follow-up API requests,
   - admin subscription updates driving session-start gating (`subscription_inactive`),
   - admin readiness/privacy endpoints (auth enforcement, policy payload, and privacy-store availability behavior).
-- DB-backed integration suite runner is now green end-to-end via `scripts/run-db-integration-tests.sh` (all repository suites pass with current migrations).
+- DB-backed integration suite runner is now green end-to-end via `scripts/run-db-integration-tests.sh` (current repository suites pass with the catalog-based node model and existing migrations).
 - Recent stability fixes landed while validating integration tests:
   - `entry` test-build fixes for async test annotation and `Debug` derivations used by `expect_err`.
-  - `node_repo` `upsert_node` SQL values/column count mismatch fixed.
   - `privacy_repo` integration test now seeds `customers` before FK-bound `audit_events` inserts.
   - `subscription_repo` eligibility query now uses `SELECT EXISTS(...)` (bool) to avoid `INT4`/`INT8` decode mismatch.
-- `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring.
+- `entry` node selection now supports consumer filters (`region`, `country_code`, `city_code`, `pool`) and capacity-aware scoring using catalog metadata plus live gRPC health.
 - Privacy metadata cleanup worker added in `entry` for terminated sessions and audit events (retention env-configurable).
 - TLS enforcement toggles added:
   - `APP_REQUIRE_CORE_TLS` in `entry` client startup,
@@ -132,7 +125,7 @@
   - `GET /v1/admin/readiness` aggregates production guardrails and live core status into a single deployment gate signal.
 - File-backed secret loading added for sensitive runtime config:
   - `entry`: `DATABASE_URL`, `ADMIN_API_TOKEN`, `APP_JWT_SIGNING_KEYS`/`APP_JWT_SIGNING_KEY`, and Google OIDC credentials now support `*_FILE`.
-  - `core`: `WG_SERVER_PUBLIC_KEY` and health-reporter `ADMIN_API_TOKEN` now support `*_FILE`.
+  - `core`: `WG_SERVER_PUBLIC_KEY` now supports `*_FILE`.
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`
@@ -145,7 +138,12 @@
     - `.github/workflows/entry-vm-cicd.yml` (entry),
     - `.github/workflows/core-vm-cicd.yml` (core),
     - plus manual checklist path in `docs/deployment-checklist.md`.
-- Windows desktop client MVP scaffolding added:
+- `clients/windows-desktop/src-tauri`
+  - Already uses substantial host gating:
+    - Windows-only storage via `storage_windows`
+    - Windows-only WireGuard controller wiring
+    - non-Windows fallback storage + noop tunnel path for shared logic
+  - Full Tauri host builds still require host-native GUI stacks, so generic Linux CI should exclude `wg-windows-client` and validate the desktop shell on Windows runners.
   - `clients/windows-desktop/ui` contains typed backend contracts, API client, and initial session state model.
   - `clients/windows-desktop/src-tauri` now includes desktop-core implementation for auth/session orchestration, persisted local state, reconnect restoration, and tunnel-control abstraction.
   - Windows adapter layer now includes:

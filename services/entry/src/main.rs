@@ -1,5 +1,5 @@
 mod google_oidc;
-mod node_repo;
+mod node_catalog;
 mod oauth_repo;
 mod postgres_session_repo;
 mod privacy_repo;
@@ -28,8 +28,9 @@ use google_oidc::{GoogleOidcConfig, OidcError, authenticate_google};
 use jsonwebtoken::{
     Algorithm, DecodingKey, EncodingKey, Header, Validation, decode_header, encode,
 };
-use node_repo::{
-    NodeRecord, NodeRepoError, NodeSelectionCriteria, PostgresNodeRepository, UpsertNodeInput,
+use node_catalog::{
+    BlobNodeCatalog, NodeCatalogError, NodeSelectionCriteria, ResolvedNodeRecord,
+    default_dev_catalog_path,
 };
 use oauth_repo::{OAuthRepoError, PostgresOAuthRepository};
 use postgres_session_repo::{PostgresRepoError, PostgresSessionRepository};
@@ -74,32 +75,38 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("CORE_GRPC_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".to_string());
     let core_client = build_core_client(&grpc_target).await?;
 
-    let (session_store, identity_store, node_store, token_store, subscription_store, privacy_store) =
+    let (session_store, identity_store, token_store, subscription_store, privacy_store) =
         if let Some(database_url) = read_env_or_file("DATABASE_URL") {
             let pool = PgPoolOptions::new()
                 .max_connections(10)
                 .connect(&database_url)
                 .await?;
-            info!("entry using postgres session/oauth/node stores");
+            info!("entry using postgres session/oauth stores");
             (
                 SessionStore::Postgres(PostgresSessionRepository::new(pool.clone())),
                 IdentityStore::Postgres(PostgresOAuthRepository::new(pool.clone())),
-                NodeStore::Postgres(PostgresNodeRepository::new(pool.clone())),
                 Some(PostgresTokenRepository::new(pool.clone())),
                 SubscriptionStore::Postgres(PostgresSubscriptionRepository::new(pool.clone())),
                 Some(PostgresPrivacyRepository::new(pool.clone())),
             )
         } else {
-            warn!("DATABASE_URL not set; entry using in-memory session/oauth/node stores");
+            warn!("DATABASE_URL not set; entry using in-memory session/oauth stores");
             (
                 SessionStore::InMemory(Mutex::new(InMemorySessionRepository::default())),
                 IdentityStore::InMemory(Mutex::new(HashMap::new())),
-                NodeStore::InMemory(Mutex::new(HashMap::new())),
                 None,
                 SubscriptionStore::InMemory(Mutex::new(HashMap::new())),
                 None,
             )
         };
+    let node_catalog = BlobNodeCatalog::from_env().or_else(|| {
+        let path = default_dev_catalog_path();
+        if path.exists() {
+            Some(BlobNodeCatalog::from_file_path(path.display().to_string()))
+        } else {
+            None
+        }
+    });
     let jwt_keys = JwtKeyStore::from_env();
     if jwt_keys.using_insecure_default {
         warn!("APP_JWT_SIGNING_KEY(S) not set; using insecure development signing key");
@@ -121,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         google_oidc: GoogleOidcConfig::from_env(),
         identity_store,
-        node_store,
+        node_catalog,
         admin_api_token: read_env_or_file("ADMIN_API_TOKEN"),
         jwt_keys,
         allow_legacy_customer_header: std::env::var("APP_ALLOW_LEGACY_CUSTOMER_HEADER")
@@ -152,6 +159,9 @@ async fn main() -> anyhow::Result<()> {
             audit_retention_days,
         ));
     }
+    if state.node_catalog.is_some() {
+        tokio::spawn(node_catalog_refresh_loop(state.clone()));
+    }
 
     let app = Router::new()
         .route("/healthz", get(healthz))
@@ -161,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/devices", post(register_device).get(list_devices))
         .route("/v1/sessions/start", post(start_session))
         .route("/v1/sessions/current", get(current_session))
-        .route("/v1/admin/nodes", post(upsert_node).get(list_nodes))
+        .route("/v1/admin/nodes", get(list_nodes))
         .route("/v1/admin/privacy/policy", get(get_privacy_policy))
         .route("/v1/admin/privacy/audit-events", get(list_audit_events))
         .route("/v1/admin/core/status", get(get_core_status))
@@ -178,7 +188,6 @@ async fn main() -> anyhow::Result<()> {
             "/v1/admin/subscriptions/{customer_id}/history",
             get(get_subscription_history),
         )
-        .route("/v1/internal/nodes/health", post(update_node_health))
         .route(
             "/v1/sessions/{session_key}/terminate",
             post(terminate_session),
@@ -202,7 +211,7 @@ struct AppState {
     http_client: reqwest::Client,
     google_oidc: Option<GoogleOidcConfig>,
     identity_store: IdentityStore,
-    node_store: NodeStore,
+    node_catalog: Option<BlobNodeCatalog>,
     admin_api_token: Option<String>,
     jwt_keys: JwtKeyStore,
     allow_legacy_customer_header: bool,
@@ -301,11 +310,6 @@ enum IdentityStore {
     Postgres(PostgresOAuthRepository),
 }
 
-enum NodeStore {
-    InMemory(Mutex<HashMap<Uuid, NodeRecord>>),
-    Postgres(PostgresNodeRepository),
-}
-
 enum SubscriptionStore {
     InMemory(Mutex<HashMap<Uuid, SubscriptionProfile>>),
     Postgres(PostgresSubscriptionRepository),
@@ -341,124 +345,39 @@ impl IdentityStore {
     }
 }
 
-impl NodeStore {
-    async fn select_node(
-        &self,
-        criteria: &NodeSelectionCriteria,
-        freshness_seconds: i64,
-    ) -> Result<Option<NodeRecord>, ApiError> {
-        match self {
-            NodeStore::InMemory(store) => {
-                let store = store.lock().await;
-                let now = Utc::now();
-                Ok(store
-                    .values()
-                    .filter(|n| {
-                        criteria
-                            .region
-                            .as_deref()
-                            .map_or(true, |region| n.region == region)
-                            && criteria
-                                .country_code
-                                .as_deref()
-                                .map_or(true, |cc| n.country_code == cc)
-                            && criteria
-                                .city_code
-                                .as_deref()
-                                .map_or(true, |city| n.city_code.as_deref() == Some(city))
-                            && criteria.pool.as_deref().map_or(true, |pool| n.pool == pool)
-                            && n.healthy
-                            && n.active_peer_count < n.capacity_peers
-                            && (now - n.updated_at).num_seconds() <= freshness_seconds
-                    })
-                    .min_by_key(|n| n.active_peer_count)
-                    .cloned())
-            }
-            NodeStore::Postgres(repo) => repo
-                .select_node(criteria, freshness_seconds)
-                .await
-                .map_err(map_node_repo_error),
-        }
-    }
+async fn select_node_from_catalog(
+    state: &Arc<AppState>,
+    criteria: &NodeSelectionCriteria,
+) -> Result<Option<ResolvedNodeRecord>, ApiError> {
+    let Some(catalog) = state.node_catalog.as_ref() else {
+        return Ok(None);
+    };
+    catalog
+        .select_node(criteria, state.node_freshness_secs)
+        .await
+        .map_err(map_node_catalog_error)
+}
 
-    fn requires_selection(&self) -> bool {
-        matches!(self, NodeStore::Postgres(_))
-    }
+async fn list_nodes_from_catalog(
+    state: &Arc<AppState>,
+) -> Result<Vec<ResolvedNodeRecord>, ApiError> {
+    let Some(catalog) = state.node_catalog.as_ref() else {
+        return Ok(Vec::new());
+    };
+    catalog.list_nodes().await.map_err(map_node_catalog_error)
+}
 
-    async fn list_nodes(&self) -> Result<Vec<NodeRecord>, ApiError> {
-        match self {
-            NodeStore::InMemory(store) => {
-                let store = store.lock().await;
-                let mut nodes: Vec<NodeRecord> = store.values().cloned().collect();
-                nodes.sort_by(|a, b| {
-                    a.region
-                        .cmp(&b.region)
-                        .then_with(|| a.active_peer_count.cmp(&b.active_peer_count))
-                });
-                Ok(nodes)
-            }
-            NodeStore::Postgres(repo) => repo.list_nodes().await.map_err(map_node_repo_error),
-        }
-    }
-
-    async fn get_node(&self, node_id: Uuid) -> Result<Option<NodeRecord>, ApiError> {
-        match self {
-            NodeStore::InMemory(store) => {
-                let store = store.lock().await;
-                Ok(store.get(&node_id).cloned())
-            }
-            NodeStore::Postgres(repo) => repo.get_node(node_id).await.map_err(map_node_repo_error),
-        }
-    }
-
-    async fn upsert_node(&self, input: UpsertNodeInput) -> Result<NodeRecord, ApiError> {
-        match self {
-            NodeStore::InMemory(store) => {
-                let mut store = store.lock().await;
-                let record = NodeRecord {
-                    id: input.id,
-                    region: input.region,
-                    country_code: input.country_code,
-                    city_code: input.city_code,
-                    pool: input.pool,
-                    provider: input.provider,
-                    endpoint_host: input.endpoint_host,
-                    endpoint_port: input.endpoint_port,
-                    healthy: input.healthy,
-                    active_peer_count: input.active_peer_count,
-                    capacity_peers: input.capacity_peers,
-                    updated_at: Utc::now(),
-                };
-                store.insert(record.id, record.clone());
-                Ok(record)
-            }
-            NodeStore::Postgres(repo) => repo.upsert_node(input).await.map_err(map_node_repo_error),
-        }
-    }
-
-    async fn update_node_health(
-        &self,
-        node_id: Uuid,
-        healthy: bool,
-        active_peer_count: i64,
-    ) -> Result<Option<NodeRecord>, ApiError> {
-        match self {
-            NodeStore::InMemory(store) => {
-                let mut store = store.lock().await;
-                if let Some(node) = store.get_mut(&node_id) {
-                    node.healthy = healthy;
-                    node.active_peer_count = active_peer_count;
-                    node.updated_at = Utc::now();
-                    return Ok(Some(node.clone()));
-                }
-                Ok(None)
-            }
-            NodeStore::Postgres(repo) => repo
-                .update_node_health(node_id, healthy, active_peer_count)
-                .await
-                .map_err(map_node_repo_error),
-        }
-    }
+async fn get_node_from_catalog(
+    state: &Arc<AppState>,
+    node_id: Uuid,
+) -> Result<Option<ResolvedNodeRecord>, ApiError> {
+    let Some(catalog) = state.node_catalog.as_ref() else {
+        return Ok(None);
+    };
+    catalog
+        .get_node(node_id)
+        .await
+        .map_err(map_node_catalog_error)
 }
 
 impl SessionStore {
@@ -789,7 +708,7 @@ fn core_node_grpc_port() -> u16 {
         .unwrap_or(50051)
 }
 
-fn core_target_for_node(node: &NodeRecord) -> Result<String, ApiError> {
+fn core_target_for_node(node: &ResolvedNodeRecord) -> Result<String, ApiError> {
     let host = node.endpoint_host.trim();
     if host.is_empty() {
         return Err(ApiError::bad_request("node_missing_endpoint_host"));
@@ -805,16 +724,16 @@ fn core_target_for_node(node: &NodeRecord) -> Result<String, ApiError> {
 async fn resolve_node_by_id(
     state: &Arc<AppState>,
     node_id: Option<Uuid>,
-) -> Result<Option<NodeRecord>, ApiError> {
+) -> Result<Option<ResolvedNodeRecord>, ApiError> {
     let Some(node_id) = node_id else {
         return Ok(None);
     };
-    state.node_store.get_node(node_id).await
+    get_node_from_catalog(state, node_id).await
 }
 
 async fn connect_device_with_discovery(
     state: &Arc<AppState>,
-    node: Option<&NodeRecord>,
+    node: Option<&ResolvedNodeRecord>,
     request: ConnectRequest,
 ) -> Result<control_plane::proto::ConnectResponse, ApiError> {
     if let Some(node) = node {
@@ -857,7 +776,7 @@ async fn connect_device_with_discovery(
 
 async fn get_session_with_discovery(
     state: &Arc<AppState>,
-    node: Option<&NodeRecord>,
+    node: Option<&ResolvedNodeRecord>,
     customer_id: Uuid,
 ) -> Result<control_plane::proto::GetSessionResponse, ApiError> {
     let request = GetSessionRequest {
@@ -897,7 +816,7 @@ async fn get_session_with_discovery(
 
 async fn disconnect_with_discovery(
     state: &Arc<AppState>,
-    node: Option<&NodeRecord>,
+    node: Option<&ResolvedNodeRecord>,
     session_key: &str,
     customer_id: Uuid,
 ) -> Result<(), ApiError> {
@@ -992,6 +911,35 @@ fn env_flag(name: &str, default: bool) -> bool {
     std::env::var(name)
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(default)
+}
+
+async fn node_catalog_refresh_loop(state: Arc<AppState>) {
+    let Some(catalog) = state.node_catalog.clone() else {
+        return;
+    };
+
+    let catalog_refresh_secs = std::env::var("APP_NODE_CATALOG_REFRESH_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    let health_refresh_secs = std::env::var("APP_NODE_HEALTH_REFRESH_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(15);
+    let require_tls = env_flag("APP_REQUIRE_CORE_TLS", false);
+
+    loop {
+        if let Err(err) = catalog.refresh_catalog(&state.http_client).await {
+            warn!(error = %err, "failed to refresh node catalog");
+        }
+        if let Err(err) = catalog.refresh_health(require_tls).await {
+            warn!(error = %err, "failed to refresh node health cache");
+        }
+        sleep(Duration::from_secs(
+            health_refresh_secs.min(catalog_refresh_secs),
+        ))
+        .await;
+    }
 }
 
 fn oauth_require_nonce(mode: RuntimeMode) -> bool {
@@ -1340,28 +1288,6 @@ async fn list_devices(
 }
 
 #[derive(Deserialize)]
-struct UpsertNodeRequest {
-    id: Option<Uuid>,
-    region: String,
-    country_code: Option<String>,
-    city_code: Option<String>,
-    pool: Option<String>,
-    provider: String,
-    endpoint_host: String,
-    endpoint_port: u16,
-    healthy: Option<bool>,
-    active_peer_count: Option<i64>,
-    capacity_peers: Option<i64>,
-}
-
-#[derive(Deserialize)]
-struct UpdateNodeHealthRequest {
-    node_id: Uuid,
-    healthy: bool,
-    active_peer_count: i64,
-}
-
-#[derive(Deserialize)]
 struct UpsertSubscriptionRequest {
     customer_id: Uuid,
     plan_code: String,
@@ -1508,8 +1434,8 @@ struct NodeResponse {
     updated_at: chrono::DateTime<Utc>,
 }
 
-impl From<NodeRecord> for NodeResponse {
-    fn from(value: NodeRecord) -> Self {
+impl From<ResolvedNodeRecord> for NodeResponse {
+    fn from(value: ResolvedNodeRecord) -> Self {
         Self {
             id: value.id,
             region: value.region,
@@ -1532,7 +1458,7 @@ async fn list_nodes(
     headers: HeaderMap,
 ) -> Result<Json<Vec<NodeResponse>>, ApiError> {
     require_admin_token(&state, &headers)?;
-    let nodes = state.node_store.list_nodes().await?;
+    let nodes = list_nodes_from_catalog(&state).await?;
     Ok(Json(nodes.into_iter().map(NodeResponse::from).collect()))
 }
 
@@ -1739,64 +1665,6 @@ async fn get_readiness(
         checks,
         core_status,
     }))
-}
-
-async fn upsert_node(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(payload): Json<UpsertNodeRequest>,
-) -> Result<Json<NodeResponse>, ApiError> {
-    require_admin_token(&state, &headers)?;
-    if payload.region.trim().is_empty()
-        || payload.provider.trim().is_empty()
-        || payload.endpoint_host.trim().is_empty()
-    {
-        return Err(ApiError::bad_request("invalid_node_payload"));
-    }
-    let country_code = payload
-        .country_code
-        .unwrap_or_else(|| "US".to_string())
-        .trim()
-        .to_uppercase();
-    if country_code.len() != 2 {
-        return Err(ApiError::bad_request("invalid_country_code"));
-    }
-    let capacity_peers = payload.capacity_peers.unwrap_or(10000);
-    if capacity_peers <= 0 {
-        return Err(ApiError::bad_request("invalid_capacity_peers"));
-    }
-
-    let input = UpsertNodeInput {
-        id: payload.id.unwrap_or_else(Uuid::new_v4),
-        region: payload.region,
-        country_code,
-        city_code: payload.city_code,
-        pool: payload.pool.unwrap_or_else(|| "general".to_string()),
-        provider: payload.provider,
-        endpoint_host: payload.endpoint_host,
-        endpoint_port: payload.endpoint_port,
-        healthy: payload.healthy.unwrap_or(true),
-        active_peer_count: payload.active_peer_count.unwrap_or(0),
-        capacity_peers,
-    };
-
-    let node = state.node_store.upsert_node(input).await?;
-    Ok(Json(NodeResponse::from(node)))
-}
-
-async fn update_node_health(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(payload): Json<UpdateNodeHealthRequest>,
-) -> Result<Json<NodeResponse>, ApiError> {
-    require_admin_token(&state, &headers)?;
-    let node = state
-        .node_store
-        .update_node_health(payload.node_id, payload.healthy, payload.active_peer_count)
-        .await?
-        .ok_or_else(|| ApiError::not_found("node_not_found"))?;
-
-    Ok(Json(NodeResponse::from(node)))
 }
 
 async fn upsert_subscription(
@@ -2383,38 +2251,13 @@ async fn resolve_node_selection(
     state: &Arc<AppState>,
     payload: &StartSessionRequest,
     default_region: Option<&str>,
-) -> Result<Option<NodeRecord>, ApiError> {
+) -> Result<Option<ResolvedNodeRecord>, ApiError> {
     let requested_hint = payload.node_hint;
     if let Some(hint) = requested_hint {
-        if let Some(node) = state.node_store.get_node(hint).await? {
+        if let Some(node) = get_node_from_catalog(state, hint).await? {
             return Ok(Some(node));
         }
-        let region = payload
-            .region
-            .clone()
-            .or_else(|| default_region.map(ToString::to_string))
-            .unwrap_or_default();
-        return Ok(Some(NodeRecord {
-            id: hint,
-            region,
-            country_code: payload
-                .country_code
-                .clone()
-                .unwrap_or_else(|| "US".to_string())
-                .to_uppercase(),
-            city_code: payload.city_code.clone(),
-            pool: payload
-                .pool
-                .clone()
-                .unwrap_or_else(|| "general".to_string()),
-            provider: "hint".to_string(),
-            endpoint_host: String::new(),
-            endpoint_port: 0,
-            healthy: true,
-            active_peer_count: 0,
-            capacity_peers: i64::MAX,
-            updated_at: Utc::now(),
-        }));
+        return Err(ApiError::bad_request("node_hint_not_found"));
     }
 
     let criteria = NodeSelectionCriteria {
@@ -2427,11 +2270,8 @@ async fn resolve_node_selection(
         city_code: payload.city_code.clone(),
         pool: payload.pool.clone(),
     };
-    let selected = state
-        .node_store
-        .select_node(&criteria, state.node_freshness_secs)
-        .await?;
-    if selected.is_none() && state.node_store.requires_selection() {
+    let selected = select_node_from_catalog(state, &criteria).await?;
+    if selected.is_none() && state.node_catalog.is_some() {
         return Err(ApiError::bad_request("no_nodes_available_for_selection"));
     }
 
@@ -2510,9 +2350,10 @@ fn map_token_repo_error(err: TokenRepoError) -> ApiError {
     }
 }
 
-fn map_node_repo_error(err: NodeRepoError) -> ApiError {
+fn map_node_catalog_error(err: NodeCatalogError) -> ApiError {
     match err {
-        NodeRepoError::Database(_) => ApiError::service_unavailable("node_store_failed"),
+        NodeCatalogError::Unavailable => ApiError::service_unavailable("node_catalog_unavailable"),
+        NodeCatalogError::Load(_) => ApiError::service_unavailable("node_catalog_failed"),
     }
 }
 
@@ -2597,7 +2438,6 @@ mod tests {
     use axum::body::{Body, to_bytes};
     use axum::http::HeaderValue;
     use axum::http::Request;
-    use chrono::Duration;
     use jsonwebtoken::errors::{Error as JwtError, ErrorKind};
     use tower::ServiceExt;
 
@@ -2676,7 +2516,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -2718,7 +2558,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -2809,7 +2649,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: JwtKeyStore {
                 active_kid: "v1".to_string(),
@@ -2858,7 +2698,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -2892,7 +2732,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -2929,7 +2769,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -2974,7 +2814,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,
@@ -3016,7 +2856,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: keys,
             allow_legacy_customer_header: false,
@@ -3064,7 +2904,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: keys,
             allow_legacy_customer_header: false,
@@ -3096,64 +2936,99 @@ mod tests {
 
     #[tokio::test]
     async fn node_selection_skips_stale_nodes_and_prefers_lowest_load_fresh_node() {
+        use crate::node_catalog::{NodeCatalogDocument, NodeCatalogRecord, NodeRuntimeStatus};
         let stale_id = Uuid::new_v4();
         let fresh_busy_id = Uuid::new_v4();
         let fresh_best_id = Uuid::new_v4();
-        let mut nodes = HashMap::new();
-        nodes.insert(
+        let temp = std::env::temp_dir().join(format!("node-catalog-{}.json", Uuid::new_v4()));
+        let catalog_doc = NodeCatalogDocument {
+            version: 1,
+            nodes: vec![
+                NodeCatalogRecord {
+                    id: stale_id,
+                    region: "us-west1".to_string(),
+                    country_code: "US".to_string(),
+                    city_code: Some("SFO".to_string()),
+                    pool: "general".to_string(),
+                    provider: "gcp".to_string(),
+                    endpoint_host: "stale.example.com".to_string(),
+                    endpoint_port: 51820,
+                    grpc_host: None,
+                    grpc_port: None,
+                    capacity_peers: 100,
+                    enabled: true,
+                },
+                NodeCatalogRecord {
+                    id: fresh_busy_id,
+                    region: "us-west1".to_string(),
+                    country_code: "US".to_string(),
+                    city_code: Some("SFO".to_string()),
+                    pool: "general".to_string(),
+                    provider: "gcp".to_string(),
+                    endpoint_host: "busy.example.com".to_string(),
+                    endpoint_port: 51820,
+                    grpc_host: None,
+                    grpc_port: None,
+                    capacity_peers: 100,
+                    enabled: true,
+                },
+                NodeCatalogRecord {
+                    id: fresh_best_id,
+                    region: "us-west1".to_string(),
+                    country_code: "US".to_string(),
+                    city_code: Some("SFO".to_string()),
+                    pool: "general".to_string(),
+                    provider: "gcp".to_string(),
+                    endpoint_host: "best.example.com".to_string(),
+                    endpoint_port: 51820,
+                    grpc_host: None,
+                    grpc_port: None,
+                    capacity_peers: 100,
+                    enabled: true,
+                },
+            ],
+        };
+        std::fs::write(
+            &temp,
+            serde_json::to_vec(&catalog_doc).expect("serialize catalog"),
+        )
+        .expect("write catalog");
+
+        let catalog = BlobNodeCatalog::from_file_path(temp.display().to_string());
+        catalog
+            .refresh_catalog(&reqwest::Client::new())
+            .await
+            .expect("refresh catalog");
+
+        let now = Utc::now();
+        let mut health = HashMap::new();
+        health.insert(
             stale_id,
-            NodeRecord {
-                id: stale_id,
-                region: "us-west1".to_string(),
-                country_code: "US".to_string(),
-                city_code: Some("SFO".to_string()),
-                pool: "general".to_string(),
-                provider: "gcp".to_string(),
-                endpoint_host: "stale.example.com".to_string(),
-                endpoint_port: 51820,
+            NodeRuntimeStatus {
                 healthy: true,
                 active_peer_count: 0,
-                capacity_peers: 100,
-                updated_at: Utc::now() - Duration::seconds(120),
+                checked_at: now - chrono::Duration::seconds(120),
             },
         );
-        nodes.insert(
+        health.insert(
             fresh_busy_id,
-            NodeRecord {
-                id: fresh_busy_id,
-                region: "us-west1".to_string(),
-                country_code: "US".to_string(),
-                city_code: Some("SFO".to_string()),
-                pool: "general".to_string(),
-                provider: "gcp".to_string(),
-                endpoint_host: "busy.example.com".to_string(),
-                endpoint_port: 51820,
+            NodeRuntimeStatus {
                 healthy: true,
                 active_peer_count: 5,
-                capacity_peers: 100,
-                updated_at: Utc::now(),
+                checked_at: now,
             },
         );
-        nodes.insert(
+        health.insert(
             fresh_best_id,
-            NodeRecord {
-                id: fresh_best_id,
-                region: "us-west1".to_string(),
-                country_code: "US".to_string(),
-                city_code: Some("SFO".to_string()),
-                pool: "general".to_string(),
-                provider: "gcp".to_string(),
-                endpoint_host: "best.example.com".to_string(),
-                endpoint_port: 51820,
+            NodeRuntimeStatus {
                 healthy: true,
                 active_peer_count: 2,
-                capacity_peers: 100,
-                updated_at: Utc::now(),
+                checked_at: now,
             },
         );
+        catalog.set_health_snapshot(health).await;
 
-        let store = NodeStore::InMemory(Mutex::new(nodes));
-        let selected = store
+        let selected = catalog
             .select_node(
                 &NodeSelectionCriteria {
                     region: Some("us-west1".to_string()),
@@ -3204,7 +3079,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3277,7 +3152,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3351,7 +3226,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3424,7 +3299,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3529,7 +3404,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3604,7 +3479,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3688,7 +3563,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3752,7 +3627,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3799,7 +3674,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: None,
             jwt_keys: keys,
             allow_legacy_customer_header: false,
@@ -3861,7 +3736,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
             allow_legacy_customer_header: true,
@@ -3934,7 +3809,7 @@ mod tests {
             http_client: reqwest::Client::new(),
             google_oidc: None,
             identity_store: IdentityStore::InMemory(Mutex::new(HashMap::new())),
-            node_store: NodeStore::InMemory(Mutex::new(HashMap::new())),
+            node_catalog: None,
             admin_api_token: Some("admin-secret".to_string()),
             jwt_keys: test_keys(),
             allow_legacy_customer_header: false,

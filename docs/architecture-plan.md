@@ -63,16 +63,17 @@ Current implemented tables:
 - `customers`
 - `oauth_identities`
 - `devices`
-- `vpn_nodes`
 - `sessions`
 - `audit_events`
 - `revoked_tokens`
 - `plans`
 - `customer_subscriptions`
 
+Node inventory is no longer sourced from Postgres. `entry` now reads node metadata from a blob-backed catalog document and overlays live health/capacity by polling `core` over gRPC.
+
 Currently encoded in existing tables/runtime logic rather than separate schema:
 - plan entitlements (`max_devices`, `allowed_regions`) are stored on `plans`
-- node selection metadata (`country_code`, `city_code`, `pool`, `capacity_peers`) is stored on `vpn_nodes`
+- node selection metadata (`country_code`, `city_code`, `pool`, `capacity_peers`) is stored in the node catalog document
 
 Not implemented yet as dedicated schema:
 - `node_pools` / `node_pool_membership`
@@ -134,12 +135,10 @@ Admin/Internal (`entry`):
 - `GET /v1/admin/privacy/audit-events`
 - `GET /v1/admin/core/status`
 - `GET /v1/admin/readiness`
-- `POST /v1/admin/nodes`
 - `POST /v1/admin/subscriptions`
 - `GET /v1/admin/subscriptions`
 - `GET /v1/admin/subscriptions/{customer_id}`
 - `GET /v1/admin/subscriptions/{customer_id}/history`
-- `POST /v1/internal/nodes/health`
 
 Internal gRPC (`core`):
 - `ConnectDevice`
@@ -164,7 +163,7 @@ What must change:
 ## Current Implementation Status
 Implemented:
 1. Subscription and entitlement schema + admin APIs.
-2. Region/country/city/pool-aware node selection using `vpn_nodes`.
+2. Region/country/city/pool-aware node selection using a blob-backed node catalog plus live gRPC health polling.
 3. Strict one-customer-one-active-session handling with reconnect reuse and plan gating.
 4. Privacy retention, audit persistence/export, and log redaction controls.
 5. Production guardrails for TLS, admin auth, OIDC, and secret loading.
