@@ -1,1 +1,1 @@
-pub fn crate_marker() {}
+pub mod oauth_stub;
