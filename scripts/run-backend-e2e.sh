@@ -8,4 +8,4 @@ if [[ -z "${TEST_DATABASE_URL:-}" ]]; then
 fi
 
 echo "Running backend OAuth e2e tests against ${TEST_DATABASE_URL}"
-cargo test -p backend-e2e -- --nocapture
+cargo test -p backend-e2e -- --nocapture --test-threads=1
