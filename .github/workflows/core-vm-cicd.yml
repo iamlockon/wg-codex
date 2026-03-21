@@ -49,9 +49,9 @@ jobs:
       TF_STACK_DIR: deploy/terraform/stacks/core-vm
       TF_PLAN_FILE: tfplan
       TF_PLAN_ARTIFACT: core-vm-tfplan
-      ALLOW_WG_CIDRS: ${{ env.DEFAULT_ALLOW_WG_CIDRS }}
-      ALLOW_CORE_GRPC_CIDRS: ${{ env.DEFAULT_ALLOW_CORE_GRPC_CIDRS }}
-      TF_STATE_BUCKET_LOCATION: ${{ env.DEFAULT_TF_STATE_BUCKET_LOCATION }}
+      ALLOW_WG_CIDRS: 0.0.0.0/0
+      ALLOW_CORE_GRPC_CIDRS: ""
+      TF_STATE_BUCKET_LOCATION: us-central1
       TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ inputs.region }}
       TF_VAR_zone: ${{ format('{0}-a', inputs.region) }}
@@ -63,6 +63,8 @@ jobs:
         env:
           GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           GCP_TERRAFORM_SA: ${{ secrets.GCP_TERRAFORM_SA }}
+          ROLLOUT_TLS_CERT_SECRET_REF: ${{ vars.CORE_ROLLOUT_TLS_CERT_SECRET_REF }}
+          ROLLOUT_TLS_KEY_SECRET_REF: ${{ vars.CORE_ROLLOUT_TLS_KEY_SECRET_REF }}
         run: |
           set -euo pipefail
 
@@ -91,8 +93,8 @@ jobs:
             exit 1
           fi
 
-          if { [ -n "${{ inputs.rollout_tls_cert_secret_ref }}" ] && [ -z "${{ inputs.rollout_tls_key_secret_ref }}" ]; } || \
-             { [ -z "${{ inputs.rollout_tls_cert_secret_ref }}" ] && [ -n "${{ inputs.rollout_tls_key_secret_ref }}" ]; }; then
+          if { [ -n "$ROLLOUT_TLS_CERT_SECRET_REF" ] && [ -z "$ROLLOUT_TLS_KEY_SECRET_REF" ]; } || \
+             { [ -z "$ROLLOUT_TLS_CERT_SECRET_REF" ] && [ -n "$ROLLOUT_TLS_KEY_SECRET_REF" ]; }; then
             echo "::error::rollout_tls_cert_secret_ref and rollout_tls_key_secret_ref must be provided together."
             exit 1
           fi

@@ -36,23 +36,23 @@ jobs:
       contents: read
       actions: write
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_PROJECT_ID || env.DEFAULT_PROJECT_ID }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_PROJECT_ID || 'wg-stg' }}
       GITHUB_REPOSITORY_FULL: ${{ github.repository }}
-      WORKLOAD_IDENTITY_POOL_ID: ${{ env.DEFAULT_WORKLOAD_IDENTITY_POOL_ID }}
-      WORKLOAD_IDENTITY_PROVIDER_ID: ${{ env.DEFAULT_WORKLOAD_IDENTITY_PROVIDER_ID }}
-      TERRAFORM_SERVICE_ACCOUNT_ID: ${{ env.DEFAULT_TERRAFORM_SERVICE_ACCOUNT_ID }}
-      NODE_CATALOG_BUCKET_NAME: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_NAME }}
-      NODE_CATALOG_BUCKET_LOCATION: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_LOCATION }}
-      NODE_CATALOG_BUCKET_STORAGE_CLASS: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_STORAGE_CLASS }}
-      TF_STATE_BUCKET_LOCATION: ${{ env.DEFAULT_TF_STATE_BUCKET_LOCATION }}
-      TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_PROJECT_ID || env.DEFAULT_PROJECT_ID }}
+      WORKLOAD_IDENTITY_POOL_ID: github-actions
+      WORKLOAD_IDENTITY_PROVIDER_ID: github-oidc
+      TERRAFORM_SERVICE_ACCOUNT_ID: gha-terraform
+      NODE_CATALOG_BUCKET_NAME: wg-codex-node-catalog-stg
+      NODE_CATALOG_BUCKET_LOCATION: us-central1
+      NODE_CATALOG_BUCKET_STORAGE_CLASS: STANDARD
+      TF_STATE_BUCKET_LOCATION: us-central1
+      TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_PROJECT_ID || 'wg-stg' }}
       TF_VAR_github_repository: ${{ github.repository }}
-      TF_VAR_workload_identity_pool_id: ${{ env.DEFAULT_WORKLOAD_IDENTITY_POOL_ID }}
-      TF_VAR_workload_identity_provider_id: ${{ env.DEFAULT_WORKLOAD_IDENTITY_PROVIDER_ID }}
-      TF_VAR_terraform_service_account_id: ${{ env.DEFAULT_TERRAFORM_SERVICE_ACCOUNT_ID }}
-      TF_VAR_node_catalog_bucket_name: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_NAME }}
-      TF_VAR_node_catalog_bucket_location: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_LOCATION }}
-      TF_VAR_node_catalog_bucket_storage_class: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_STORAGE_CLASS }}
+      TF_VAR_workload_identity_pool_id: github-actions
+      TF_VAR_workload_identity_provider_id: github-oidc
+      TF_VAR_terraform_service_account_id: gha-terraform
+      TF_VAR_node_catalog_bucket_name: wg-codex-node-catalog-stg
+      TF_VAR_node_catalog_bucket_location: us-central1
+      TF_VAR_node_catalog_bucket_storage_class: STANDARD
       TF_VAR_github_token: ${{ secrets.GH_ADMIN_TOKEN != '' && secrets.GH_ADMIN_TOKEN || github.token }}
       GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
       GITHUB_TOKEN: ${{ github.token }}
