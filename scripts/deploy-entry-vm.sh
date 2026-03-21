@@ -35,6 +35,7 @@ Optional options:
   --skip-build                      Skip cargo build step
   --entry-app-env <env>             Entry APP_ENV (default: development)
   --entry-bind-addr <addr>          ENTRY_BIND_ADDR (default: 0.0.0.0:8080)
+  --entry-database-url <value>      DATABASE_URL for entry persistence
   --entry-admin-token <token>       ADMIN_API_TOKEN for entry admin routes
   --entry-jwt-signing-keys <value>  APP_JWT_SIGNING_KEYS for entry JWT issuance
   --google-oidc-client-id <id>      GOOGLE_OIDC_CLIENT_ID for entry OAuth
@@ -45,6 +46,10 @@ Optional options:
   --entry-require-core-tls <bool>   APP_REQUIRE_CORE_TLS in entry (default: false)
   --entry-core-grpc-url <url>       CORE_GRPC_URL from entry to core (default: https://127.0.0.1:50051)
   --entry-core-tls-domain <name>    CORE_GRPC_TLS_DOMAIN (default: vm-name)
+  --entry-node-catalog-gcs-bucket <name>
+                                    APP_NODE_CATALOG_GCS_BUCKET for entry node discovery
+  --entry-node-catalog-gcs-object <path>
+                                    APP_NODE_CATALOG_GCS_OBJECT for entry node discovery
   --core-require-client-cert <bool> Require client cert for core gRPC (default: false)
   --tls-mode <self-signed|upload>   TLS material for entry->core client TLS (default: self-signed)
   --tls-server-crt-file <path>      Local client cert (required if --core-require-client-cert=true)
@@ -95,12 +100,15 @@ CREATE_ONLY=0
 
 ENTRY_APP_ENV="development"
 ENTRY_BIND_ADDR="0.0.0.0:8080"
+ENTRY_DATABASE_URL=""
 ENTRY_ADMIN_API_TOKEN="dev-admin-token"
 ENTRY_JWT_SIGNING_KEYS="v1:dev-only-signing-key-change-me"
 ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER="true"
 ENTRY_REQUIRE_CORE_TLS="false"
 ENTRY_CORE_GRPC_URL="https://127.0.0.1:50051"
 ENTRY_CORE_TLS_DOMAIN=""
+ENTRY_NODE_CATALOG_GCS_BUCKET=""
+ENTRY_NODE_CATALOG_GCS_OBJECT=""
 CORE_REQUIRE_CLIENT_CERT="false"
 GOOGLE_OIDC_CLIENT_ID=""
 GOOGLE_OIDC_CLIENT_SECRET=""
@@ -141,6 +149,7 @@ while [[ $# -gt 0 ]]; do
     --create-only) CREATE_ONLY=1; shift ;;
     --entry-app-env) ENTRY_APP_ENV="$2"; shift 2 ;;
     --entry-bind-addr) ENTRY_BIND_ADDR="$2"; shift 2 ;;
+    --entry-database-url) ENTRY_DATABASE_URL="$2"; shift 2 ;;
     --entry-admin-token) ENTRY_ADMIN_API_TOKEN="$2"; shift 2 ;;
     --entry-jwt-signing-keys) ENTRY_JWT_SIGNING_KEYS="$2"; shift 2 ;;
     --google-oidc-client-id) GOOGLE_OIDC_CLIENT_ID="$2"; shift 2 ;;
@@ -150,6 +159,8 @@ while [[ $# -gt 0 ]]; do
     --entry-require-core-tls) ENTRY_REQUIRE_CORE_TLS="$2"; shift 2 ;;
     --entry-core-grpc-url) ENTRY_CORE_GRPC_URL="$2"; shift 2 ;;
     --entry-core-tls-domain) ENTRY_CORE_TLS_DOMAIN="$2"; shift 2 ;;
+    --entry-node-catalog-gcs-bucket) ENTRY_NODE_CATALOG_GCS_BUCKET="$2"; shift 2 ;;
+    --entry-node-catalog-gcs-object) ENTRY_NODE_CATALOG_GCS_OBJECT="$2"; shift 2 ;;
     --core-require-client-cert) CORE_REQUIRE_CLIENT_CERT="$2"; shift 2 ;;
     --tls-mode) TLS_MODE="$2"; shift 2 ;;
     --tls-common-name) TLS_COMMON_NAME="$2"; shift 2 ;;
@@ -204,6 +215,13 @@ if [[ -n "$GOOGLE_OIDC_CLIENT_ID" || -n "$GOOGLE_OIDC_CLIENT_SECRET" || -n "$GOO
   fi
 fi
 
+if [[ -n "$ENTRY_NODE_CATALOG_GCS_BUCKET" || -n "$ENTRY_NODE_CATALOG_GCS_OBJECT" ]]; then
+  if [[ -z "$ENTRY_NODE_CATALOG_GCS_BUCKET" || -z "$ENTRY_NODE_CATALOG_GCS_OBJECT" ]]; then
+    echo "when configuring the entry node catalog, provide both of: --entry-node-catalog-gcs-bucket, --entry-node-catalog-gcs-object" >&2
+    exit 1
+  fi
+fi
+
 if [[ -z "$TLS_COMMON_NAME" ]]; then
   TLS_COMMON_NAME="$VM_NAME"
 fi
@@ -239,6 +257,38 @@ fi
 if [[ "$require_client_cert" == "true" && "$TLS_MODE" != "upload" ]]; then
   echo "--core-require-client-cert=true requires --tls-mode upload" >&2
   exit 1
+fi
+
+entry_app_env_lc="$(printf '%s' "$ENTRY_APP_ENV" | tr '[:upper:]' '[:lower:]')"
+if [[ "$entry_app_env_lc" == "production" ]]; then
+  if [[ -z "$ENTRY_DATABASE_URL" ]]; then
+    echo "--entry-database-url is required when --entry-app-env=production" >&2
+    exit 1
+  fi
+  if [[ -z "$ENTRY_ADMIN_API_TOKEN" ]]; then
+    echo "--entry-admin-token is required when --entry-app-env=production" >&2
+    exit 1
+  fi
+  if [[ -z "$ENTRY_JWT_SIGNING_KEYS" || "$ENTRY_JWT_SIGNING_KEYS" == "v1:dev-only-signing-key-change-me" ]]; then
+    echo "--entry-jwt-signing-keys must be set to a non-default value when --entry-app-env=production" >&2
+    exit 1
+  fi
+  if [[ "$ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER" == "true" || "$ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER" == "TRUE" || "$ENTRY_ALLOW_LEGACY_CUSTOMER_HEADER" == "1" ]]; then
+    echo "--entry-allow-legacy-customer-header must be false when --entry-app-env=production" >&2
+    exit 1
+  fi
+  if [[ "$require_core_tls" != "true" ]]; then
+    echo "--entry-require-core-tls=true is required when --entry-app-env=production" >&2
+    exit 1
+  fi
+  if [[ -z "$GOOGLE_OIDC_CLIENT_ID" || -z "$GOOGLE_OIDC_CLIENT_SECRET" || -z "$GOOGLE_OIDC_REDIRECT_URI" ]]; then
+    echo "Google OIDC settings are required when --entry-app-env=production" >&2
+    exit 1
+  fi
+  if [[ "$ENTRY_CORE_GRPC_URL" == "https://127.0.0.1:50051" && -z "$ENTRY_NODE_CATALOG_GCS_BUCKET" ]]; then
+    echo "production entry deploy requires --entry-core-grpc-url and/or node catalog configuration; localhost core target is not valid for split-service deployment" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$CREATE_ONLY" -eq 0 ]]; then
@@ -319,6 +369,7 @@ entry_env_file="${tmpdir}/wg-entry.env"
 cat >"$entry_env_file" <<EOF_ENV
 APP_ENV=${ENTRY_APP_ENV}
 ENTRY_BIND_ADDR=${ENTRY_BIND_ADDR}
+DATABASE_URL=${ENTRY_DATABASE_URL}
 CORE_GRPC_URL=${ENTRY_CORE_GRPC_URL}
 CORE_GRPC_TLS_DOMAIN=${ENTRY_CORE_TLS_DOMAIN}
 APP_REQUIRE_CORE_TLS=${ENTRY_REQUIRE_CORE_TLS}
@@ -343,6 +394,12 @@ GOOGLE_OIDC_CLIENT_ID=${GOOGLE_OIDC_CLIENT_ID}
 GOOGLE_OIDC_CLIENT_SECRET=${GOOGLE_OIDC_CLIENT_SECRET}
 GOOGLE_OIDC_REDIRECT_URI=${GOOGLE_OIDC_REDIRECT_URI}
 EOF_OIDC
+fi
+if [[ -n "$ENTRY_NODE_CATALOG_GCS_BUCKET" ]]; then
+  cat >>"$entry_env_file" <<EOF_CATALOG
+APP_NODE_CATALOG_GCS_BUCKET=${ENTRY_NODE_CATALOG_GCS_BUCKET}
+APP_NODE_CATALOG_GCS_OBJECT=${ENTRY_NODE_CATALOG_GCS_OBJECT}
+EOF_CATALOG
 fi
 
 GCLOUD_BASE=(gcloud --project "$PROJECT")

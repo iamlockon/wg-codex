@@ -15,6 +15,22 @@ on:
         description: GCP region for entry VM
         required: true
         default: us-central1
+      core_grpc_url:
+        description: Primary core gRPC URL for entry admin/readiness checks
+        required: false
+        default: ""
+      core_tls_domain:
+        description: TLS domain name entry should validate for core
+        required: false
+        default: ""
+      node_catalog_gcs_bucket:
+        description: Optional GCS bucket containing the entry node catalog
+        required: false
+        default: ""
+      node_catalog_gcs_object:
+        description: Optional GCS object path containing the entry node catalog JSON
+        required: false
+        default: ""
       action:
         description: Plan, apply or destroy
         required: true
@@ -62,6 +78,47 @@ jobs:
       TF_PLAN_ARTIFACT: "entry-vm-tfplan"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate workflow inputs and required secrets
+        if: inputs.action == 'apply'
+        run: |
+          if [ -z "$PROJECT_ID" ]; then
+            echo "::error::Missing required secret: GCP_PROJECT_ID"
+            exit 1
+          fi
+          if [ -z "${{ inputs.core_grpc_url }}" ]; then
+            echo "::error::core_grpc_url is required for apply."
+            exit 1
+          fi
+          if [ -z "${{ inputs.core_tls_domain }}" ]; then
+            echo "::error::core_tls_domain is required for apply."
+            exit 1
+          fi
+          if [ -z "${{ secrets.ENTRY_DATABASE_URL }}" ]; then
+            echo "::error::Missing required secret: ENTRY_DATABASE_URL"
+            exit 1
+          fi
+          if [ -z "${{ secrets.ENTRY_JWT_SIGNING_KEYS }}" ]; then
+            echo "::error::Missing required secret: ENTRY_JWT_SIGNING_KEYS"
+            exit 1
+          fi
+          if [ -z "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" ]; then
+            echo "::error::Missing required secret: ENTRY_ADMIN_API_TOKEN"
+            exit 1
+          fi
+          if [ -z "${{ secrets.CORE_GRPC_TLS_CA_CERT_PEM }}" ]; then
+            echo "::error::Missing required secret: CORE_GRPC_TLS_CA_CERT_PEM"
+            exit 1
+          fi
+          if [ -z "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}" ] || [ -z "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}" ] || [ -z "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}" ]; then
+            echo "::error::Missing one or more required GOOGLE_OIDC_* secrets."
+            exit 1
+          fi
+          if { [ -n "${{ inputs.node_catalog_gcs_bucket }}" ] && [ -z "${{ inputs.node_catalog_gcs_object }}" ]; } || \
+             { [ -z "${{ inputs.node_catalog_gcs_bucket }}" ] && [ -n "${{ inputs.node_catalog_gcs_object }}" ]; }; then
+            echo "::error::node_catalog_gcs_bucket and node_catalog_gcs_object must be provided together."
+            exit 1
+          fi
 
       - name: Reject plan with script provisioner
         if: inputs.provisioner == 'script' && inputs.action == 'plan'
@@ -203,14 +260,34 @@ jobs:
       - name: Deploy entry onto VM
         if: inputs.action == 'apply'
         run: |
-          scripts/deploy-entry-vm.sh \
-            --project "$PROJECT_ID" \
-            --vm-name "${{ inputs.vm_name }}" \
-            --zone "$ZONE" \
-            --entry-admin-token "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" \
-            --google-oidc-client-id "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}" \
-            --google-oidc-client-secret "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}" \
+          core_ca_file="${RUNNER_TEMP}/core-ca.pem"
+          printf '%s' '${{ secrets.CORE_GRPC_TLS_CA_CERT_PEM }}' > "$core_ca_file"
+
+          cmd=(scripts/deploy-entry-vm.sh
+            --project "$PROJECT_ID"
+            --vm-name "${{ inputs.vm_name }}"
+            --zone "$ZONE"
+            --entry-app-env production
+            --entry-database-url "${{ secrets.ENTRY_DATABASE_URL }}"
+            --entry-admin-token "${{ secrets.ENTRY_ADMIN_API_TOKEN }}"
+            --entry-jwt-signing-keys "${{ secrets.ENTRY_JWT_SIGNING_KEYS }}"
+            --entry-allow-legacy-customer-header false
+            --entry-require-core-tls true
+            --entry-core-grpc-url "${{ inputs.core_grpc_url }}"
+            --entry-core-tls-domain "${{ inputs.core_tls_domain }}"
+            --google-oidc-client-id "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}"
+            --google-oidc-client-secret "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}"
             --google-oidc-redirect-uri "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}"
+            --tls-mode upload
+            --tls-ca-file "$core_ca_file"
+          )
+
+          if [ -n "${{ inputs.node_catalog_gcs_bucket }}" ]; then
+            cmd+=(--entry-node-catalog-gcs-bucket "${{ inputs.node_catalog_gcs_bucket }}")
+            cmd+=(--entry-node-catalog-gcs-object "${{ inputs.node_catalog_gcs_object }}")
+          fi
+
+          "${cmd[@]}"
 
       - name: Destroy VM directly (script provisioner)
         if: inputs.action == 'destroy' && inputs.provisioner == 'script'

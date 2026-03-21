@@ -93,6 +93,15 @@ is_true() {
   [[ "$value" == "1" || "$value" == "true" || "$value" == "TRUE" ]]
 }
 
+extract_port() {
+  local addr="$1"
+  if [[ "$addr" =~ :([0-9]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
 CONFIG_FILE="scripts/deploy-core-vm.env"
 VM_NAME="wg-core-free"
 ZONE="us-west1-b"
@@ -264,6 +273,17 @@ if [[ -z "$CORE_NODE_ID" ]]; then
 fi
 if [[ -n "$CORE_NODE_ID" && ! "$CORE_NODE_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then
   echo "invalid --core-node-id: $CORE_NODE_ID (expected UUID format)" >&2
+  exit 1
+fi
+
+if ! [[ "$WG_LISTEN_PORT" =~ ^[0-9]+$ ]] || (( WG_LISTEN_PORT < 1 || WG_LISTEN_PORT > 65535 )); then
+  echo "invalid --wg-listen-port: $WG_LISTEN_PORT (expected 1-65535)" >&2
+  exit 1
+fi
+
+CORE_BIND_PORT="$(extract_port "$CORE_BIND_ADDR" || true)"
+if [[ -z "$CORE_BIND_PORT" ]] || ! [[ "$CORE_BIND_PORT" =~ ^[0-9]+$ ]] || (( CORE_BIND_PORT < 1 || CORE_BIND_PORT > 65535 )); then
+  echo "invalid --core-bind-addr: $CORE_BIND_ADDR (expected host:port)" >&2
   exit 1
 fi
 
@@ -440,9 +460,9 @@ if is_true "$ENSURE_FIREWALL"; then
     rule_prefix="wg-core"
   fi
 
-  ensure_firewall_rule "${rule_prefix}-wg-51820-udp" "udp:51820" "$ALLOW_WG_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
+  ensure_firewall_rule "${rule_prefix}-wg-${WG_LISTEN_PORT}-udp" "udp:${WG_LISTEN_PORT}" "$ALLOW_WG_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
   if [[ -n "$ALLOW_CORE_GRPC_CIDRS" ]]; then
-    ensure_firewall_rule "${rule_prefix}-core-50051" "tcp:50051" "$ALLOW_CORE_GRPC_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
+    ensure_firewall_rule "${rule_prefix}-core-${CORE_BIND_PORT}" "tcp:${CORE_BIND_PORT}" "$ALLOW_CORE_GRPC_CIDRS" "$firewall_network_value" "$NETWORK_TAGS"
   fi
 fi
 

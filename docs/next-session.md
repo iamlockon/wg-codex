@@ -144,7 +144,6 @@
 - Deployment assets added:
   - `services/entry/Dockerfile`
   - `services/core/Dockerfile`
-  - `deploy/terraform/stacks/core-vm` stack and reusable `deploy/terraform/modules/core_vm` module for VM-based rollout.
   - `docs/deployment-checklist.md`
 - CI workflow added (`.github/workflows/ci.yaml`):
   - Rust format/check/test on push/PR
@@ -154,6 +153,7 @@
     - `.github/workflows/entry-vm-cicd.yml` (entry),
     - `.github/workflows/core-vm-cicd.yml` (core),
     - plus manual checklist path in `docs/deployment-checklist.md`.
+  - Workflow/script/deploy-only PRs now also trigger CI validation.
 - `clients/windows-desktop/src-tauri`
   - Already uses substantial host gating:
     - Windows-only storage via `storage_windows`

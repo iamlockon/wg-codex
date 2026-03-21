@@ -3,7 +3,7 @@
 ## Preconditions
 - Provision infra with Terraform:
   - `deploy/terraform/stacks/bootstrap-oidc` (if GitHub OIDC is not bootstrapped yet)
-  - `deploy/terraform/stacks/core-vm`
+  - `deploy/terraform/stacks/entry-vm` (if you want Terraform-managed entry VM lifecycle)
 - Environment templates available:
   - `deploy/env/entry.env.example`
   - `deploy/env/core.env.example`
@@ -13,22 +13,23 @@
 
 ## Deploy
 1. Deploy `entry` VM:
-   - `scripts/deploy-entry-vm.sh --project <project-id> --vm-name <entry-vm-name> --zone <zone>`
+   - `scripts/deploy-entry-vm.sh --project <project-id> --vm-name <entry-vm-name> --zone <zone> --entry-app-env production --entry-database-url <database-url> --entry-admin-token <token> --entry-jwt-signing-keys <kid:secret> --entry-allow-legacy-customer-header false --entry-require-core-tls true --entry-core-grpc-url <https://core-host:50051> --entry-core-tls-domain <tls-domain> --google-oidc-client-id <id> --google-oidc-client-secret <secret> --google-oidc-redirect-uri <uri> --tls-mode upload --tls-ca-file <ca.pem>`
 2. For entry production settings, pass explicit flags/secrets as needed:
-   - `--entry-app-env production`
-   - `--entry-admin-token <token>`
-   - `--entry-jwt-signing-keys <kid:secret>`
-   - `--google-oidc-client-id <id>`
-   - `--google-oidc-client-secret <secret>`
-   - `--google-oidc-redirect-uri <uri>`
+   - `--entry-database-url <database-url>`
+   - `--entry-core-grpc-url <https://core-host:50051>`
+   - `--entry-core-tls-domain <tls-domain>`
+   - `--entry-node-catalog-gcs-bucket <bucket>` and `--entry-node-catalog-gcs-object <object>` when using catalog-backed discovery
 3. Deploy `core` VM on demand:
-   - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <core-vm-name> --zone <zone> --entry-admin-url <entry-admin-base-url> --entry-admin-token <token>`
-   - For private VPC-only access, use internal DNS with scheme (example: `http://wg-entry-gha.c.<project>.internal:8080`).
+   - `scripts/deploy-core-vm.sh --project <project-id> --vm-name <core-vm-name> --zone <zone>`
+   - For private VPC-only entry-to-core access, prefer internal DNS in `--entry-core-grpc-url` (example: `https://wg-core-us-west.c.<project>.internal:50051`).
 4. Optional for core deploy:
    - Provide a node catalog entry through the blob catalog consumed by `entry`; `core` no longer registers itself into `entry` over HTTP.
    - If entry should route to discovered nodes on a non-default gRPC port, set `grpc_port` in the catalog entry or `APP_CORE_NODE_GRPC_PORT` on entry.
 5. GitHub Actions paths:
    - `entry`: `.github/workflows/entry-vm-cicd.yml` deploys `entry` using `scripts/deploy-entry-vm.sh`.
+   - Required repository secrets: `ENTRY_DATABASE_URL`, `ENTRY_JWT_SIGNING_KEYS`, `ENTRY_ADMIN_API_TOKEN`, `CORE_GRPC_TLS_CA_CERT_PEM`, `GOOGLE_OIDC_CLIENT_ID`, `GOOGLE_OIDC_CLIENT_SECRET`, `GOOGLE_OIDC_REDIRECT_URI`.
+   - Required workflow inputs for apply: `core_grpc_url`, `core_tls_domain`.
+   - Optional workflow inputs for catalog-backed discovery: `node_catalog_gcs_bucket`, `node_catalog_gcs_object`.
    - Add VM without touching Terraform stack state: `action=apply`, `provisioner=script`, unique `vm_name`.
    - Terraform-managed VM flow: run `provisioner=terraform`, `action=plan`, then run `provisioner=terraform`, `action=apply` with `plan_run_id` from that plan run.
    - Set `region` to choose GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
