@@ -59,13 +59,13 @@ terraform apply
 - `.github/workflows/entry-vm-cicd.yml`: Terraform-only workflow for the `entry` VM stack.
   - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.
   - Supports `action=plan|apply|destroy`.
-  - `action=plan` requires rollout references and uploads a saved plan artifact.
+  - `action=plan` requires `rollout_artifact_ref` and `rollout_env_ref`, uploads a saved plan artifact, and reads low-frequency rollout overrides from repository variables such as `ENTRY_ROLLOUT_UNIT_REF` and related `ENTRY_ROLLOUT_*` values.
   - Uses the default `<region>-a` zone and auto-generated backend bucket/prefix instead of exposing those as dispatch inputs.
   - `action=apply` requires `plan_run_id` and applies the exact saved plan artifact from that workflow run.
 - `.github/workflows/core-vm-cicd.yml`: Terraform-only workflow for the `core` VM stack.
   - Uses the same shared backend initialization and saved-plan safety model as `entry`.
   - Supports `action=plan|apply|destroy`.
-  - `action=plan` requires rollout references and uploads a saved plan artifact.
+  - `action=plan` requires `rollout_artifact_ref` and `rollout_env_ref`, uploads a saved plan artifact, and reads low-frequency rollout overrides from repository variables such as `CORE_ROLLOUT_UNIT_REF` and related `CORE_ROLLOUT_*` values.
   - Uses the default `<region>-a` zone, default CIDR policy inputs, and auto-generated backend bucket/prefix instead of exposing those as dispatch inputs.
   - `action=apply` requires `plan_run_id` and applies the exact saved plan artifact from that workflow run.
 - `.github/workflows/bootstrap-infra.yml`: bootstrap workflow that provisions OIDC trust, writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`, and creates the required node catalog bucket.

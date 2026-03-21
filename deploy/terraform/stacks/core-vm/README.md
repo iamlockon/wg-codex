@@ -29,6 +29,7 @@ This stack manages the Terraform-owned core VM footprint:
 Use this with the `core-vm-cicd.yml` GitHub Actions workflow for automated VM stack operations:
 - all Terraform actions first run `scripts/terraform-init-gcs-backend.sh` to manage/init a shared GCS backend automatically
 - `action=plan` creates and uploads a Terraform plan artifact
+- the dispatch form exposes only the common rollout inputs; optional rollout overrides are read from repository variables `CORE_ROLLOUT_ARTIFACT_SHA256`, `CORE_ROLLOUT_UNIT_REF`, `CORE_ROLLOUT_PRIVATE_KEY_SECRET_REF`, `CORE_ROLLOUT_TLS_CERT_SECRET_REF`, `CORE_ROLLOUT_TLS_KEY_SECRET_REF`, and `CORE_ROLLOUT_TLS_CA_SECRET_REF`
 - `action=apply` requires `plan_run_id` and applies that exact saved plan
 - `action=destroy` runs direct destroy
 

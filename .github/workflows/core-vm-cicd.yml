@@ -21,32 +21,8 @@ on:
         description: "Artifact reference for wg-core startup metadata (for example gs://bucket/path/core)"
         required: false
         default: ""
-      rollout_artifact_sha256:
-        description: "Optional SHA-256 checksum for the core rollout artifact"
-        required: false
-        default: ""
       rollout_env_ref:
         description: "Environment payload reference for wg-core startup metadata (Secret Manager or GCS)"
-        required: false
-        default: ""
-      rollout_unit_ref:
-        description: "Optional systemd unit reference override for wg-core startup metadata"
-        required: false
-        default: ""
-      rollout_private_key_secret_ref:
-        description: "Optional Secret Manager reference for the WireGuard private key"
-        required: false
-        default: ""
-      rollout_tls_cert_secret_ref:
-        description: "Optional Secret Manager reference for the core TLS certificate"
-        required: false
-        default: ""
-      rollout_tls_key_secret_ref:
-        description: "Optional Secret Manager reference for the core TLS private key"
-        required: false
-        default: ""
-      rollout_tls_ca_secret_ref:
-        description: "Optional Secret Manager reference for the core client CA bundle"
         required: false
         default: ""
       plan_run_id:
@@ -135,13 +111,13 @@ jobs:
           ALLOW_WG_CIDRS: ${{ env.ALLOW_WG_CIDRS }}
           ALLOW_CORE_GRPC_CIDRS: ${{ env.ALLOW_CORE_GRPC_CIDRS }}
           ROLLOUT_ARTIFACT_REF: ${{ inputs.rollout_artifact_ref }}
-          ROLLOUT_ARTIFACT_SHA256: ${{ inputs.rollout_artifact_sha256 }}
+          ROLLOUT_ARTIFACT_SHA256: ${{ vars.CORE_ROLLOUT_ARTIFACT_SHA256 }}
           ROLLOUT_ENV_REF: ${{ inputs.rollout_env_ref }}
-          ROLLOUT_UNIT_REF: ${{ inputs.rollout_unit_ref }}
-          ROLLOUT_PRIVATE_KEY_SECRET_REF: ${{ inputs.rollout_private_key_secret_ref }}
-          ROLLOUT_TLS_CERT_SECRET_REF: ${{ inputs.rollout_tls_cert_secret_ref }}
-          ROLLOUT_TLS_KEY_SECRET_REF: ${{ inputs.rollout_tls_key_secret_ref }}
-          ROLLOUT_TLS_CA_SECRET_REF: ${{ inputs.rollout_tls_ca_secret_ref }}
+          ROLLOUT_UNIT_REF: ${{ vars.CORE_ROLLOUT_UNIT_REF }}
+          ROLLOUT_PRIVATE_KEY_SECRET_REF: ${{ vars.CORE_ROLLOUT_PRIVATE_KEY_SECRET_REF }}
+          ROLLOUT_TLS_CERT_SECRET_REF: ${{ vars.CORE_ROLLOUT_TLS_CERT_SECRET_REF }}
+          ROLLOUT_TLS_KEY_SECRET_REF: ${{ vars.CORE_ROLLOUT_TLS_KEY_SECRET_REF }}
+          ROLLOUT_TLS_CA_SECRET_REF: ${{ vars.CORE_ROLLOUT_TLS_CA_SECRET_REF }}
         run: |
           set -euo pipefail
 

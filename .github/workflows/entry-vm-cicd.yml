@@ -21,28 +21,8 @@ on:
         description: "Artifact reference for wg-entry startup metadata (for example gs://bucket/path/entry)"
         required: false
         default: ""
-      rollout_artifact_sha256:
-        description: "Optional SHA-256 checksum for the entry rollout artifact"
-        required: false
-        default: ""
       rollout_env_ref:
         description: "Environment payload reference for wg-entry startup metadata (Secret Manager or GCS)"
-        required: false
-        default: ""
-      rollout_unit_ref:
-        description: "Optional systemd unit reference override for wg-entry startup metadata"
-        required: false
-        default: ""
-      rollout_core_ca_secret_ref:
-        description: "Optional Secret Manager reference for the core CA certificate"
-        required: false
-        default: ""
-      rollout_core_client_cert_secret_ref:
-        description: "Optional Secret Manager reference for the core mTLS client certificate"
-        required: false
-        default: ""
-      rollout_core_client_key_secret_ref:
-        description: "Optional Secret Manager reference for the core mTLS client private key"
         required: false
         default: ""
       plan_run_id:
@@ -125,12 +105,12 @@ jobs:
       - name: Export optional Terraform variables
         env:
           ROLLOUT_ARTIFACT_REF: ${{ inputs.rollout_artifact_ref }}
-          ROLLOUT_ARTIFACT_SHA256: ${{ inputs.rollout_artifact_sha256 }}
+          ROLLOUT_ARTIFACT_SHA256: ${{ vars.ENTRY_ROLLOUT_ARTIFACT_SHA256 }}
           ROLLOUT_ENV_REF: ${{ inputs.rollout_env_ref }}
-          ROLLOUT_UNIT_REF: ${{ inputs.rollout_unit_ref }}
-          ROLLOUT_CORE_CA_SECRET_REF: ${{ inputs.rollout_core_ca_secret_ref }}
-          ROLLOUT_CORE_CLIENT_CERT_SECRET_REF: ${{ inputs.rollout_core_client_cert_secret_ref }}
-          ROLLOUT_CORE_CLIENT_KEY_SECRET_REF: ${{ inputs.rollout_core_client_key_secret_ref }}
+          ROLLOUT_UNIT_REF: ${{ vars.ENTRY_ROLLOUT_UNIT_REF }}
+          ROLLOUT_CORE_CA_SECRET_REF: ${{ vars.ENTRY_ROLLOUT_CORE_CA_SECRET_REF }}
+          ROLLOUT_CORE_CLIENT_CERT_SECRET_REF: ${{ vars.ENTRY_ROLLOUT_CORE_CLIENT_CERT_SECRET_REF }}
+          ROLLOUT_CORE_CLIENT_KEY_SECRET_REF: ${{ vars.ENTRY_ROLLOUT_CORE_CLIENT_KEY_SECRET_REF }}
         run: |
           set -euo pipefail
 

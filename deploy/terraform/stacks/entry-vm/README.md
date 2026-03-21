@@ -25,6 +25,7 @@ Set rollout variables before planning so the startup template can fetch the entr
 Use this with the `entry-vm-cicd.yml` GitHub Actions workflow for automated VM stack operations:
 - all Terraform actions first run `scripts/terraform-init-gcs-backend.sh` to manage/init a shared GCS backend automatically
 - `action=plan` creates and uploads a Terraform plan artifact
+- the dispatch form exposes only the common rollout inputs; optional rollout overrides are read from repository variables `ENTRY_ROLLOUT_ARTIFACT_SHA256`, `ENTRY_ROLLOUT_UNIT_REF`, `ENTRY_ROLLOUT_CORE_CA_SECRET_REF`, `ENTRY_ROLLOUT_CORE_CLIENT_CERT_SECRET_REF`, and `ENTRY_ROLLOUT_CORE_CLIENT_KEY_SECRET_REF`
 - `action=apply` requires `plan_run_id` and applies that exact saved plan
 - `action=destroy` runs direct destroy
 
