@@ -15,36 +15,42 @@ on:
         description: GCP region for entry VM
         required: true
         default: us-central1
-      core_grpc_url:
-        description: Primary core gRPC URL for entry admin/readiness checks
-        required: false
-        default: ""
-      core_tls_domain:
-        description: TLS domain name entry should validate for core
-        required: false
-        default: ""
-      node_catalog_gcs_bucket:
-        description: Optional GCS bucket containing the entry node catalog
-        required: false
-        default: ""
-      node_catalog_gcs_object:
-        description: Optional GCS object path containing the entry node catalog JSON
-        required: false
-        default: ""
       action:
-        description: Plan, apply or destroy
+        description: Terraform action
         required: true
         default: apply
         type: choice
         options: [plan, apply, destroy]
-      provisioner:
-        description: Infrastructure provisioner
-        required: true
-        default: script
-        type: choice
-        options: [script, terraform]
+      rollout_artifact_ref:
+        description: "Artifact reference for wg-entry startup metadata (for example gs://bucket/path/entry)"
+        required: false
+        default: ""
+      rollout_artifact_sha256:
+        description: "Optional SHA-256 checksum for the entry rollout artifact"
+        required: false
+        default: ""
+      rollout_env_ref:
+        description: "Environment payload reference for wg-entry startup metadata (Secret Manager or GCS)"
+        required: false
+        default: ""
+      rollout_unit_ref:
+        description: "Optional systemd unit reference override for wg-entry startup metadata"
+        required: false
+        default: ""
+      rollout_core_ca_secret_ref:
+        description: "Optional Secret Manager reference for the core CA certificate"
+        required: false
+        default: ""
+      rollout_core_client_cert_secret_ref:
+        description: "Optional Secret Manager reference for the core mTLS client certificate"
+        required: false
+        default: ""
+      rollout_core_client_key_secret_ref:
+        description: "Optional Secret Manager reference for the core mTLS client private key"
+        required: false
+        default: ""
       plan_run_id:
-        description: "Workflow run id that produced the Terraform plan artifact (required for provisioner=terraform + action=apply)"
+        description: "Workflow run id that produced the Terraform plan artifact (required for action=apply)"
         required: false
         default: ""
       tf_state_bucket:
@@ -60,6 +66,9 @@ on:
         required: false
         default: us-central1
 
+env:
+  TF_IN_AUTOMATION: "true"
+
 jobs:
   entry-vm:
     runs-on: ubuntu-latest
@@ -70,61 +79,58 @@ jobs:
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      TF_STACK_DIR: deploy/terraform/stacks/entry-vm
+      TF_PLAN_FILE: tfplan
+      TF_PLAN_ARTIFACT: entry-vm-tfplan
       TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
-      TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
       TF_VAR_region: ${{ inputs.region }}
+      TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
       TF_VAR_name: ${{ inputs.vm_name }}
-      TF_PLAN_FILE: "tfplan"
-      TF_PLAN_ARTIFACT: "entry-vm-tfplan"
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate workflow inputs and required secrets
-        if: inputs.action == 'apply'
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_TERRAFORM_SA: ${{ secrets.GCP_TERRAFORM_SA }}
         run: |
+          set -euo pipefail
+
           if [ -z "$PROJECT_ID" ]; then
             echo "::error::Missing required secret: GCP_PROJECT_ID"
             exit 1
           fi
-          if [ -z "${{ inputs.core_grpc_url }}" ]; then
-            echo "::error::core_grpc_url is required for apply."
-            exit 1
-          fi
-          if [ -z "${{ inputs.core_tls_domain }}" ]; then
-            echo "::error::core_tls_domain is required for apply."
-            exit 1
-          fi
-          if [ -z "${{ secrets.ENTRY_DATABASE_URL }}" ]; then
-            echo "::error::Missing required secret: ENTRY_DATABASE_URL"
-            exit 1
-          fi
-          if [ -z "${{ secrets.ENTRY_JWT_SIGNING_KEYS }}" ]; then
-            echo "::error::Missing required secret: ENTRY_JWT_SIGNING_KEYS"
-            exit 1
-          fi
-          if [ -z "${{ secrets.ENTRY_ADMIN_API_TOKEN }}" ]; then
-            echo "::error::Missing required secret: ENTRY_ADMIN_API_TOKEN"
-            exit 1
-          fi
-          if [ -z "${{ secrets.CORE_GRPC_TLS_CA_CERT_PEM }}" ]; then
-            echo "::error::Missing required secret: CORE_GRPC_TLS_CA_CERT_PEM"
-            exit 1
-          fi
-          if [ -z "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}" ] || [ -z "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}" ] || [ -z "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}" ]; then
-            echo "::error::Missing one or more required GOOGLE_OIDC_* secrets."
-            exit 1
-          fi
-          if { [ -n "${{ inputs.node_catalog_gcs_bucket }}" ] && [ -z "${{ inputs.node_catalog_gcs_object }}" ]; } || \
-             { [ -z "${{ inputs.node_catalog_gcs_bucket }}" ] && [ -n "${{ inputs.node_catalog_gcs_object }}" ]; }; then
-            echo "::error::node_catalog_gcs_bucket and node_catalog_gcs_object must be provided together."
+
+          if [ -z "$GCP_WORKLOAD_IDENTITY_PROVIDER" ]; then
+            echo "::error::Missing required secret: GCP_WORKLOAD_IDENTITY_PROVIDER"
             exit 1
           fi
 
-      - name: Reject plan with script provisioner
-        if: inputs.provisioner == 'script' && inputs.action == 'plan'
-        run: |
-          echo "::error::action=plan is only supported with provisioner=terraform."
-          exit 1
+          if [ -z "$GCP_TERRAFORM_SA" ]; then
+            echo "::error::Missing required secret: GCP_TERRAFORM_SA"
+            exit 1
+          fi
+
+          if [ -n "${{ inputs.tf_state_prefix }}" ] && [[ "${{ inputs.tf_state_prefix }}" != */entry-vm ]]; then
+            echo "::error::tf_state_prefix must end with /entry-vm when provided."
+            exit 1
+          fi
+
+          if [ "${{ inputs.action }}" = "plan" ] && [ -z "${{ inputs.rollout_artifact_ref }}" ]; then
+            echo "::error::rollout_artifact_ref is required for action=plan."
+            exit 1
+          fi
+
+          if [ "${{ inputs.action }}" = "plan" ] && [ -z "${{ inputs.rollout_env_ref }}" ]; then
+            echo "::error::rollout_env_ref is required for action=plan."
+            exit 1
+          fi
+
+          if { [ -n "${{ inputs.rollout_core_client_cert_secret_ref }}" ] && [ -z "${{ inputs.rollout_core_client_key_secret_ref }}" ]; } || \
+             { [ -z "${{ inputs.rollout_core_client_cert_secret_ref }}" ] && [ -n "${{ inputs.rollout_core_client_key_secret_ref }}" ]; }; then
+            echo "::error::rollout_core_client_cert_secret_ref and rollout_core_client_key_secret_ref must be provided together."
+            exit 1
+          fi
 
       - uses: google-github-actions/auth@v2
         with:
@@ -132,49 +138,75 @@ jobs:
           service_account: ${{ secrets.GCP_TERRAFORM_SA }}
 
       - uses: hashicorp/setup-terraform@v3
-        if: inputs.provisioner == 'terraform'
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Export optional Terraform variables
+        env:
+          ROLLOUT_ARTIFACT_REF: ${{ inputs.rollout_artifact_ref }}
+          ROLLOUT_ARTIFACT_SHA256: ${{ inputs.rollout_artifact_sha256 }}
+          ROLLOUT_ENV_REF: ${{ inputs.rollout_env_ref }}
+          ROLLOUT_UNIT_REF: ${{ inputs.rollout_unit_ref }}
+          ROLLOUT_CORE_CA_SECRET_REF: ${{ inputs.rollout_core_ca_secret_ref }}
+          ROLLOUT_CORE_CLIENT_CERT_SECRET_REF: ${{ inputs.rollout_core_client_cert_secret_ref }}
+          ROLLOUT_CORE_CLIENT_KEY_SECRET_REF: ${{ inputs.rollout_core_client_key_secret_ref }}
+        run: |
+          set -euo pipefail
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+          append_tf_var() {
+            local name="$1"
+            local value="$2"
+
+            if [ -n "$value" ]; then
+              printf 'TF_VAR_%s=%s\n' "$name" "$value" >>"$GITHUB_ENV"
+            fi
+          }
+
+          append_tf_var rollout_artifact_ref "$ROLLOUT_ARTIFACT_REF"
+          append_tf_var rollout_artifact_sha256 "$ROLLOUT_ARTIFACT_SHA256"
+          append_tf_var rollout_env_ref "$ROLLOUT_ENV_REF"
+          append_tf_var rollout_unit_ref "$ROLLOUT_UNIT_REF"
+          append_tf_var rollout_core_ca_secret_ref "$ROLLOUT_CORE_CA_SECRET_REF"
+          append_tf_var rollout_core_client_cert_secret_ref "$ROLLOUT_CORE_CLIENT_CERT_SECRET_REF"
+          append_tf_var rollout_core_client_key_secret_ref "$ROLLOUT_CORE_CLIENT_KEY_SECRET_REF"
 
       - name: Terraform init (shared GCS backend)
-        if: inputs.provisioner == 'terraform'
         run: |
           bash scripts/terraform-init-gcs-backend.sh \
-            "deploy/terraform/stacks/entry-vm" \
+            "$TF_STACK_DIR" \
             "$PROJECT_ID" \
             "${{ inputs.tf_state_bucket }}" \
             "${{ inputs.tf_state_prefix }}" \
             "${{ inputs.tf_state_bucket_location }}"
 
+      - name: Terraform validate (vm stack)
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: terraform validate
+
       - name: Terraform plan (vm stack)
-        if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
-        working-directory: deploy/terraform/stacks/entry-vm
+        if: inputs.action == 'plan'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
           set -o pipefail
           terraform plan -no-color -out="${TF_PLAN_FILE}" | tee terraform-plan.log
 
       - name: Upload Terraform plan artifact (vm stack)
-        if: inputs.provisioner == 'terraform' && inputs.action == 'plan'
+        if: inputs.action == 'plan'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/entry-vm/${{ env.TF_PLAN_FILE }}
+          path: ${{ env.TF_STACK_DIR }}/${{ env.TF_PLAN_FILE }}
           if-no-files-found: error
 
       - name: Summarize Terraform plan (vm stack)
-        if: always() && inputs.provisioner == 'terraform' && inputs.action == 'plan'
-        working-directory: deploy/terraform/stacks/entry-vm
+        if: always() && inputs.action == 'plan'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
           plan_summary="$(grep -E '^Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.$' terraform-plan.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-plan.log | head -n 1 || true)"
 
           {
-            echo "## Terraform plan (vm stack)"
+            echo "## Terraform plan (entry VM stack)"
             echo ""
             echo "- plan_run_id: ${{ github.run_id }}"
             echo "- Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -185,42 +217,42 @@ jobs:
             else
               echo "- Plan summary not found. Check the Terraform plan step logs."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Require plan run id for Terraform apply
-        if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
+        if: inputs.action == 'apply'
         run: |
           if [ -z "${{ inputs.plan_run_id }}" ]; then
-            echo "::error::plan_run_id is required for provisioner=terraform + action=apply. Run action=plan first, then pass that run id to apply."
+            echo "::error::plan_run_id is required for action=apply. Run action=plan first, then pass that run id to apply."
             exit 1
           fi
 
       - name: Download Terraform plan artifact (vm stack)
-        if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
+        if: inputs.action == 'apply'
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/entry-vm
+          path: ${{ env.TF_STACK_DIR }}
           repository: ${{ github.repository }}
           run-id: ${{ inputs.plan_run_id }}
           github-token: ${{ github.token }}
 
       - name: Terraform apply (vm stack)
-        if: inputs.provisioner == 'terraform' && inputs.action == 'apply'
-        working-directory: deploy/terraform/stacks/entry-vm
+        if: inputs.action == 'apply'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
           set -o pipefail
           terraform apply -no-color -auto-approve "${TF_PLAN_FILE}" | tee terraform-apply.log
 
       - name: Summarize Terraform apply (vm stack)
-        if: always() && inputs.provisioner == 'terraform' && inputs.action == 'apply'
-        working-directory: deploy/terraform/stacks/entry-vm
+        if: always() && inputs.action == 'apply'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
           apply_summary="$(grep -E '^Apply complete! Resources: [0-9]+ added, [0-9]+ changed, [0-9]+ destroyed\.$' terraform-apply.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-apply.log | head -n 1 || true)"
 
           {
-            echo "## Terraform apply (vm stack)"
+            echo "## Terraform apply (entry VM stack)"
             echo ""
             if [ -n "$apply_summary" ]; then
               echo "- $apply_summary"
@@ -229,24 +261,24 @@ jobs:
             else
               echo "- Apply summary not found. Check the Terraform apply step logs."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Terraform destroy (vm stack)
-        if: inputs.provisioner == 'terraform' && inputs.action == 'destroy'
-        working-directory: deploy/terraform/stacks/entry-vm
+        if: inputs.action == 'destroy'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
           set -o pipefail
           terraform destroy -no-color -auto-approve | tee terraform-destroy.log
 
       - name: Summarize Terraform destroy (vm stack)
-        if: always() && inputs.provisioner == 'terraform' && inputs.action == 'destroy'
-        working-directory: deploy/terraform/stacks/entry-vm
+        if: always() && inputs.action == 'destroy'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
           destroy_summary="$(grep -E '^Destroy complete! Resources: [0-9]+ destroyed\.$' terraform-destroy.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-destroy.log | head -n 1 || true)"
 
           {
-            echo "## Terraform destroy (vm stack)"
+            echo "## Terraform destroy (entry VM stack)"
             echo ""
             if [ -n "$destroy_summary" ]; then
               echo "- $destroy_summary"
@@ -255,41 +287,4 @@ jobs:
             else
               echo "- Destroy summary not found. Check the Terraform destroy step logs."
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Deploy entry onto VM
-        if: inputs.action == 'apply'
-        run: |
-          core_ca_file="${RUNNER_TEMP}/core-ca.pem"
-          printf '%s' '${{ secrets.CORE_GRPC_TLS_CA_CERT_PEM }}' > "$core_ca_file"
-
-          cmd=(scripts/deploy-entry-vm.sh
-            --project "$PROJECT_ID"
-            --vm-name "${{ inputs.vm_name }}"
-            --zone "$ZONE"
-            --entry-app-env production
-            --entry-database-url "${{ secrets.ENTRY_DATABASE_URL }}"
-            --entry-admin-token "${{ secrets.ENTRY_ADMIN_API_TOKEN }}"
-            --entry-jwt-signing-keys "${{ secrets.ENTRY_JWT_SIGNING_KEYS }}"
-            --entry-allow-legacy-customer-header false
-            --entry-require-core-tls true
-            --entry-core-grpc-url "${{ inputs.core_grpc_url }}"
-            --entry-core-tls-domain "${{ inputs.core_tls_domain }}"
-            --google-oidc-client-id "${{ secrets.GOOGLE_OIDC_CLIENT_ID }}"
-            --google-oidc-client-secret "${{ secrets.GOOGLE_OIDC_CLIENT_SECRET }}"
-            --google-oidc-redirect-uri "${{ secrets.GOOGLE_OIDC_REDIRECT_URI }}"
-            --tls-mode upload
-            --tls-ca-file "$core_ca_file"
-          )
-
-          if [ -n "${{ inputs.node_catalog_gcs_bucket }}" ]; then
-            cmd+=(--entry-node-catalog-gcs-bucket "${{ inputs.node_catalog_gcs_bucket }}")
-            cmd+=(--entry-node-catalog-gcs-object "${{ inputs.node_catalog_gcs_object }}")
-          fi
-
-          "${cmd[@]}"
-
-      - name: Destroy VM directly (script provisioner)
-        if: inputs.action == 'destroy' && inputs.provisioner == 'script'
-        run: |
-          gcloud --project "$PROJECT_ID" compute instances delete "${{ inputs.vm_name }}" --zone "$ZONE" --quiet
+          } >>"$GITHUB_STEP_SUMMARY"

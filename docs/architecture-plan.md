@@ -38,6 +38,12 @@
 - Authenticated internal health/reporting endpoints only.
 - Strict admin API token handling now; migrate to workload identity + signed internal auth.
 
+## VM Rollout Model
+- Terraform-managed GCE startup templates now define the VM rollout contract for both `entry` and `core`.
+- Service binaries are expected as artifact references, typically `gs://` GCS object paths plus optional SHA-256 checksums, so boot-time startup can fetch and verify them without SSH/scp file pushes.
+- Environment payloads, TLS materials, and WireGuard key material are expected as runtime references, preferably Secret Manager `sm://...` refs surfaced through Terraform variables and instance metadata keys.
+- The startup flow materializes referenced env files and secrets onto the VM before systemd starts the service, preserving the existing `*_FILE` secret loading model.
+
 ## High-level Request Flows
 
 ### Start Session (consumer)
@@ -115,7 +121,7 @@ Session states:
   - short retention for session metadata,
   - redact sensitive identifiers in logs.
 - GCP Secret Manager for secrets and key material.
-- Runtime supports `*_FILE` secret loading for key/token/OIDC values to align with mounted secret workflows.
+- Runtime supports `*_FILE` secret loading for key/token/OIDC values to align with mounted secret workflows and startup-fetched secret_ref material.
 - Strict RBAC for admin/internal endpoints.
 - Security telemetry for abuse, auth anomalies, and suspicious session churn.
 

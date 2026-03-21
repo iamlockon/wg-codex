@@ -1,0 +1,403 @@
+#!/usr/bin/env bash
+
+# Shared helpers for Terraform-rendered GCE startup scripts.
+# Foundation intent:
+# - keep bootstrap logic shell-safe and reusable across entry/core;
+# - support runtime fetches from GCS and Secret Manager references;
+# - leave room for later tasks to widen the metadata/input surface.
+
+set -Eeuo pipefail
+
+readonly WG_STARTUP_METADATA_ROOT="http://metadata.google.internal/computeMetadata/v1"
+readonly WG_STARTUP_METADATA_HEADER="Metadata-Flavor: Google"
+
+_wg_startup_access_token=""
+
+log() {
+  printf '[wg-startup] %s\n' "$*"
+}
+
+warn() {
+  printf '[wg-startup] warning: %s\n' "$*" >&2
+}
+
+fail() {
+  printf '[wg-startup] error: %s\n' "$*" >&2
+  exit 1
+}
+
+startup_err_trap() {
+  local line="$1"
+  local command="$2"
+  fail "startup script failed at line $line while running: $command"
+}
+
+ensure_root() {
+  if [[ "$(id -u)" -ne 0 ]]; then
+    fail "startup scripts must run as root"
+  fi
+}
+
+ensure_directory() {
+  local path="$1"
+  local mode="$2"
+  install -d -m "$mode" "$path"
+}
+
+ensure_apt_packages() {
+  local missing=()
+  local pkg
+
+  for pkg in "$@"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+      missing+=("$pkg")
+    fi
+  done
+
+  if [[ $${#missing[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends "$${missing[@]}"
+}
+
+metadata_path() {
+  local path="$1"
+
+  curl -fsSL -H "$WG_STARTUP_METADATA_HEADER" "$WG_STARTUP_METADATA_ROOT/$path"
+}
+
+metadata_value() {
+  local key="$1"
+
+  metadata_path "instance/attributes/$key"
+}
+
+metadata_value_or_default() {
+  local key="$1"
+  local fallback="$2"
+  local value
+
+  if value="$(metadata_value "$key" 2>/dev/null)"; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$fallback"
+  fi
+}
+
+require_metadata() {
+  local key="$1"
+  local value
+
+  value="$(metadata_value_or_default "$key" "")"
+  if [[ -z "$value" ]]; then
+    fail "required instance metadata key is missing: $key"
+  fi
+
+  printf '%s' "$value"
+}
+
+gce_access_token() {
+  local token
+  local output_var="${1:-}"
+
+  if [[ -n "$_wg_startup_access_token" ]]; then
+    token="$_wg_startup_access_token"
+  else
+    token="$(metadata_path "instance/service-accounts/default/token" | jq -r '.access_token')"
+    if [[ -z "$token" || "$token" == "null" ]]; then
+      fail "failed to obtain a GCE access token from the attached service account"
+    fi
+
+    _wg_startup_access_token="$token"
+  fi
+
+  if [[ -n "$output_var" ]]; then
+    printf -v "$output_var" '%s' "$token"
+    return 0
+  fi
+
+  printf '%s' "$token"
+}
+
+url_encode() {
+  local value="$1"
+
+  jq -rn --arg value "$value" '$value | @uri'
+}
+
+fetch_reference_to_file() {
+  local ref="$1"
+  local dest="$2"
+  local token
+  local bucket
+  local object_path
+  local object_url
+  local secret_resource
+  local secret_payload
+
+  case "$ref" in
+    gs://*)
+      if [[ ! "$ref" =~ ^gs://([^/]+)/(.+)$ ]]; then
+        fail "invalid gs:// reference: $ref"
+      fi
+
+      bucket="$${BASH_REMATCH[1]}"
+      object_path="$${BASH_REMATCH[2]}"
+      object_url="https://storage.googleapis.com/storage/v1/b/$bucket/o/$(url_encode "$object_path")?alt=media"
+      gce_access_token token
+      curl -fsSL -H "Authorization: Bearer $token" "$object_url" -o "$dest"
+      ;;
+    sm://projects/*)
+      secret_resource="$${ref#sm://}"
+      gce_access_token token
+      secret_payload="$(
+        curl -fsSL \
+          -H "Authorization: Bearer $token" \
+          "https://secretmanager.googleapis.com/v1/$secret_resource:access"
+      )"
+      printf '%s' "$secret_payload" | jq -r '.payload.data' | base64 -d >"$dest"
+      ;;
+    sm://*)
+      if [[ ! "$ref" =~ ^sm://([^/]+)/([^/]+)/([^/]+)$ ]]; then
+        fail "invalid Secret Manager reference: $ref"
+      fi
+
+      secret_resource="projects/$${BASH_REMATCH[1]}/secrets/$${BASH_REMATCH[2]}/versions/$${BASH_REMATCH[3]}"
+      gce_access_token token
+      secret_payload="$(
+        curl -fsSL \
+          -H "Authorization: Bearer $token" \
+          "https://secretmanager.googleapis.com/v1/$secret_resource:access"
+      )"
+      printf '%s' "$secret_payload" | jq -r '.payload.data' | base64 -d >"$dest"
+      ;;
+    https://*|http://*)
+      curl -fsSL "$ref" -o "$dest"
+      ;;
+    /*)
+      cp "$ref" "$dest"
+      ;;
+    *)
+      fail "unsupported runtime reference: $ref"
+      ;;
+  esac
+}
+
+materialize_metadata_payload() {
+  local ref_key="$1"
+  local inline_b64_key="$2"
+  local dest="$3"
+  local mode="$4"
+  local label="$5"
+  local required="$${6:-false}"
+  local ref
+  local inline_b64
+
+  ref="$(metadata_value_or_default "$ref_key" "")"
+  inline_b64="$(metadata_value_or_default "$inline_b64_key" "")"
+
+  if [[ -n "$ref" && -n "$inline_b64" ]]; then
+    fail "$label is over-specified; provide either $ref_key or $inline_b64_key"
+  fi
+
+  if [[ -n "$ref" ]]; then
+    fetch_reference_to_file "$ref" "$dest"
+    chmod "$mode" "$dest"
+    return 0
+  fi
+
+  if [[ -n "$inline_b64" ]]; then
+    printf '%s' "$inline_b64" | base64 -d >"$dest"
+    chmod "$mode" "$dest"
+    return 0
+  fi
+
+  if [[ "$required" == "true" ]]; then
+    fail "$label is required; set instance metadata $ref_key or $inline_b64_key"
+  fi
+
+  return 1
+}
+
+verify_sha256_if_set() {
+  local path="$1"
+  local expected="$2"
+  local actual
+
+  if [[ -z "$expected" ]]; then
+    return 0
+  fi
+
+  actual="$(sha256sum "$path" | awk '{print $1}')"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "sha256 mismatch for $path: expected $expected, got $actual"
+  fi
+}
+
+write_systemd_unit() {
+  local unit_path="$1"
+  local description="$2"
+  local env_path="$3"
+  local exec_path="$4"
+
+  cat >"$unit_path" <<EOF
+[Unit]
+Description=$description
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$env_path
+ExecStart=$exec_path
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+wait_for_service_active() {
+  local unit_name="$1"
+  local timeout_seconds="$2"
+  local deadline
+
+  deadline=$((SECONDS + timeout_seconds))
+  while ! systemctl is-active --quiet "$unit_name"; do
+    if (( SECONDS >= deadline )); then
+      systemctl --no-pager --full status "$unit_name" || true
+      journalctl --no-pager -u "$unit_name" -n 100 || true
+      fail "timed out waiting for $unit_name to become active"
+    fi
+    sleep 2
+  done
+}
+
+wait_for_http_ok() {
+  local url="$1"
+  local timeout_seconds="$2"
+  local deadline
+
+  deadline=$((SECONDS + timeout_seconds))
+  while ! curl -fsSL "$url" >/dev/null; do
+    if (( SECONDS >= deadline )); then
+      fail "timed out waiting for HTTP healthcheck: $url"
+    fi
+    sleep 2
+  done
+}
+
+wait_for_tcp_port() {
+  local host="$1"
+  local port="$2"
+  local timeout_seconds="$3"
+  local deadline
+
+  deadline=$((SECONDS + timeout_seconds))
+  while ! timeout 1 bash -c ":</dev/tcp/$host/$port" >/dev/null 2>&1; do
+    if (( SECONDS >= deadline )); then
+      fail "timed out waiting for TCP port $host:$port"
+    fi
+    sleep 2
+  done
+}
+
+read_env_value() {
+  local env_path="$1"
+  local key="$2"
+  local fallback="$${3:-}"
+  local value
+  local line
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == "$key"=* ]]; then
+      value="$${line#*=}"
+      case "$value" in
+        \"*\")
+          value="$${value:1:-1}"
+          ;;
+        \'*\')
+          value="$${value:1:-1}"
+          ;;
+      esac
+      printf '%s' "$value"
+      return 0
+    fi
+  done <"$env_path"
+
+  printf '%s' "$fallback"
+}
+
+env_flag_enabled() {
+  local env_path="$1"
+  local key="$2"
+  local default_value="$${3:-false}"
+  local value
+
+  value="$(read_env_value "$env_path" "$key" "$default_value")"
+  case "$value" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+set_env_value() {
+  local env_path="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_path
+
+  tmp_path="$(mktemp)"
+  awk -F= -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    $1 == key {
+      print key "=" value
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=" value
+      }
+    }
+  ' "$env_path" >"$tmp_path"
+  mv "$tmp_path" "$env_path"
+}
+
+extract_port() {
+  local bind_addr="$1"
+
+  if [[ "$bind_addr" =~ :([0-9]+)$ ]]; then
+    printf '%s' "$${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+stable_uuid_from_string() {
+  local seed="$1"
+  local hash
+
+  hash="$(printf '%s' "$seed" | sha256sum | awk '{print $1}')"
+  printf '%s-%s-%s-%s-%s' \
+    "$${hash:0:8}" \
+    "$${hash:8:4}" \
+    "$${hash:12:4}" \
+    "$${hash:16:4}" \
+    "$${hash:20:12}"
+}
+
+metadata_external_ip() {
+  metadata_path "instance/network-interfaces/0/access-configs/0/external-ip"
+}

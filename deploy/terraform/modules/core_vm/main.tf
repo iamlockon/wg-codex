@@ -1,6 +1,6 @@
 locals {
   rendered_startup_script = var.startup_script != null ? var.startup_script : templatefile(
-    "${path.module}/../../../startup/entry-startup.sh.tmpl",
+    "${path.module}/../../../startup/core-startup.sh.tmpl",
     {
       common_sh = templatefile("${path.module}/../../../startup/lib/common.sh.tmpl", {})
     }
@@ -8,13 +8,14 @@ locals {
 
   rollout_metadata = {
     for key, value in {
-      "wg-entry-artifact-ref"         = var.rollout_artifact_ref
-      "wg-entry-artifact-sha256"      = var.rollout_artifact_sha256
-      "wg-entry-env-ref"              = var.rollout_env_ref
-      "wg-entry-unit-ref"             = var.rollout_unit_ref
-      "wg-entry-core-ca-ref"          = var.rollout_core_ca_secret_ref
-      "wg-entry-core-client-cert-ref" = var.rollout_core_client_cert_secret_ref
-      "wg-entry-core-client-key-ref"  = var.rollout_core_client_key_secret_ref
+      "wg-core-artifact-ref"    = var.rollout_artifact_ref
+      "wg-core-artifact-sha256" = var.rollout_artifact_sha256
+      "wg-core-env-ref"         = var.rollout_env_ref
+      "wg-core-unit-ref"        = var.rollout_unit_ref
+      "wg-core-private-key-ref" = var.rollout_private_key_secret_ref
+      "wg-core-tls-cert-ref"    = var.rollout_tls_cert_secret_ref
+      "wg-core-tls-key-ref"     = var.rollout_tls_key_secret_ref
+      "wg-core-tls-ca-ref"      = var.rollout_tls_ca_secret_ref
     } : key => value if value != null
   }
 
@@ -63,21 +64,6 @@ resource "google_compute_instance" "core" {
   }
 }
 
-resource "google_compute_firewall" "entry" {
-  count   = var.create_firewall ? 1 : 0
-  name    = "${var.name}-allow-entry"
-  network = var.network
-  project = var.project_id
-
-  allow {
-    protocol = "tcp"
-    ports    = ["8080"]
-  }
-
-  source_ranges = var.allow_entry_cidrs
-  target_tags   = var.network_tags
-}
-
 resource "google_compute_firewall" "wireguard" {
   count   = var.create_firewall ? 1 : 0
   name    = "${var.name}-allow-wireguard"
@@ -90,5 +76,20 @@ resource "google_compute_firewall" "wireguard" {
   }
 
   source_ranges = var.allow_wireguard_cidrs
+  target_tags   = var.network_tags
+}
+
+resource "google_compute_firewall" "core_grpc" {
+  count   = var.create_firewall && length(var.allow_core_grpc_cidrs) > 0 ? 1 : 0
+  name    = "${var.name}-allow-core-grpc"
+  network = var.network
+  project = var.project_id
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(var.core_grpc_port)]
+  }
+
+  source_ranges = var.allow_core_grpc_cidrs
   target_tags   = var.network_tags
 }

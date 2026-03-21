@@ -5,13 +5,11 @@
 - `scripts/run-db-integration-tests.sh`
   - Runs the DB-backed integration suites against `TEST_DATABASE_URL`.
 
-- `scripts/deploy-entry-vm.sh`
-  - Deploys only the `entry` service onto a GCE VM.
-  - Used by `.github/workflows/entry-vm-cicd.yml` for CI-driven entry VM rollout.
+## VM deployment guidance
 
-- `scripts/deploy-core-vm.sh`
-  - Deploys only the `core` service onto a GCE VM.
-  - Used by `.github/workflows/core-vm-cicd.yml` for CI-driven core VM rollout.
+- VM rollout is Terraform-only.
+  - Use `.github/workflows/entry-vm-cicd.yml` and `.github/workflows/core-vm-cicd.yml` for plan/apply.
+  - See `docs/deployment-checklist.md` and `deploy/terraform/README.md` for the current deployment flow.
 
 ## Useful manual diagnostics
 

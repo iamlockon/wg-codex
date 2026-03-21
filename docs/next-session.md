@@ -3,6 +3,8 @@
 ## Recent Changes
 - Bootstrap infra path renamed from `bootstrap-oidc` / `.github/workflows/bootstrap-gcp-oidc.yml` to `bootstrap-infra` / `.github/workflows/bootstrap-infra.yml`.
 - The bootstrap Terraform stack now owns creation of the required entry node catalog GCS bucket.
+- `entry` and `core` VM workflows are now Terraform-only and use saved `plan` -> `apply` promotion with `plan_run_id`.
+- VM rollout inputs now flow through Terraform startup metadata references rather than direct SSH/scp deploy scripts.
 
 ## Current Status
 - Workspace has separate deployable services:
@@ -157,6 +159,7 @@
     - `.github/workflows/entry-vm-cicd.yml` (entry),
     - `.github/workflows/core-vm-cicd.yml` (core),
     - plus manual checklist path in `docs/deployment-checklist.md`.
+  - The supported VM deployment path is now Terraform-only; the old deploy scripts are no longer described as an operational path.
   - Workflow/script/deploy-only PRs now also trigger CI validation.
 - `clients/windows-desktop/src-tauri`
   - Already uses substantial host gating:
@@ -193,11 +196,11 @@
 - Native NAT rollout still requires environment validation before promoting it as the default runtime mode.
 
 ## Priority Next Steps
-1. Run VM deployment validation end-to-end with `scripts/deploy-entry-vm.sh` (entry) and `scripts/deploy-core-vm.sh` (core) and confirm readiness/admin API behavior.
-2. Validate `WG_NAT_DRIVER=native` in VM environments and, once stable, switch production default from `cli` to `native`.
-3. Add auditable privacy policy toggles and retention/redaction conformance checks.
-4. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
-5. Run end-to-end Windows host validation (real WireGuard for Windows + DPAPI behavior), then harden packaging and signing for the shipped Tauri UI.
+1. Run Terraform workflow validation end-to-end for both `.github/workflows/entry-vm-cicd.yml` and `.github/workflows/core-vm-cicd.yml`, then confirm readiness/admin API behavior on the resulting VMs.
+2. Run a final repo sweep for stale references to the retired VM deploy scripts and keep the Terraform-only rollout docs aligned with live workflows.
+3. Validate `WG_NAT_DRIVER=native` in VM environments and, once stable, switch production default from `cli` to `native`.
+4. Add auditable privacy policy toggles and retention/redaction conformance checks.
+5. Expand subscription reporting semantics (count endpoints, richer filters, and export flows) for large-scale operations.
 
 ## Open Risks / Watch Items
 - Reconnect semantics must remain tied to reusable `session_key` while preventing hijack/replay.

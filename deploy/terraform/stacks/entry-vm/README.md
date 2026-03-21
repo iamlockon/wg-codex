@@ -13,11 +13,19 @@ export PROJECT_ID=<PROJECT_ID>
 
 cd deploy/terraform/stacks/entry-vm
 cp terraform.tfvars.example terraform.tfvars
+terraform plan
 terraform apply
 ```
 
+Set rollout variables before planning so the startup template can fetch the entry binary and runtime configuration:
+- `rollout_artifact_ref` and optionally `rollout_artifact_sha256` for the entry binary in GCS
+- `rollout_env_ref` for the rendered `entry` environment payload
+- optional `rollout_unit_ref`, `rollout_core_ca_secret_ref`, `rollout_core_client_cert_secret_ref`, and `rollout_core_client_key_secret_ref`
+
 Use this with the `entry-vm-cicd.yml` GitHub Actions workflow for automated VM stack operations:
-- all Terraform actions first run `scripts/terraform-init-gcs-backend.sh` to manage/init a shared GCS backend automatically.
-- `provisioner=terraform`, `action=plan` creates and uploads a Terraform plan artifact.
-- `provisioner=terraform`, `action=apply` requires `plan_run_id` and applies that exact saved plan.
-- `provisioner=terraform`, `action=destroy` runs direct destroy.
+- all Terraform actions first run `scripts/terraform-init-gcs-backend.sh` to manage/init a shared GCS backend automatically
+- `action=plan` creates and uploads a Terraform plan artifact
+- `action=apply` requires `plan_run_id` and applies that exact saved plan
+- `action=destroy` runs direct destroy
+
+The workflow no longer supports direct SSH/script provisioning. Terraform is the supported VM deploy path for `entry`.

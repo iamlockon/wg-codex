@@ -16,64 +16,131 @@ on:
         required: true
         default: us-central1
       action:
-        description: Apply or destroy
+        description: Terraform action
         required: true
         default: apply
         type: choice
-        options: [apply, destroy]
+        options: [plan, apply, destroy]
       allow_wg_cidrs:
-        description: Source CIDRs allowed to reach WireGuard UDP/51820
+        description: Source CIDRs allowed to reach WireGuard UDP/51820 (comma-separated)
         required: false
         default: 0.0.0.0/0
       allow_core_grpc_cidrs:
-        description: Optional source CIDRs allowed to reach core gRPC TCP/50051
+        description: Optional source CIDRs allowed to reach core gRPC TCP/50051 (comma-separated)
         required: false
         default: ""
-      wg_nat_driver:
-        description: Dataplane NAT mode for core
-        required: true
-        default: cli
-        type: choice
-        options: [cli, native]
-      app_env:
-        description: APP_ENV passed to core
-        required: true
-        default: production
-      core_bind_addr:
-        description: CORE_BIND_ADDR
-        required: true
-        default: 0.0.0.0:50051
-      core_require_tls:
-        description: CORE_REQUIRE_TLS
-        required: true
-        default: "true"
-        type: choice
-        options: ["true", "false"]
-      core_require_client_cert:
-        description: CORE_REQUIRE_CLIENT_CERT
-        required: true
-        default: "false"
-        type: choice
-        options: ["false", "true"]
+      rollout_artifact_ref:
+        description: "Artifact reference for wg-core startup metadata (for example gs://bucket/path/core)"
+        required: false
+        default: ""
+      rollout_artifact_sha256:
+        description: "Optional SHA-256 checksum for the core rollout artifact"
+        required: false
+        default: ""
+      rollout_env_ref:
+        description: "Environment payload reference for wg-core startup metadata (Secret Manager or GCS)"
+        required: false
+        default: ""
+      rollout_unit_ref:
+        description: "Optional systemd unit reference override for wg-core startup metadata"
+        required: false
+        default: ""
+      rollout_private_key_secret_ref:
+        description: "Optional Secret Manager reference for the WireGuard private key"
+        required: false
+        default: ""
+      rollout_tls_cert_secret_ref:
+        description: "Optional Secret Manager reference for the core TLS certificate"
+        required: false
+        default: ""
+      rollout_tls_key_secret_ref:
+        description: "Optional Secret Manager reference for the core TLS private key"
+        required: false
+        default: ""
+      rollout_tls_ca_secret_ref:
+        description: "Optional Secret Manager reference for the core client CA bundle"
+        required: false
+        default: ""
+      plan_run_id:
+        description: "Workflow run id that produced the Terraform plan artifact (required for action=apply)"
+        required: false
+        default: ""
+      tf_state_bucket:
+        description: "Optional GCS bucket name for Terraform state (auto-generated when empty)"
+        required: false
+        default: "wg-codex-tfstate-stg"
+      tf_state_prefix:
+        description: "Optional backend state object prefix (must end with /core-vm; defaults to terraform/core-vm)"
+        required: false
+        default: ""
+      tf_state_bucket_location:
+        description: "GCS location to use when creating the state bucket"
+        required: false
+        default: us-central1
+
+env:
+  TF_IN_AUTOMATION: "true"
 
 jobs:
   core-vm:
-    # Keep the build host glibc <= Debian 12 VM glibc (2.36) to avoid runtime
-    # loader failures like: `GLIBC_2.39 not found` when starting /usr/local/bin/core.
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read
       id-token: write
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      TF_STACK_DIR: deploy/terraform/stacks/core-vm
+      TF_PLAN_FILE: tfplan
+      TF_PLAN_ARTIFACT: core-vm-tfplan
+      TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+      TF_VAR_region: ${{ inputs.region }}
+      TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      TF_VAR_name: ${{ inputs.vm_name }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate workflow inputs and required secrets
+        env:
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_TERRAFORM_SA: ${{ secrets.GCP_TERRAFORM_SA }}
         run: |
+          set -euo pipefail
+
           if [ -z "$PROJECT_ID" ]; then
             echo "::error::Missing required secret: GCP_PROJECT_ID"
+            exit 1
+          fi
+
+          if [ -z "$GCP_WORKLOAD_IDENTITY_PROVIDER" ]; then
+            echo "::error::Missing required secret: GCP_WORKLOAD_IDENTITY_PROVIDER"
+            exit 1
+          fi
+
+          if [ -z "$GCP_TERRAFORM_SA" ]; then
+            echo "::error::Missing required secret: GCP_TERRAFORM_SA"
+            exit 1
+          fi
+
+          if [ -n "${{ inputs.tf_state_prefix }}" ] && [[ "${{ inputs.tf_state_prefix }}" != */core-vm ]]; then
+            echo "::error::tf_state_prefix must end with /core-vm when provided."
+            exit 1
+          fi
+
+          if [ "${{ inputs.action }}" = "plan" ] && [ -z "${{ inputs.rollout_artifact_ref }}" ]; then
+            echo "::error::rollout_artifact_ref is required for action=plan."
+            exit 1
+          fi
+
+          if [ "${{ inputs.action }}" = "plan" ] && [ -z "${{ inputs.rollout_env_ref }}" ]; then
+            echo "::error::rollout_env_ref is required for action=plan."
+            exit 1
+          fi
+
+          if { [ -n "${{ inputs.rollout_tls_cert_secret_ref }}" ] && [ -z "${{ inputs.rollout_tls_key_secret_ref }}" ]; } || \
+             { [ -z "${{ inputs.rollout_tls_cert_secret_ref }}" ] && [ -n "${{ inputs.rollout_tls_key_secret_ref }}" ]; }; then
+            echo "::error::rollout_tls_cert_secret_ref and rollout_tls_key_secret_ref must be provided together."
             exit 1
           fi
 
@@ -82,48 +149,173 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_TERRAFORM_SA }}
 
+      - uses: hashicorp/setup-terraform@v3
+
       - uses: google-github-actions/setup-gcloud@v2
 
-      - uses: dtolnay/rust-toolchain@stable
-        if: inputs.action == 'apply'
-
-      - name: Cache cargo
-        if: inputs.action == 'apply'
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install native nft build dependencies
-        if: inputs.action == 'apply' && inputs.wg_nat_driver == 'native'
+      - name: Export optional Terraform variables
+        env:
+          ALLOW_WG_CIDRS: ${{ inputs.allow_wg_cidrs }}
+          ALLOW_CORE_GRPC_CIDRS: ${{ inputs.allow_core_grpc_cidrs }}
+          ROLLOUT_ARTIFACT_REF: ${{ inputs.rollout_artifact_ref }}
+          ROLLOUT_ARTIFACT_SHA256: ${{ inputs.rollout_artifact_sha256 }}
+          ROLLOUT_ENV_REF: ${{ inputs.rollout_env_ref }}
+          ROLLOUT_UNIT_REF: ${{ inputs.rollout_unit_ref }}
+          ROLLOUT_PRIVATE_KEY_SECRET_REF: ${{ inputs.rollout_private_key_secret_ref }}
+          ROLLOUT_TLS_CERT_SECRET_REF: ${{ inputs.rollout_tls_cert_secret_ref }}
+          ROLLOUT_TLS_KEY_SECRET_REF: ${{ inputs.rollout_tls_key_secret_ref }}
+          ROLLOUT_TLS_CA_SECRET_REF: ${{ inputs.rollout_tls_ca_secret_ref }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libmnl-dev libnftnl-dev
+          set -euo pipefail
 
-      - name: Deploy core onto VM
+          append_tf_var() {
+            local name="$1"
+            local value="$2"
+
+            if [ -n "$value" ]; then
+              printf 'TF_VAR_%s=%s\n' "$name" "$value" >>"$GITHUB_ENV"
+            fi
+          }
+
+          append_tf_list_var() {
+            local name="$1"
+            local value="$2"
+            local encoded
+
+            if [ -z "$value" ]; then
+              return 0
+            fi
+
+            encoded="$(python3 -c 'import json, sys; print(json.dumps([item.strip() for item in sys.argv[1].split(",") if item.strip()]))' "$value")"
+            printf 'TF_VAR_%s=%s\n' "$name" "$encoded" >>"$GITHUB_ENV"
+          }
+
+          append_tf_list_var allow_wireguard_cidrs "$ALLOW_WG_CIDRS"
+          append_tf_list_var allow_core_grpc_cidrs "$ALLOW_CORE_GRPC_CIDRS"
+          append_tf_var rollout_artifact_ref "$ROLLOUT_ARTIFACT_REF"
+          append_tf_var rollout_artifact_sha256 "$ROLLOUT_ARTIFACT_SHA256"
+          append_tf_var rollout_env_ref "$ROLLOUT_ENV_REF"
+          append_tf_var rollout_unit_ref "$ROLLOUT_UNIT_REF"
+          append_tf_var rollout_private_key_secret_ref "$ROLLOUT_PRIVATE_KEY_SECRET_REF"
+          append_tf_var rollout_tls_cert_secret_ref "$ROLLOUT_TLS_CERT_SECRET_REF"
+          append_tf_var rollout_tls_key_secret_ref "$ROLLOUT_TLS_KEY_SECRET_REF"
+          append_tf_var rollout_tls_ca_secret_ref "$ROLLOUT_TLS_CA_SECRET_REF"
+
+      - name: Terraform init (shared GCS backend)
+        run: |
+          bash scripts/terraform-init-gcs-backend.sh \
+            "$TF_STACK_DIR" \
+            "$PROJECT_ID" \
+            "${{ inputs.tf_state_bucket }}" \
+            "${{ inputs.tf_state_prefix }}" \
+            "${{ inputs.tf_state_bucket_location }}"
+
+      - name: Terraform validate (vm stack)
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: terraform validate
+
+      - name: Terraform plan (vm stack)
+        if: inputs.action == 'plan'
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: |
+          set -o pipefail
+          terraform plan -no-color -out="${TF_PLAN_FILE}" | tee terraform-plan.log
+
+      - name: Upload Terraform plan artifact (vm stack)
+        if: inputs.action == 'plan'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TF_PLAN_ARTIFACT }}
+          path: ${{ env.TF_STACK_DIR }}/${{ env.TF_PLAN_FILE }}
+          if-no-files-found: error
+
+      - name: Summarize Terraform plan (vm stack)
+        if: always() && inputs.action == 'plan'
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: |
+          plan_summary="$(grep -E '^Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.$' terraform-plan.log | tail -n 1 || true)"
+          no_changes_summary="$(grep -E '^No changes\.' terraform-plan.log | head -n 1 || true)"
+
+          {
+            echo "## Terraform plan (core VM stack)"
+            echo ""
+            echo "- plan_run_id: ${{ github.run_id }}"
+            echo "- Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            if [ -n "$plan_summary" ]; then
+              echo "- $plan_summary"
+            elif [ -n "$no_changes_summary" ]; then
+              echo "- $no_changes_summary"
+            else
+              echo "- Plan summary not found. Check the Terraform plan step logs."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Require plan run id for Terraform apply
         if: inputs.action == 'apply'
         run: |
-          cmd=(scripts/deploy-core-vm.sh
-            --project "$PROJECT_ID"
-            --vm-name "${{ inputs.vm_name }}"
-            --zone "$ZONE"
-            --app-env "${{ inputs.app_env }}"
-            --core-bind-addr "${{ inputs.core_bind_addr }}"
-            --core-require-tls "${{ inputs.core_require_tls }}"
-            --core-require-client-cert "${{ inputs.core_require_client_cert }}"
-            --allow-wg-cidrs "${{ inputs.allow_wg_cidrs }}"
-          )
-
-          if [ "${{ inputs.wg_nat_driver }}" = "native" ]; then
-            cmd+=(--native-nft)
-          else
-            cmd+=(--wg-nat-driver cli)
+          if [ -z "${{ inputs.plan_run_id }}" ]; then
+            echo "::error::plan_run_id is required for action=apply. Run action=plan first, then pass that run id to apply."
+            exit 1
           fi
 
-          if [ -n "${{ inputs.allow_core_grpc_cidrs }}" ]; then
-            cmd+=(--allow-core-grpc-cidrs "${{ inputs.allow_core_grpc_cidrs }}")
-          fi
+      - name: Download Terraform plan artifact (vm stack)
+        if: inputs.action == 'apply'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.TF_PLAN_ARTIFACT }}
+          path: ${{ env.TF_STACK_DIR }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
 
-          "${cmd[@]}"
+      - name: Terraform apply (vm stack)
+        if: inputs.action == 'apply'
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: |
+          set -o pipefail
+          terraform apply -no-color -auto-approve "${TF_PLAN_FILE}" | tee terraform-apply.log
 
-      - name: Destroy VM directly
+      - name: Summarize Terraform apply (vm stack)
+        if: always() && inputs.action == 'apply'
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: |
+          apply_summary="$(grep -E '^Apply complete! Resources: [0-9]+ added, [0-9]+ changed, [0-9]+ destroyed\.$' terraform-apply.log | tail -n 1 || true)"
+          no_changes_summary="$(grep -E '^No changes\.' terraform-apply.log | head -n 1 || true)"
+
+          {
+            echo "## Terraform apply (core VM stack)"
+            echo ""
+            if [ -n "$apply_summary" ]; then
+              echo "- $apply_summary"
+            elif [ -n "$no_changes_summary" ]; then
+              echo "- $no_changes_summary"
+            else
+              echo "- Apply summary not found. Check the Terraform apply step logs."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Terraform destroy (vm stack)
         if: inputs.action == 'destroy'
+        working-directory: ${{ env.TF_STACK_DIR }}
         run: |
-          gcloud --project "$PROJECT_ID" compute instances delete "${{ inputs.vm_name }}" --zone "$ZONE" --quiet
+          set -o pipefail
+          terraform destroy -no-color -auto-approve | tee terraform-destroy.log
+
+      - name: Summarize Terraform destroy (vm stack)
+        if: always() && inputs.action == 'destroy'
+        working-directory: ${{ env.TF_STACK_DIR }}
+        run: |
+          destroy_summary="$(grep -E '^Destroy complete! Resources: [0-9]+ destroyed\.$' terraform-destroy.log | tail -n 1 || true)"
+          no_changes_summary="$(grep -E '^No changes\.' terraform-destroy.log | head -n 1 || true)"
+
+          {
+            echo "## Terraform destroy (core VM stack)"
+            echo ""
+            if [ -n "$destroy_summary" ]; then
+              echo "- $destroy_summary"
+            elif [ -n "$no_changes_summary" ]; then
+              echo "- $no_changes_summary"
+            else
+              echo "- Destroy summary not found. Check the Terraform destroy step logs."
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"

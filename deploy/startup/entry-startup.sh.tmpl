@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+# Terraform-only rollout foundation for the entry VM.
+# Expected instance metadata keys:
+# - wg-entry-artifact-ref (required)
+# - wg-entry-artifact-sha256 (optional)
+# - wg-entry-env-ref or wg-entry-env-inline-b64 (required)
+# - wg-entry-unit-ref or wg-entry-unit-inline-b64 (optional)
+# - wg-entry-core-ca-ref or wg-entry-core-ca-inline-b64 (required when APP_REQUIRE_CORE_TLS=true or CORE_GRPC_TLS_CA_CERT_PATH is set)
+# - wg-entry-core-client-cert-ref or wg-entry-core-client-cert-inline-b64 (required when CORE_GRPC_TLS_CLIENT_CERT_PATH is set)
+# - wg-entry-core-client-key-ref or wg-entry-core-client-key-inline-b64 (required when CORE_GRPC_TLS_CLIENT_KEY_PATH is set)
+# - wg-entry-healthcheck-url (optional, default http://127.0.0.1:8080/healthz)
+
+set -Eeuo pipefail
+umask 027
+
+readonly WG_STARTUP_ROOT="/opt/wg-startup"
+readonly WG_COMMON_PATH="$WG_STARTUP_ROOT/common.sh"
+
+mkdir -p "$WG_STARTUP_ROOT"
+cat >"$WG_COMMON_PATH" <<'EOF_COMMON'
+${common_sh}
+EOF_COMMON
+chmod 0644 "$WG_COMMON_PATH"
+
+# shellcheck source=/opt/wg-startup/common.sh
+source "$WG_COMMON_PATH"
+trap 'startup_err_trap $LINENO "$BASH_COMMAND"' ERR
+
+main() {
+  local artifact_ref
+  local artifact_sha
+  local env_path
+  local unit_path
+  local healthcheck_url
+  local artifact_tmp
+  local require_core_tls=false
+  local require_client_cert=false
+  local require_client_key=false
+
+  log "bootstrapping wg-entry startup foundation"
+  ensure_root
+  ensure_apt_packages ca-certificates curl jq
+
+  ensure_directory /usr/local/bin 0755
+  ensure_directory /etc/default 0755
+  ensure_directory /etc/systemd/system 0755
+  ensure_directory /etc/core-tls 0700
+
+  artifact_ref="$(require_metadata "wg-entry-artifact-ref")"
+  artifact_sha="$(metadata_value_or_default "wg-entry-artifact-sha256" "")"
+  healthcheck_url="$(metadata_value_or_default "wg-entry-healthcheck-url" "http://127.0.0.1:8080/healthz")"
+
+  env_path="/etc/default/wg-entry"
+  unit_path="/etc/systemd/system/wg-entry.service"
+
+  materialize_metadata_payload \
+    "wg-entry-env-ref" \
+    "wg-entry-env-inline-b64" \
+    "$env_path" \
+    "0600" \
+    "entry environment file" \
+    true
+
+  if env_flag_enabled "$env_path" "APP_REQUIRE_CORE_TLS" "false"; then
+    require_core_tls=true
+  elif [[ -n "$(read_env_value "$env_path" "CORE_GRPC_TLS_CA_CERT_PATH" "")" ]]; then
+    require_core_tls=true
+  fi
+
+  if [[ -n "$(read_env_value "$env_path" "CORE_GRPC_TLS_CLIENT_CERT_PATH" "")" ]]; then
+    require_client_cert=true
+  fi
+
+  if [[ -n "$(read_env_value "$env_path" "CORE_GRPC_TLS_CLIENT_KEY_PATH" "")" ]]; then
+    require_client_key=true
+  fi
+
+  if materialize_metadata_payload \
+    "wg-entry-core-ca-ref" \
+    "wg-entry-core-ca-inline-b64" \
+    "/etc/core-tls/ca.pem" \
+    "0644" \
+    "entry core CA certificate" \
+    "$require_core_tls"; then
+    set_env_value "$env_path" "CORE_GRPC_TLS_CA_CERT_PATH" "/etc/core-tls/ca.pem"
+  fi
+
+  if materialize_metadata_payload \
+    "wg-entry-core-client-cert-ref" \
+    "wg-entry-core-client-cert-inline-b64" \
+    "/etc/core-tls/client.crt" \
+    "0644" \
+    "entry core client certificate" \
+    "$require_client_cert"; then
+    set_env_value "$env_path" "CORE_GRPC_TLS_CLIENT_CERT_PATH" "/etc/core-tls/client.crt"
+  fi
+
+  if materialize_metadata_payload \
+    "wg-entry-core-client-key-ref" \
+    "wg-entry-core-client-key-inline-b64" \
+    "/etc/core-tls/client.key" \
+    "0600" \
+    "entry core client key" \
+    "$require_client_key"; then
+    set_env_value "$env_path" "CORE_GRPC_TLS_CLIENT_KEY_PATH" "/etc/core-tls/client.key"
+  fi
+
+  artifact_tmp="$(mktemp)"
+  fetch_reference_to_file "$artifact_ref" "$artifact_tmp"
+  verify_sha256_if_set "$artifact_tmp" "$artifact_sha"
+  install -m 0755 "$artifact_tmp" /usr/local/bin/entry
+
+  if ! materialize_metadata_payload \
+    "wg-entry-unit-ref" \
+    "wg-entry-unit-inline-b64" \
+    "$unit_path" \
+    "0644" \
+    "entry systemd unit" \
+    false; then
+    write_systemd_unit "$unit_path" "WG Entry Service" "$env_path" "/usr/local/bin/entry"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable wg-entry.service
+  systemctl reset-failed wg-entry.service || true
+  systemctl restart wg-entry.service
+
+  wait_for_service_active wg-entry.service 60
+  wait_for_http_ok "$healthcheck_url" 60
+  systemctl --no-pager --full status wg-entry.service || true
+  log "wg-entry startup foundation completed"
+}
+
+main "$@"

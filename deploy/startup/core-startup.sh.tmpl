@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+
+# Terraform-only rollout foundation for the core VM.
+# Expected instance metadata keys:
+# - wg-core-artifact-ref (required)
+# - wg-core-artifact-sha256 (optional)
+# - wg-core-env-ref or wg-core-env-inline-b64 (required)
+# - wg-core-unit-ref or wg-core-unit-inline-b64 (optional)
+# - wg-core-private-key-ref or wg-core-private-key-inline-b64 (optional)
+# - wg-core-tls-cert-ref or wg-core-tls-cert-inline-b64 (required when CORE_REQUIRE_TLS=true or CORE_TLS_CERT_PATH is set)
+# - wg-core-tls-key-ref or wg-core-tls-key-inline-b64 (required when CORE_REQUIRE_TLS=true or CORE_TLS_KEY_PATH is set)
+# - wg-core-tls-ca-ref or wg-core-tls-ca-inline-b64 (required when CORE_TLS_CLIENT_CA_CERT_PATH is set)
+# - wg-core-server-public-key (optional override)
+
+set -Eeuo pipefail
+umask 027
+
+readonly WG_STARTUP_ROOT="/opt/wg-startup"
+readonly WG_COMMON_PATH="$WG_STARTUP_ROOT/common.sh"
+
+mkdir -p "$WG_STARTUP_ROOT"
+cat >"$WG_COMMON_PATH" <<'EOF_COMMON'
+${common_sh}
+EOF_COMMON
+chmod 0644 "$WG_COMMON_PATH"
+
+# shellcheck source=/opt/wg-startup/common.sh
+source "$WG_COMMON_PATH"
+trap 'startup_err_trap $LINENO "$BASH_COMMAND"' ERR
+
+ensure_tls_metadata_destination() {
+  local dest="$1"
+  local path_key="$2"
+  local label="$3"
+  local ref_key="$4"
+  local inline_b64_key="$5"
+
+  if [[ -z "$(metadata_value_or_default "$ref_key" "")" && -z "$(metadata_value_or_default "$inline_b64_key" "")" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$dest" ]]; then
+    fail "$label metadata was provided via $ref_key or $inline_b64_key, but $path_key is not set in the effective wg-core environment"
+  fi
+}
+
+main() {
+  local artifact_ref
+  local artifact_sha
+  local env_path
+  local unit_path
+  local artifact_tmp
+  local core_bind_addr
+  local core_grpc_port
+  local egress_iface
+  local endpoint_template
+  local listen_port
+  local node_id
+  local server_public_key
+  local instance_name
+  local instance_id
+  local core_tls_cert_path
+  local core_tls_key_path
+  local core_tls_client_ca_path
+  local require_server_cert=false
+  local require_server_key=false
+  local require_client_ca=false
+
+  log "bootstrapping wg-core startup foundation"
+  ensure_root
+  ensure_apt_packages ca-certificates curl jq iproute2 nftables uuid-runtime wireguard-tools
+
+  ensure_directory /usr/local/bin 0755
+  ensure_directory /etc/default 0755
+  ensure_directory /etc/systemd/system 0755
+  ensure_directory /etc/wireguard 0700
+  ensure_directory /etc/core-tls 0700
+
+  artifact_ref="$(require_metadata "wg-core-artifact-ref")"
+  artifact_sha="$(metadata_value_or_default "wg-core-artifact-sha256" "")"
+  env_path="/etc/default/wg-core"
+  unit_path="/etc/systemd/system/wg-core.service"
+
+  materialize_metadata_payload \
+    "wg-core-env-ref" \
+    "wg-core-env-inline-b64" \
+    "$env_path" \
+    "0600" \
+    "core environment file" \
+    true
+
+  artifact_tmp="$(mktemp)"
+  fetch_reference_to_file "$artifact_ref" "$artifact_tmp"
+  verify_sha256_if_set "$artifact_tmp" "$artifact_sha"
+  install -m 0755 "$artifact_tmp" /usr/local/bin/core
+
+  set_env_value "$env_path" "WG_PRIVATE_KEY_PATH" "/etc/wireguard/private.key"
+  core_tls_cert_path="$(read_env_value "$env_path" "CORE_TLS_CERT_PATH" "")"
+  core_tls_key_path="$(read_env_value "$env_path" "CORE_TLS_KEY_PATH" "")"
+  core_tls_client_ca_path="$(read_env_value "$env_path" "CORE_TLS_CLIENT_CA_CERT_PATH" "")"
+
+  if env_flag_enabled "$env_path" "CORE_REQUIRE_TLS" "false"; then
+    if [[ -z "$core_tls_cert_path" ]]; then
+      core_tls_cert_path="/etc/core-tls/server.crt"
+      set_env_value "$env_path" "CORE_TLS_CERT_PATH" "$core_tls_cert_path"
+    fi
+    if [[ -z "$core_tls_key_path" ]]; then
+      core_tls_key_path="/etc/core-tls/server.key"
+      set_env_value "$env_path" "CORE_TLS_KEY_PATH" "$core_tls_key_path"
+    fi
+  fi
+
+  if [[ -n "$core_tls_cert_path" ]]; then
+    require_server_cert=true
+  fi
+
+  if [[ -n "$core_tls_key_path" ]]; then
+    require_server_key=true
+  fi
+
+  if [[ -n "$core_tls_client_ca_path" ]]; then
+    require_client_ca=true
+  fi
+
+  if [[ -n "$core_tls_cert_path" ]]; then
+    ensure_directory "$(dirname "$core_tls_cert_path")" 0700
+  fi
+
+  if [[ -n "$core_tls_key_path" ]]; then
+    ensure_directory "$(dirname "$core_tls_key_path")" 0700
+  fi
+
+  if [[ -n "$core_tls_client_ca_path" ]]; then
+    ensure_directory "$(dirname "$core_tls_client_ca_path")" 0700
+  fi
+
+  ensure_tls_metadata_destination \
+    "$core_tls_cert_path" \
+    "CORE_TLS_CERT_PATH" \
+    "core TLS certificate" \
+    "wg-core-tls-cert-ref" \
+    "wg-core-tls-cert-inline-b64"
+
+  ensure_tls_metadata_destination \
+    "$core_tls_key_path" \
+    "CORE_TLS_KEY_PATH" \
+    "core TLS private key" \
+    "wg-core-tls-key-ref" \
+    "wg-core-tls-key-inline-b64"
+
+  ensure_tls_metadata_destination \
+    "$core_tls_client_ca_path" \
+    "CORE_TLS_CLIENT_CA_CERT_PATH" \
+    "core TLS CA certificate" \
+    "wg-core-tls-ca-ref" \
+    "wg-core-tls-ca-inline-b64"
+
+  if materialize_metadata_payload \
+    "wg-core-private-key-ref" \
+    "wg-core-private-key-inline-b64" \
+    "/etc/wireguard/private.key" \
+    "0600" \
+    "core WireGuard private key" \
+    false; then
+    log "installed WireGuard private key from instance metadata"
+  elif [[ ! -s /etc/wireguard/private.key ]]; then
+    umask 077
+    wg genkey >/etc/wireguard/private.key
+  fi
+
+  materialize_metadata_payload \
+    "wg-core-tls-cert-ref" \
+    "wg-core-tls-cert-inline-b64" \
+    "$core_tls_cert_path" \
+    "0644" \
+    "core TLS certificate" \
+    "$require_server_cert"
+
+  materialize_metadata_payload \
+    "wg-core-tls-key-ref" \
+    "wg-core-tls-key-inline-b64" \
+    "$core_tls_key_path" \
+    "0600" \
+    "core TLS private key" \
+    "$require_server_key"
+
+  materialize_metadata_payload \
+    "wg-core-tls-ca-ref" \
+    "wg-core-tls-ca-inline-b64" \
+    "$core_tls_client_ca_path" \
+    "0644" \
+    "core TLS CA certificate" \
+    "$require_client_ca"
+
+  if ! materialize_metadata_payload \
+    "wg-core-unit-ref" \
+    "wg-core-unit-inline-b64" \
+    "$unit_path" \
+    "0644" \
+    "core systemd unit" \
+    false; then
+    write_systemd_unit "$unit_path" "WG Core Service" "$env_path" "/usr/local/bin/core"
+  fi
+
+  server_public_key="$(metadata_value_or_default "wg-core-server-public-key" "")"
+  if [[ -z "$server_public_key" ]]; then
+    server_public_key="$(wg pubkey </etc/wireguard/private.key)"
+  fi
+  set_env_value "$env_path" "WG_SERVER_PUBLIC_KEY" "$server_public_key"
+
+  listen_port="$(read_env_value "$env_path" "WG_LISTEN_PORT" "51820")"
+  endpoint_template="$(read_env_value "$env_path" "WG_ENDPOINT_TEMPLATE" "auto")"
+  if [[ -z "$endpoint_template" || "$endpoint_template" == "auto" ]]; then
+    endpoint_template="$(metadata_external_ip):$listen_port"
+    set_env_value "$env_path" "WG_ENDPOINT_TEMPLATE" "$endpoint_template"
+  fi
+
+  egress_iface="$(read_env_value "$env_path" "WG_EGRESS_IFACE" "auto")"
+  if [[ -z "$egress_iface" || "$egress_iface" == "auto" ]]; then
+    egress_iface="$(ip -4 route list default 2>/dev/null | awk '{print $5; exit}')"
+    if [[ -z "$egress_iface" ]]; then
+      egress_iface="$(ip route list default 2>/dev/null | awk '{print $5; exit}')"
+    fi
+    if [[ -z "$egress_iface" ]]; then
+      fail "failed to detect WG_EGRESS_IFACE from the VM routing table"
+    fi
+    set_env_value "$env_path" "WG_EGRESS_IFACE" "$egress_iface"
+  fi
+
+  node_id="$(read_env_value "$env_path" "CORE_NODE_ID" "")"
+  if [[ -z "$node_id" ]]; then
+    instance_name="$(metadata_path "instance/name")"
+    instance_id="$(metadata_path "instance/id")"
+    node_id="$(stable_uuid_from_string "$instance_name:$instance_id")"
+    set_env_value "$env_path" "CORE_NODE_ID" "$node_id"
+  fi
+
+  if ! modprobe wireguard; then
+    warn "unable to load the wireguard kernel module during startup; wg-core may fail until the module is available"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable wg-core.service
+  systemctl reset-failed wg-core.service || true
+  systemctl restart wg-core.service
+
+  wait_for_service_active wg-core.service 60
+  core_bind_addr="$(read_env_value "$env_path" "CORE_BIND_ADDR" "0.0.0.0:50051")"
+  core_grpc_port="$(extract_port "$core_bind_addr" || true)"
+  if [[ -n "$core_grpc_port" ]]; then
+    wait_for_tcp_port 127.0.0.1 "$core_grpc_port" 60
+  fi
+  systemctl --no-pager --full status wg-core.service || true
+  log "wg-core startup foundation completed"
+}
+
+main "$@"
