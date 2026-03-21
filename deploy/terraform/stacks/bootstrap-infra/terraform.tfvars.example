@@ -3,9 +3,15 @@ github_repository             = "my-org/my-repo"
 workload_identity_pool_id     = "github-actions"
 workload_identity_provider_id = "github-oidc"
 terraform_service_account_id  = "gha-terraform"
+node_catalog_bucket_name      = "my-entry-node-catalog"
 enable_required_apis          = true
 
 # Must already exist in the project before running this stack.
+
+# Optional: override node catalog bucket settings.
+# node_catalog_bucket_location      = "us-central1"
+# node_catalog_bucket_storage_class = "STANDARD"
+# node_catalog_bucket_force_destroy = false
 
 # Optional: override default roles for the Terraform SA.
 # terraform_service_account_roles = [

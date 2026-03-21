@@ -2,7 +2,7 @@
 
 ## Preconditions
 - Provision infra with Terraform:
-  - `deploy/terraform/stacks/bootstrap-oidc` (if GitHub OIDC is not bootstrapped yet)
+  - `deploy/terraform/stacks/bootstrap-infra` (if GitHub OIDC and the entry node catalog bucket are not bootstrapped yet)
   - `deploy/terraform/stacks/entry-vm` (if you want Terraform-managed entry VM lifecycle)
 - Environment templates available:
   - `deploy/env/entry.env.example`
@@ -26,6 +26,7 @@
    - Provide a node catalog entry through the blob catalog consumed by `entry`; `core` no longer registers itself into `entry` over HTTP.
    - If entry should route to discovered nodes on a non-default gRPC port, set `grpc_port` in the catalog entry or `APP_CORE_NODE_GRPC_PORT` on entry.
 5. GitHub Actions paths:
+   - `bootstrap`: `.github/workflows/bootstrap-infra.yml` provisions GitHub OIDC bootstrap resources and the required node catalog bucket.
    - `entry`: `.github/workflows/entry-vm-cicd.yml` deploys `entry` using `scripts/deploy-entry-vm.sh`.
    - Required repository secrets: `ENTRY_DATABASE_URL`, `ENTRY_JWT_SIGNING_KEYS`, `ENTRY_ADMIN_API_TOKEN`, `CORE_GRPC_TLS_CA_CERT_PEM`, `GOOGLE_OIDC_CLIENT_ID`, `GOOGLE_OIDC_CLIENT_SECRET`, `GOOGLE_OIDC_REDIRECT_URI`.
    - Required workflow inputs for apply: `core_grpc_url`, `core_tls_domain`.

@@ -49,7 +49,7 @@ This file is the working contract for coding agents in this repository.
 - CI/CD workflows:
   - `.github/workflows/ci.yaml`
   - `.github/workflows/entry-vm-cicd.yml`
-  - `.github/workflows/bootstrap-gcp-oidc.yml`
+  - `.github/workflows/bootstrap-infra.yml`
 
 ## Local Validation Baseline
 

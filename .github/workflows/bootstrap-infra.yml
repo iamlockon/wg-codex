@@ -1,4 +1,4 @@
-name: Bootstrap GCP OIDC
+name: Bootstrap Infra
 
 on:
   workflow_dispatch:
@@ -23,12 +23,24 @@ on:
         description: "Terraform service account id"
         required: true
         default: gha-terraform
+      node_catalog_bucket_name:
+        description: "Required GCS bucket name for the entry node catalog"
+        required: true
+        default: "wg-codex-node-catalog-stg"
+      node_catalog_bucket_location:
+        description: "GCS location for the entry node catalog bucket"
+        required: false
+        default: us-central1
+      node_catalog_bucket_storage_class:
+        description: "Storage class for the entry node catalog bucket"
+        required: false
+        default: STANDARD
       tf_state_bucket:
         description: "GCS bucket name for Terraform state"
         required: false
         default: "wg-codex-tfstate-stg"
       tf_state_prefix:
-        description: "State object prefix in the bucket (must end with /bootstrap-oidc or be empty)"
+        description: "State object prefix in the bucket (must end with /bootstrap-infra or be empty)"
         required: false
         default: ""
       tf_state_bucket_location:
@@ -55,7 +67,7 @@ on:
 env:
   TF_IN_AUTOMATION: "true"
   TF_PLAN_FILE: "tfplan"
-  TF_PLAN_ARTIFACT: "bootstrap-oidc-tfplan"
+  TF_PLAN_ARTIFACT: "bootstrap-infra-tfplan"
 
 jobs:
   bootstrap:
@@ -69,6 +81,9 @@ jobs:
       TF_VAR_workload_identity_pool_id: ${{ inputs.workload_identity_pool_id }}
       TF_VAR_workload_identity_provider_id: ${{ inputs.workload_identity_provider_id }}
       TF_VAR_terraform_service_account_id: ${{ inputs.terraform_service_account_id }}
+      TF_VAR_node_catalog_bucket_name: ${{ inputs.node_catalog_bucket_name }}
+      TF_VAR_node_catalog_bucket_location: ${{ inputs.node_catalog_bucket_location }}
+      TF_VAR_node_catalog_bucket_storage_class: ${{ inputs.node_catalog_bucket_storage_class }}
       TF_VAR_github_token: ${{ secrets.GH_ADMIN_TOKEN != '' && secrets.GH_ADMIN_TOKEN || github.token }}
       GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
       GITHUB_TOKEN: ${{ github.token }}
@@ -99,7 +114,7 @@ jobs:
       - name: Terraform init (shared GCS backend)
         run: |
           bash scripts/terraform-init-gcs-backend.sh \
-            "deploy/terraform/stacks/bootstrap-oidc" \
+            "deploy/terraform/stacks/bootstrap-infra" \
             "${{ inputs.project_id }}" \
             "${{ inputs.tf_state_bucket }}" \
             "${{ inputs.tf_state_prefix }}" \
@@ -107,12 +122,13 @@ jobs:
 
       - name: Adopt existing resources into state (plan only)
         if: inputs.action == 'plan' && inputs.adopt_existing == 'true'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         env:
           PROJECT_ID: ${{ inputs.project_id }}
           WORKLOAD_IDENTITY_POOL_ID: ${{ inputs.workload_identity_pool_id }}
           WORKLOAD_IDENTITY_PROVIDER_ID: ${{ inputs.workload_identity_provider_id }}
           TERRAFORM_SERVICE_ACCOUNT_ID: ${{ inputs.terraform_service_account_id }}
+          NODE_CATALOG_BUCKET_NAME: ${{ inputs.node_catalog_bucket_name }}
           GITHUB_REPOSITORY_FULL: ${{ inputs.github_repository != '' && inputs.github_repository || github.repository }}
         run: |
           set +e
@@ -213,7 +229,7 @@ jobs:
           }
 
           if ! command -v gcloud >/dev/null 2>&1; then
-            echo "::error::gcloud is required to import existing bootstrap resources."
+            echo "::error::gcloud is required to import existing bootstrap infra resources."
             exit 1
           fi
 
@@ -240,6 +256,9 @@ jobs:
           try_import_required \
             google_service_account_iam_member.github_oidc_impersonation \
             "projects/${PROJECT_ID}/serviceAccounts/${SA_EMAIL} roles/iam.workloadIdentityUser ${GITHUB_REPO_MEMBER}" || import_failed=1
+          try_import_required \
+            google_storage_bucket.node_catalog \
+            "${NODE_CATALOG_BUCKET_NAME}" || import_failed=1
 
           if [ "$import_failed" -ne 0 ]; then
             echo "::error::Adoption mode failed for required resources. Fix IDs/permissions, or set adopt_existing=false for a fresh create."
@@ -248,6 +267,7 @@ jobs:
 
           try_import_optional "google_project_service.iamcredentials[0]" "${PROJECT_ID}/iamcredentials.googleapis.com"
           try_import_optional "google_project_service.sts[0]" "${PROJECT_ID}/sts.googleapis.com"
+          try_import_optional "google_project_service.storage[0]" "${PROJECT_ID}/storage.googleapis.com"
 
           for role in \
             roles/compute.admin \
@@ -275,19 +295,19 @@ jobs:
           exit 0
 
       - name: Terraform validate
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: terraform validate
 
       - name: Terraform plan
         if: inputs.action == 'plan'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           set -o pipefail
           terraform plan -no-color -out="${TF_PLAN_FILE}" | tee terraform-plan.log
 
-      - name: Validate adoption plan (no creates for adopted core resources)
+      - name: Validate adoption plan (no creates for adopted required resources)
         if: inputs.action == 'plan' && inputs.adopt_existing == 'true'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           set -euo pipefail
 
@@ -305,6 +325,7 @@ jobs:
 
           failed=0
           for address in \
+            google_storage_bucket.node_catalog \
             google_iam_workload_identity_pool.github \
             google_iam_workload_identity_pool_provider.github \
             google_service_account_iam_member.github_oidc_impersonation
@@ -325,12 +346,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/bootstrap-oidc/${{ env.TF_PLAN_FILE }}
+          path: deploy/terraform/stacks/bootstrap-infra/${{ env.TF_PLAN_FILE }}
           if-no-files-found: error
 
       - name: Summarize Terraform plan
         if: always() && inputs.action == 'plan'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           plan_summary="$(grep -E '^Plan: [0-9]+ to add, [0-9]+ to change, [0-9]+ to destroy\.$' terraform-plan.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-plan.log | head -n 1 || true)"
@@ -362,21 +383,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/bootstrap-oidc
+          path: deploy/terraform/stacks/bootstrap-infra
           repository: ${{ github.repository }}
           run-id: ${{ inputs.plan_run_id }}
           github-token: ${{ github.token }}
 
       - name: Terraform apply
         if: inputs.action == 'apply'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           set -o pipefail
           terraform apply -no-color -auto-approve "${TF_PLAN_FILE}" | tee terraform-apply.log
 
       - name: Summarize Terraform apply
         if: always() && inputs.action == 'apply'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           apply_summary="$(grep -E '^Apply complete! Resources: [0-9]+ added, [0-9]+ changed, [0-9]+ destroyed\.$' terraform-apply.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-apply.log | head -n 1 || true)"
@@ -395,14 +416,14 @@ jobs:
 
       - name: Terraform destroy
         if: inputs.action == 'destroy'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           set -o pipefail
           terraform destroy -no-color -auto-approve | tee terraform-destroy.log
 
       - name: Summarize Terraform destroy
         if: always() && inputs.action == 'destroy'
-        working-directory: deploy/terraform/stacks/bootstrap-oidc
+        working-directory: deploy/terraform/stacks/bootstrap-infra
         run: |
           destroy_summary="$(grep -E '^Destroy complete! Resources: [0-9]+ destroyed\.$' terraform-destroy.log | tail -n 1 || true)"
           no_changes_summary="$(grep -E '^No changes\.' terraform-destroy.log | head -n 1 || true)"

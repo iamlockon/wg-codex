@@ -73,6 +73,26 @@ resource "google_project_service" "sts" {
   disable_on_destroy = false
 }
 
+resource "google_project_service" "storage" {
+  count = var.enable_required_apis ? 1 : 0
+
+  project            = var.project_id
+  service            = "storage.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_storage_bucket" "node_catalog" {
+  name                        = var.node_catalog_bucket_name
+  location                    = var.node_catalog_bucket_location
+  storage_class               = var.node_catalog_bucket_storage_class
+  force_destroy               = var.node_catalog_bucket_force_destroy
+  uniform_bucket_level_access = true
+
+  depends_on = [
+    google_project_service.storage,
+  ]
+}
+
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = var.workload_identity_pool_id
   display_name              = "GitHub Actions"

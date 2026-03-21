@@ -4,8 +4,8 @@ Kubernetes/GKE Terraform assets were removed. The remaining Terraform deployment
 
 - `deploy/terraform/stacks/entry-vm`
   - Creates infrastructure for VM-based deployment via `modules/entry_vm`.
-- `deploy/terraform/stacks/bootstrap-oidc`
-  - Bootstraps GitHub Actions -> GCP Workload Identity Federation and writes required repository secrets.
+- `deploy/terraform/stacks/bootstrap-infra`
+  - Bootstraps GitHub Actions -> GCP Workload Identity Federation, writes required repository secrets, and creates the required node catalog bucket for `entry`.
 - `deploy/terraform/stacks/tfstate-bucket`
   - Manages the shared GCS bucket used for Terraform remote state.
 
@@ -23,13 +23,13 @@ terraform plan
 terraform apply
 ```
 
-Bootstrap OIDC stack:
+Bootstrap infra stack:
 
 ```bash
 export PROJECT_ID=<PROJECT_ID>
-./scripts/terraform-init-gcs-backend.sh "deploy/terraform/stacks/bootstrap-oidc" "$PROJECT_ID"
+./scripts/terraform-init-gcs-backend.sh "deploy/terraform/stacks/bootstrap-infra" "$PROJECT_ID"
 
-cd deploy/terraform/stacks/bootstrap-oidc
+cd deploy/terraform/stacks/bootstrap-infra
 cp terraform.tfvars.example terraform.tfvars
 terraform plan
 terraform apply
@@ -41,6 +41,6 @@ terraform apply
   - `provisioner=script` supports `action=apply|destroy` (no Terraform state change).
   - `provisioner=terraform` uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.
   - `provisioner=terraform` supports `action=plan|apply|destroy`; Terraform `apply` requires `plan_run_id` and uses the exact saved plan artifact.
-- `.github/workflows/bootstrap-gcp-oidc.yml`: bootstrap workflow that provisions OIDC trust and writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`.
-  - App-login Google OAuth client credentials are created manually in Google Cloud Console (see `deploy/terraform/stacks/bootstrap-oidc/README.md`).
+- `.github/workflows/bootstrap-infra.yml`: bootstrap workflow that provisions OIDC trust, writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`, and creates the required node catalog bucket.
+  - App-login Google OAuth client credentials are created manually in Google Cloud Console (see `deploy/terraform/stacks/bootstrap-infra/README.md`).
   - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.

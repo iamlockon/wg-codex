@@ -39,6 +39,29 @@ variable "terraform_service_account_id" {
   default     = "gha-terraform"
 }
 
+variable "node_catalog_bucket_name" {
+  description = "Required GCS bucket name for the entry node catalog."
+  type        = string
+}
+
+variable "node_catalog_bucket_location" {
+  description = "Location for the entry node catalog bucket."
+  type        = string
+  default     = "us-central1"
+}
+
+variable "node_catalog_bucket_storage_class" {
+  description = "Storage class for the entry node catalog bucket."
+  type        = string
+  default     = "STANDARD"
+}
+
+variable "node_catalog_bucket_force_destroy" {
+  description = "Whether Terraform may delete non-empty objects in the node catalog bucket during destroy."
+  type        = bool
+  default     = false
+}
+
 variable "terraform_service_account_roles" {
   description = "Project roles granted to the Terraform service account."
   type        = list(string)

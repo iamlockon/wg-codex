@@ -1,6 +1,6 @@
-# Bootstrap GitHub OIDC for Terraform
+# Bootstrap Infra
 
-This stack bootstraps GitHub Actions -> GCP Workload Identity Federation and writes these repository secrets:
+This stack bootstraps foundational infra for GitHub-driven deploys. It manages GitHub Actions -> GCP Workload Identity Federation, writes these repository secrets:
 
 - `GCP_WORKLOAD_IDENTITY_PROVIDER`
 - `GCP_TERRAFORM_SA`
@@ -9,6 +9,7 @@ It creates:
 - a GCP Workload Identity Pool + Provider trusting GitHub OIDC tokens for one repository
 - IAM binding allowing that GitHub repository to impersonate the service account
 - GitHub Actions secrets with the provider name and service account email
+- the required GCS bucket used by `entry` for node catalog discovery
 
 Prerequisite:
 - the Terraform service account (default `gha-terraform`) must already exist in the project before running this stack.
@@ -19,10 +20,10 @@ Prerequisite:
 export PROJECT_ID=<PROJECT_ID>
 
 ./scripts/terraform-init-gcs-backend.sh \
-  "deploy/terraform/stacks/bootstrap-oidc" \
+  "deploy/terraform/stacks/bootstrap-infra" \
   "$PROJECT_ID"
 
-cd deploy/terraform/stacks/bootstrap-oidc
+cd deploy/terraform/stacks/bootstrap-infra
 cp terraform.tfvars.example terraform.tfvars
 terraform plan
 terraform apply
@@ -34,11 +35,13 @@ After apply, your other workflows can authenticate with:
 
 ## GitHub Actions
 
-Use `.github/workflows/bootstrap-gcp-oidc.yml` and provide:
+Use `.github/workflows/bootstrap-infra.yml` and provide:
 - `GCP_BOOTSTRAP_SA_KEY` repository secret containing JSON credentials for a bootstrap admin service account.
 - `GH_ADMIN_TOKEN` repository secret for `apply`/`destroy` runs. `GITHUB_TOKEN` is not sufficient for managing repository Actions secrets.
-- workflow input `adopt_existing=true` only when adopting pre-existing pool/provider/IAM resources into Terraform state.
+- required workflow input `node_catalog_bucket_name` for the entry node catalog bucket.
+- workflow input `adopt_existing=true` only when adopting pre-existing pool/provider/IAM resources and an existing node catalog bucket into Terraform state.
 - optional workflow inputs `tf_state_bucket`, `tf_state_prefix`, and `tf_state_bucket_location` (leave empty to auto-generate bucket and prefix).
+- optional workflow inputs `node_catalog_bucket_location` and `node_catalog_bucket_storage_class` to override bucket defaults.
 
 ## Generate App-Login Google OIDC Credentials (Manual)
 
@@ -69,10 +72,10 @@ gh secret set GOOGLE_OIDC_REDIRECT_URI --body "http://127.0.0.1:53682/oauth/call
 Workflow behavior:
 - `action=plan` with `adopt_existing=false` (default) runs a normal Terraform plan without import retries.
 - `action=plan` with `adopt_existing=true` runs one-time adoption imports before planning.
-- In adoption mode, imports for pool/provider and the Workload Identity user IAM binding are required and fail fast on errors other than "already managed in state".
+- In adoption mode, imports for the node catalog bucket, pool/provider, and the Workload Identity user IAM binding are required and fail fast on errors other than "already managed in state".
 - In adoption mode, imports for APIs, project IAM roles, and GitHub Actions secrets are best-effort.
-- In adoption mode, the workflow fails `plan` if the saved plan still includes `create` actions for pool/provider or the required IAM binding.
-- `action=plan` runs `terraform plan -out=tfplan` and uploads `tfplan` as artifact `bootstrap-oidc-tfplan`.
+- In adoption mode, the workflow fails `plan` if the saved plan still includes `create` actions for the node catalog bucket, pool/provider, or the required IAM binding.
+- `action=plan` runs `terraform plan -out=tfplan` and uploads `tfplan` as artifact `bootstrap-infra-tfplan`.
 - `action=apply` requires `plan_run_id` (the workflow run id from the earlier `plan`) and applies that exact saved plan file.
 - `action=destroy` runs a direct `terraform destroy -auto-approve`.
 

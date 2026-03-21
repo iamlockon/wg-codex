@@ -1,5 +1,9 @@
 # Next Session Handoff
 
+## Recent Changes
+- Bootstrap infra path renamed from `bootstrap-oidc` / `.github/workflows/bootstrap-gcp-oidc.yml` to `bootstrap-infra` / `.github/workflows/bootstrap-infra.yml`.
+- The bootstrap Terraform stack now owns creation of the required entry node catalog GCS bucket.
+
 ## Current Status
 - Workspace has separate deployable services:
   - `services/entry`
