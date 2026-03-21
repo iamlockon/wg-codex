@@ -177,6 +177,7 @@ Still open:
 ## Testing Strategy
 - Unit tests for policy enforcement (plan limits, geo eligibility, conflict behavior).
 - Integration tests for `entry` to `core` session lifecycle with Postgres.
+- Process-level backend e2e tests that boot real `entry` and `core` processes plus a stub OAuth token/JWKS server, then verify OAuth login, session lifecycle, reconnect semantics, and logout revocation through public HTTP endpoints.
 - Linux netns tests for WireGuard peer lifecycle and NAT behavior.
 - Reconciliation/failure tests for `core` restarts and drift repair.
 - Security tests for token revocation, auth boundaries, replay/idempotency.

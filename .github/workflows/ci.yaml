@@ -6,12 +6,16 @@ on:
     paths:
       - "clients/**"
       - "crates/**"
+      - "db/**"
+      - ".github/workflows/**"
+      - "scripts/**"
       - "services/**"
 
 jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
+      backend_e2e: ${{ steps.filter.outputs.backend_e2e }}
       windows_desktop: ${{ steps.filter.outputs.windows_desktop }}
     steps:
       - name: Checkout
@@ -22,6 +26,15 @@ jobs:
         uses: dorny/paths-filter@v3
         with:
           filters: |
+            backend_e2e:
+              - 'services/entry/**'
+              - 'services/core/**'
+              - 'crates/control-plane/**'
+              - 'crates/domain/**'
+              - 'crates/backend-e2e/**'
+              - 'db/**'
+              - 'scripts/run-backend-e2e.sh'
+              - '.github/workflows/ci.yaml'
             windows_desktop:
               - 'clients/windows-desktop/**'
 
@@ -61,6 +74,46 @@ jobs:
 
       - name: Unit tests
         run: cargo test --workspace --lib --exclude wg-windows-client
+
+  e2e-backend:
+    needs: changes
+    if: needs.changes.outputs.backend_e2e == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: wg_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d wg_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/wg_test
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Run backend e2e suite
+        run: bash scripts/run-backend-e2e.sh
 
   windows-desktop:
     needs: changes
