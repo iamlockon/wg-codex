@@ -34,6 +34,7 @@
    - If entry should route to discovered nodes on a non-default gRPC port, set `grpc_port` in the catalog entry or `APP_CORE_NODE_GRPC_PORT` in the `entry` env payload.
 6. Bootstrap path:
    - `.github/workflows/bootstrap-infra.yml` provisions GitHub OIDC bootstrap resources and the required node catalog bucket.
+   - The bootstrap workflow exposes only `action` and `adopt_existing`; other bootstrap values come from workflow defaults and repository context.
    - VM workflows require repository secrets `GCP_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, and `GCP_TERRAFORM_SA`.
    - Terraform is the supported VM deploy path for both `entry` and `core`.
 

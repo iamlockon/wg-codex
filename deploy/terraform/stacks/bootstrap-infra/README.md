@@ -38,10 +38,17 @@ After apply, your other workflows can authenticate with:
 Use `.github/workflows/bootstrap-infra.yml` and provide:
 - `GCP_BOOTSTRAP_SA_KEY` repository secret containing JSON credentials for a bootstrap admin service account.
 - `GH_ADMIN_TOKEN` repository secret for `apply`/`destroy` runs. `GITHUB_TOKEN` is not sufficient for managing repository Actions secrets.
-- required workflow input `node_catalog_bucket_name` for the entry node catalog bucket.
+- repository secret `GCP_PROJECT_ID` if you need a project id other than the workflow default (`wg-stg`).
 - workflow input `adopt_existing=true` only when adopting pre-existing pool/provider/IAM resources and an existing node catalog bucket into Terraform state.
-- optional workflow inputs `tf_state_bucket`, `tf_state_prefix`, and `tf_state_bucket_location` (leave empty to auto-generate bucket and prefix).
-- optional workflow inputs `node_catalog_bucket_location` and `node_catalog_bucket_storage_class` to override bucket defaults.
+- workflow input `action` to choose `plan`, `apply`, or `destroy`.
+
+The workflow now uses built-in defaults instead of exposing routine bootstrap values as dispatch inputs:
+- GitHub repository: current repository
+- Workload Identity Pool / Provider: `github-actions` / `github-oidc`
+- Terraform service account id: `gha-terraform`
+- entry node catalog bucket: `wg-codex-node-catalog-stg`
+- node catalog bucket location / storage class: `us-central1` / `STANDARD`
+- Terraform state backend: auto-generated bucket and `terraform/bootstrap-infra` prefix via `scripts/terraform-init-gcs-backend.sh`
 
 ## Generate App-Login Google OIDC Credentials (Manual)
 
@@ -76,7 +83,7 @@ Workflow behavior:
 - In adoption mode, imports for APIs, project IAM roles, and GitHub Actions secrets are best-effort.
 - In adoption mode, the workflow fails `plan` if the saved plan still includes `create` actions for the node catalog bucket, pool/provider, or the required IAM binding.
 - `action=plan` runs `terraform plan -out=tfplan` and uploads `tfplan` as artifact `bootstrap-infra-tfplan`.
-- `action=apply` requires `plan_run_id` (the workflow run id from the earlier `plan`) and applies that exact saved plan file.
+- `action=apply` automatically downloads the latest non-expired `bootstrap-infra-tfplan` artifact for the current branch and applies that saved plan file.
 - `action=destroy` runs a direct `terraform destroy -auto-approve`.
 
 This key is only needed to create/update bootstrap resources. Once OIDC is working, keep it restricted or remove it if you no longer need bootstrap updates.

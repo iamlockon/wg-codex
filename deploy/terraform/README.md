@@ -69,3 +69,5 @@ terraform apply
 - `.github/workflows/bootstrap-infra.yml`: bootstrap workflow that provisions OIDC trust, writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`, and creates the required node catalog bucket.
   - App-login Google OAuth client credentials are created manually in Google Cloud Console (see `deploy/terraform/stacks/bootstrap-infra/README.md`).
   - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.
+  - Exposes only `action` and `adopt_existing` as dispatch inputs; project/repository/backend/bucket defaults are resolved inside the workflow.
+  - `action=apply` automatically reuses the latest non-expired saved bootstrap plan artifact for the current branch.

@@ -3,54 +3,6 @@ name: Bootstrap Infra
 on:
   workflow_dispatch:
     inputs:
-      project_id:
-        description: "GCP project id"
-        required: true
-        default: "wg-stg"
-      github_repository:
-        description: "GitHub repository (owner/name). Leave empty for current repo."
-        required: false
-        default: ""
-      workload_identity_pool_id:
-        description: "Workload Identity Pool id"
-        required: true
-        default: github-actions
-      workload_identity_provider_id:
-        description: "Workload Identity Provider id"
-        required: true
-        default: github-oidc
-      terraform_service_account_id:
-        description: "Terraform service account id"
-        required: true
-        default: gha-terraform
-      node_catalog_bucket_name:
-        description: "Required GCS bucket name for the entry node catalog"
-        required: true
-        default: "wg-codex-node-catalog-stg"
-      node_catalog_bucket_location:
-        description: "GCS location for the entry node catalog bucket"
-        required: false
-        default: us-central1
-      node_catalog_bucket_storage_class:
-        description: "Storage class for the entry node catalog bucket"
-        required: false
-        default: STANDARD
-      tf_state_bucket:
-        description: "GCS bucket name for Terraform state"
-        required: false
-        default: "wg-codex-tfstate-stg"
-      tf_state_prefix:
-        description: "State object prefix in the bucket (must end with /bootstrap-infra or be empty)"
-        required: false
-        default: ""
-      tf_state_bucket_location:
-        description: "GCS location to use when creating the state bucket"
-        required: false
-        default: us-central1
-      plan_run_id:
-        description: "Workflow run id that produced the Terraform plan artifact (required for apply)"
-        required: false
-        default: ""
       adopt_existing:
         description: "Import pre-existing resources into Terraform state before plan (one-time adoption)."
         required: true
@@ -68,6 +20,14 @@ env:
   TF_IN_AUTOMATION: "true"
   TF_PLAN_FILE: "tfplan"
   TF_PLAN_ARTIFACT: "bootstrap-infra-tfplan"
+  DEFAULT_PROJECT_ID: "wg-stg"
+  DEFAULT_WORKLOAD_IDENTITY_POOL_ID: "github-actions"
+  DEFAULT_WORKLOAD_IDENTITY_PROVIDER_ID: "github-oidc"
+  DEFAULT_TERRAFORM_SERVICE_ACCOUNT_ID: "gha-terraform"
+  DEFAULT_NODE_CATALOG_BUCKET_NAME: "wg-codex-node-catalog-stg"
+  DEFAULT_NODE_CATALOG_BUCKET_LOCATION: "us-central1"
+  DEFAULT_NODE_CATALOG_BUCKET_STORAGE_CLASS: "STANDARD"
+  DEFAULT_TF_STATE_BUCKET_LOCATION: "us-central1"
 
 jobs:
   bootstrap:
@@ -76,14 +36,23 @@ jobs:
       contents: read
       actions: write
     env:
-      TF_VAR_project_id: ${{ inputs.project_id }}
-      TF_VAR_github_repository: ${{ inputs.github_repository != '' && inputs.github_repository || github.repository }}
-      TF_VAR_workload_identity_pool_id: ${{ inputs.workload_identity_pool_id }}
-      TF_VAR_workload_identity_provider_id: ${{ inputs.workload_identity_provider_id }}
-      TF_VAR_terraform_service_account_id: ${{ inputs.terraform_service_account_id }}
-      TF_VAR_node_catalog_bucket_name: ${{ inputs.node_catalog_bucket_name }}
-      TF_VAR_node_catalog_bucket_location: ${{ inputs.node_catalog_bucket_location }}
-      TF_VAR_node_catalog_bucket_storage_class: ${{ inputs.node_catalog_bucket_storage_class }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_PROJECT_ID || env.DEFAULT_PROJECT_ID }}
+      GITHUB_REPOSITORY_FULL: ${{ github.repository }}
+      WORKLOAD_IDENTITY_POOL_ID: ${{ env.DEFAULT_WORKLOAD_IDENTITY_POOL_ID }}
+      WORKLOAD_IDENTITY_PROVIDER_ID: ${{ env.DEFAULT_WORKLOAD_IDENTITY_PROVIDER_ID }}
+      TERRAFORM_SERVICE_ACCOUNT_ID: ${{ env.DEFAULT_TERRAFORM_SERVICE_ACCOUNT_ID }}
+      NODE_CATALOG_BUCKET_NAME: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_NAME }}
+      NODE_CATALOG_BUCKET_LOCATION: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_LOCATION }}
+      NODE_CATALOG_BUCKET_STORAGE_CLASS: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_STORAGE_CLASS }}
+      TF_STATE_BUCKET_LOCATION: ${{ env.DEFAULT_TF_STATE_BUCKET_LOCATION }}
+      TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID != '' && secrets.GCP_PROJECT_ID || env.DEFAULT_PROJECT_ID }}
+      TF_VAR_github_repository: ${{ github.repository }}
+      TF_VAR_workload_identity_pool_id: ${{ env.DEFAULT_WORKLOAD_IDENTITY_POOL_ID }}
+      TF_VAR_workload_identity_provider_id: ${{ env.DEFAULT_WORKLOAD_IDENTITY_PROVIDER_ID }}
+      TF_VAR_terraform_service_account_id: ${{ env.DEFAULT_TERRAFORM_SERVICE_ACCOUNT_ID }}
+      TF_VAR_node_catalog_bucket_name: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_NAME }}
+      TF_VAR_node_catalog_bucket_location: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_LOCATION }}
+      TF_VAR_node_catalog_bucket_storage_class: ${{ env.DEFAULT_NODE_CATALOG_BUCKET_STORAGE_CLASS }}
       TF_VAR_github_token: ${{ secrets.GH_ADMIN_TOKEN != '' && secrets.GH_ADMIN_TOKEN || github.token }}
       GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
       GITHUB_TOKEN: ${{ github.token }}
@@ -99,7 +68,7 @@ jobs:
       - name: Validate GitHub token for Actions secrets
         if: inputs.action != 'plan'
         env:
-          REPO: ${{ inputs.github_repository != '' && inputs.github_repository || github.repository }}
+          REPO: ${{ github.repository }}
         run: |
           if [ -z "$GH_ADMIN_TOKEN" ]; then
             echo "::error::GH_ADMIN_TOKEN is required for apply/destroy. GITHUB_TOKEN cannot manage repository Actions secrets."
@@ -115,21 +84,21 @@ jobs:
         run: |
           bash scripts/terraform-init-gcs-backend.sh \
             "deploy/terraform/stacks/bootstrap-infra" \
-            "${{ inputs.project_id }}" \
-            "${{ inputs.tf_state_bucket }}" \
-            "${{ inputs.tf_state_prefix }}" \
-            "${{ inputs.tf_state_bucket_location }}"
+            "${PROJECT_ID}" \
+            "" \
+            "" \
+            "${TF_STATE_BUCKET_LOCATION}"
 
       - name: Adopt existing resources into state (plan only)
         if: inputs.action == 'plan' && inputs.adopt_existing == 'true'
         working-directory: deploy/terraform/stacks/bootstrap-infra
         env:
-          PROJECT_ID: ${{ inputs.project_id }}
-          WORKLOAD_IDENTITY_POOL_ID: ${{ inputs.workload_identity_pool_id }}
-          WORKLOAD_IDENTITY_PROVIDER_ID: ${{ inputs.workload_identity_provider_id }}
-          TERRAFORM_SERVICE_ACCOUNT_ID: ${{ inputs.terraform_service_account_id }}
-          NODE_CATALOG_BUCKET_NAME: ${{ inputs.node_catalog_bucket_name }}
-          GITHUB_REPOSITORY_FULL: ${{ inputs.github_repository != '' && inputs.github_repository || github.repository }}
+          PROJECT_ID: ${{ env.PROJECT_ID }}
+          WORKLOAD_IDENTITY_POOL_ID: ${{ env.WORKLOAD_IDENTITY_POOL_ID }}
+          WORKLOAD_IDENTITY_PROVIDER_ID: ${{ env.WORKLOAD_IDENTITY_PROVIDER_ID }}
+          TERRAFORM_SERVICE_ACCOUNT_ID: ${{ env.TERRAFORM_SERVICE_ACCOUNT_ID }}
+          NODE_CATALOG_BUCKET_NAME: ${{ env.NODE_CATALOG_BUCKET_NAME }}
+          GITHUB_REPOSITORY_FULL: ${{ github.repository }}
         run: |
           set +e
 
@@ -370,23 +339,63 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Require plan run id for apply
+      - name: Resolve latest Terraform plan artifact for apply
         if: inputs.action == 'apply'
+        env:
+          REPO: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ -z "${{ inputs.plan_run_id }}" ]; then
-            echo "::error::plan_run_id is required for apply. Run action=plan first, then pass that run id to apply."
+          set -euo pipefail
+
+          artifact_json="$(
+            curl --fail --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$REPO/actions/artifacts?name=${TF_PLAN_ARTIFACT}&per_page=100"
+          )"
+
+          artifact_id="$(
+            jq -r --arg branch "$REF_NAME" '
+              .artifacts
+              | map(select(.expired == false))
+              | map(select(.workflow_run.head_branch == $branch))
+              | sort_by(.created_at)
+              | last
+              | .id // empty
+            ' <<<"$artifact_json"
+          )"
+
+          if [ -z "$artifact_id" ]; then
+            echo "::error::No non-expired ${TF_PLAN_ARTIFACT} artifact was found for branch ${REF_NAME}. Run action=plan first."
             exit 1
           fi
 
+          artifact_run_id="$(
+            jq -r --argjson artifact_id "$artifact_id" '
+              .artifacts[]
+              | select(.id == $artifact_id)
+              | .workflow_run.id
+            ' <<<"$artifact_json"
+          )"
+
+          echo "PLAN_ARTIFACT_ID=$artifact_id" >> "$GITHUB_ENV"
+          echo "PLAN_RUN_ID=$artifact_run_id" >> "$GITHUB_ENV"
+
       - name: Download Terraform plan artifact
         if: inputs.action == 'apply'
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ env.TF_PLAN_ARTIFACT }}
-          path: deploy/terraform/stacks/bootstrap-infra
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.plan_run_id }}
-          github-token: ${{ github.token }}
+        working-directory: deploy/terraform/stacks/bootstrap-infra
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${REPO}/actions/artifacts/${PLAN_ARTIFACT_ID}/zip" \
+            --output tfplan.zip
+
+          unzip -o tfplan.zip
 
       - name: Terraform apply
         if: inputs.action == 'apply'
@@ -405,6 +414,8 @@ jobs:
           {
             echo "## Terraform apply"
             echo ""
+            echo "- plan_run_id: ${PLAN_RUN_ID}"
+            echo "- Plan source: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${PLAN_RUN_ID}"
             if [ -n "$apply_summary" ]; then
               echo "- $apply_summary"
             elif [ -n "$no_changes_summary" ]; then
