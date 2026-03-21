@@ -176,9 +176,18 @@ async fn prepare_test_database() -> anyhow::Result<Option<String>> {
         .context("failed to set backend e2e search_path")?;
 
     for migration in [
-        include_str!("../../../../../db/migrations/202602090001_initial_schema.sql"),
-        include_str!("../../../../../db/migrations/202602100002_revoked_tokens.sql"),
-        include_str!("../../../../../db/migrations/202602100003_consumer_model.sql"),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../db/migrations/202602090001_initial_schema.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../db/migrations/202602100002_revoked_tokens.sql"
+        )),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../db/migrations/202602100003_consumer_model.sql"
+        )),
     ] {
         sqlx::raw_sql(migration)
             .execute(&pool)
