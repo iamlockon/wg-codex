@@ -7,10 +7,6 @@ on:
         description: VM name
         required: true
         default: wg-core-gha
-      zone:
-        description: GCP zone (optional; defaults to <region>-a)
-        required: false
-        default: ""
       region:
         description: GCP region for core VM
         required: true
@@ -21,14 +17,6 @@ on:
         default: apply
         type: choice
         options: [plan, apply, destroy]
-      allow_wg_cidrs:
-        description: Source CIDRs allowed to reach WireGuard UDP/51820 (comma-separated)
-        required: false
-        default: 0.0.0.0/0
-      allow_core_grpc_cidrs:
-        description: Optional source CIDRs allowed to reach core gRPC TCP/50051 (comma-separated)
-        required: false
-        default: ""
       rollout_artifact_ref:
         description: "Artifact reference for wg-core startup metadata (for example gs://bucket/path/core)"
         required: false
@@ -65,21 +53,12 @@ on:
         description: "Workflow run id that produced the Terraform plan artifact (required for action=apply)"
         required: false
         default: ""
-      tf_state_bucket:
-        description: "Optional GCS bucket name for Terraform state (auto-generated when empty)"
-        required: false
-        default: "wg-codex-tfstate-stg"
-      tf_state_prefix:
-        description: "Optional backend state object prefix (must end with /core-vm; defaults to terraform/core-vm)"
-        required: false
-        default: ""
-      tf_state_bucket_location:
-        description: "GCS location to use when creating the state bucket"
-        required: false
-        default: us-central1
 
 env:
   TF_IN_AUTOMATION: "true"
+  DEFAULT_ALLOW_WG_CIDRS: "0.0.0.0/0"
+  DEFAULT_ALLOW_CORE_GRPC_CIDRS: ""
+  DEFAULT_TF_STATE_BUCKET_LOCATION: "us-central1"
 
 jobs:
   core-vm:
@@ -90,13 +69,16 @@ jobs:
       id-token: write
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      ZONE: ${{ format('{0}-a', inputs.region) }}
       TF_STACK_DIR: deploy/terraform/stacks/core-vm
       TF_PLAN_FILE: tfplan
       TF_PLAN_ARTIFACT: core-vm-tfplan
+      ALLOW_WG_CIDRS: ${{ env.DEFAULT_ALLOW_WG_CIDRS }}
+      ALLOW_CORE_GRPC_CIDRS: ${{ env.DEFAULT_ALLOW_CORE_GRPC_CIDRS }}
+      TF_STATE_BUCKET_LOCATION: ${{ env.DEFAULT_TF_STATE_BUCKET_LOCATION }}
       TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ inputs.region }}
-      TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      TF_VAR_zone: ${{ format('{0}-a', inputs.region) }}
       TF_VAR_name: ${{ inputs.vm_name }}
     steps:
       - uses: actions/checkout@v4
@@ -120,11 +102,6 @@ jobs:
 
           if [ -z "$GCP_TERRAFORM_SA" ]; then
             echo "::error::Missing required secret: GCP_TERRAFORM_SA"
-            exit 1
-          fi
-
-          if [ -n "${{ inputs.tf_state_prefix }}" ] && [[ "${{ inputs.tf_state_prefix }}" != */core-vm ]]; then
-            echo "::error::tf_state_prefix must end with /core-vm when provided."
             exit 1
           fi
 
@@ -155,8 +132,8 @@ jobs:
 
       - name: Export optional Terraform variables
         env:
-          ALLOW_WG_CIDRS: ${{ inputs.allow_wg_cidrs }}
-          ALLOW_CORE_GRPC_CIDRS: ${{ inputs.allow_core_grpc_cidrs }}
+          ALLOW_WG_CIDRS: ${{ env.ALLOW_WG_CIDRS }}
+          ALLOW_CORE_GRPC_CIDRS: ${{ env.ALLOW_CORE_GRPC_CIDRS }}
           ROLLOUT_ARTIFACT_REF: ${{ inputs.rollout_artifact_ref }}
           ROLLOUT_ARTIFACT_SHA256: ${{ inputs.rollout_artifact_sha256 }}
           ROLLOUT_ENV_REF: ${{ inputs.rollout_env_ref }}
@@ -206,9 +183,9 @@ jobs:
           bash scripts/terraform-init-gcs-backend.sh \
             "$TF_STACK_DIR" \
             "$PROJECT_ID" \
-            "${{ inputs.tf_state_bucket }}" \
-            "${{ inputs.tf_state_prefix }}" \
-            "${{ inputs.tf_state_bucket_location }}"
+            "" \
+            "" \
+            "${TF_STATE_BUCKET_LOCATION}"
 
       - name: Terraform validate (vm stack)
         working-directory: ${{ env.TF_STACK_DIR }}
@@ -285,6 +262,8 @@ jobs:
           {
             echo "## Terraform apply (core VM stack)"
             echo ""
+            echo "- plan_run_id: ${{ inputs.plan_run_id }}"
+            echo "- Plan source: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.plan_run_id }}"
             if [ -n "$apply_summary" ]; then
               echo "- $apply_summary"
             elif [ -n "$no_changes_summary" ]; then

@@ -23,10 +23,10 @@
    - Record the emitted `plan_run_id`.
 3. Apply the saved `entry` plan:
    - Run `.github/workflows/entry-vm-cicd.yml` with `action=apply` and the `plan_run_id` from the planning run.
-   - Set `region` to choose the GCP region for the VM; set `zone` only when you need a specific zone (otherwise defaults to `<region>-a`).
+   - Set `region` to choose the GCP region for the VM; the workflow uses `<region>-a` as the zone.
 4. Plan and apply `core` with Terraform:
    - Run `.github/workflows/core-vm-cicd.yml` with `action=plan`, `rollout_artifact_ref`, and `rollout_env_ref`.
-   - Optional workflow inputs: `allow_wg_cidrs`, `allow_core_grpc_cidrs`, `rollout_artifact_sha256`, `rollout_unit_ref`, `rollout_private_key_secret_ref`, `rollout_tls_cert_secret_ref`, `rollout_tls_key_secret_ref`, `rollout_tls_ca_secret_ref`.
+   - Optional workflow inputs: `rollout_artifact_sha256`, `rollout_unit_ref`, `rollout_private_key_secret_ref`, `rollout_tls_cert_secret_ref`, `rollout_tls_key_secret_ref`, `rollout_tls_ca_secret_ref`.
    - Apply the exact saved plan with `action=apply` and the `plan_run_id` from the plan run.
    - For private VPC-only entry-to-core access, prefer internal DNS in the `entry` env payload (example: `https://wg-core-us-west.c.<project>.internal:50051`).
 5. Maintain node metadata in the node catalog source consumed by `entry`:

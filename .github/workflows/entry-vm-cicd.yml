@@ -7,10 +7,6 @@ on:
         description: VM name
         required: true
         default: wg-entry-gha
-      zone:
-        description: GCP zone (optional; defaults to <region>-a)
-        required: false
-        default: ""
       region:
         description: GCP region for entry VM
         required: true
@@ -53,21 +49,10 @@ on:
         description: "Workflow run id that produced the Terraform plan artifact (required for action=apply)"
         required: false
         default: ""
-      tf_state_bucket:
-        description: "Optional GCS bucket name for Terraform state (auto-generated when empty)"
-        required: false
-        default: "wg-codex-tfstate-stg"
-      tf_state_prefix:
-        description: "Optional backend state object prefix (must end with /entry-vm; defaults to terraform/entry-vm)"
-        required: false
-        default: ""
-      tf_state_bucket_location:
-        description: "GCS location to use when creating the state bucket"
-        required: false
-        default: us-central1
 
 env:
   TF_IN_AUTOMATION: "true"
+  DEFAULT_TF_STATE_BUCKET_LOCATION: "us-central1"
 
 jobs:
   entry-vm:
@@ -78,13 +63,14 @@ jobs:
       id-token: write
     env:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      ZONE: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      ZONE: ${{ format('{0}-a', inputs.region) }}
       TF_STACK_DIR: deploy/terraform/stacks/entry-vm
       TF_PLAN_FILE: tfplan
       TF_PLAN_ARTIFACT: entry-vm-tfplan
+      TF_STATE_BUCKET_LOCATION: ${{ env.DEFAULT_TF_STATE_BUCKET_LOCATION }}
       TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
       TF_VAR_region: ${{ inputs.region }}
-      TF_VAR_zone: ${{ inputs.zone != '' && inputs.zone || format('{0}-a', inputs.region) }}
+      TF_VAR_zone: ${{ format('{0}-a', inputs.region) }}
       TF_VAR_name: ${{ inputs.vm_name }}
     steps:
       - uses: actions/checkout@v4
@@ -108,11 +94,6 @@ jobs:
 
           if [ -z "$GCP_TERRAFORM_SA" ]; then
             echo "::error::Missing required secret: GCP_TERRAFORM_SA"
-            exit 1
-          fi
-
-          if [ -n "${{ inputs.tf_state_prefix }}" ] && [[ "${{ inputs.tf_state_prefix }}" != */entry-vm ]]; then
-            echo "::error::tf_state_prefix must end with /entry-vm when provided."
             exit 1
           fi
 
@@ -175,9 +156,9 @@ jobs:
           bash scripts/terraform-init-gcs-backend.sh \
             "$TF_STACK_DIR" \
             "$PROJECT_ID" \
-            "${{ inputs.tf_state_bucket }}" \
-            "${{ inputs.tf_state_prefix }}" \
-            "${{ inputs.tf_state_bucket_location }}"
+            "" \
+            "" \
+            "${TF_STATE_BUCKET_LOCATION}"
 
       - name: Terraform validate (vm stack)
         working-directory: ${{ env.TF_STACK_DIR }}
@@ -254,6 +235,8 @@ jobs:
           {
             echo "## Terraform apply (entry VM stack)"
             echo ""
+            echo "- plan_run_id: ${{ inputs.plan_run_id }}"
+            echo "- Plan source: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.plan_run_id }}"
             if [ -n "$apply_summary" ]; then
               echo "- $apply_summary"
             elif [ -n "$no_changes_summary" ]; then

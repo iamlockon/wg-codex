@@ -60,11 +60,13 @@ terraform apply
   - Uses shared backend initialization (`scripts/terraform-init-gcs-backend.sh`) before Terraform commands.
   - Supports `action=plan|apply|destroy`.
   - `action=plan` requires rollout references and uploads a saved plan artifact.
+  - Uses the default `<region>-a` zone and auto-generated backend bucket/prefix instead of exposing those as dispatch inputs.
   - `action=apply` requires `plan_run_id` and applies the exact saved plan artifact from that workflow run.
 - `.github/workflows/core-vm-cicd.yml`: Terraform-only workflow for the `core` VM stack.
   - Uses the same shared backend initialization and saved-plan safety model as `entry`.
   - Supports `action=plan|apply|destroy`.
   - `action=plan` requires rollout references and uploads a saved plan artifact.
+  - Uses the default `<region>-a` zone, default CIDR policy inputs, and auto-generated backend bucket/prefix instead of exposing those as dispatch inputs.
   - `action=apply` requires `plan_run_id` and applies the exact saved plan artifact from that workflow run.
 - `.github/workflows/bootstrap-infra.yml`: bootstrap workflow that provisions OIDC trust, writes `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_TERRAFORM_SA`, and creates the required node catalog bucket.
   - App-login Google OAuth client credentials are created manually in Google Cloud Console (see `deploy/terraform/stacks/bootstrap-infra/README.md`).
